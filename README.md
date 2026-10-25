@@ -77,13 +77,15 @@ Each run creates `recordings/<timestamp>-<title>/` (or the name given with `--na
 
 | Path | Contents |
 |---|---|
-| `video.mp4` or `video.mkv` | Constant frame rate video from ffmpeg |
+| `video.mp4` or `video.mkv` | Constant frame rate video from ffmpeg; `videoFrame` in `frames.jsonl` is -1 for frames left out of it |
 | `keyframes/NNNNNNN.png` | Lossless PNG every N seconds; the number is the frame sequence |
 | `frames.jsonl` | One JSON line per frame: `sequence`, `pts`, `wallClockUtc`, `videoFrame`, `keyframe` (path, only on keyframes) |
-| `session.json` | Summary: window, size, encoder, duration, delivered, dropped, idle and filled frame counts, keyframe count, video bytes |
+| `session.json` | Summary: window, size, encoder, duration, delivered, dropped, idle, filled, skipped and cut counts, keyframe count, video bytes, ffmpeg exit code |
 | `ffmpeg.log` | ffmpeg output |
 
-ScreenCaptureKit only delivers a frame when the window changed, so the video fills gaps by repeating the previous frame. `filledVideoFrames` in `session.json` reports how many were filled.
+ScreenCaptureKit only delivers a frame when the window changed, so the video fills gaps of up to two seconds by repeating the previous frame (`filledVideoFrames`). Longer idle stretches are cut out of the video (`cutSeconds`), and a frame that arrives ahead of the constant-rate timeline is left out (`skippedVideoFrames`). The metadata keeps the true timestamp of every frame either way.
+
+ffmpeg runs in its own process group, so Ctrl-C stops the recorder cleanly: the capture stops first, the remaining frames are written, and ffmpeg finalizes the file.
 
 ## Permission
 

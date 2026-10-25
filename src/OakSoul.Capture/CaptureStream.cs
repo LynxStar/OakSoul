@@ -19,6 +19,7 @@ public sealed class CaptureStream : IDisposable
     private long _idle;
     private long _dropped;
     private int _stopped;
+    private bool _stopConfirmed;
     private int _streamError;
 
     private CaptureStream(int queueCapacity)
@@ -27,7 +28,7 @@ public sealed class CaptureStream : IDisposable
         {
             FullMode = BoundedChannelFullMode.DropOldest,
             SingleReader = true,
-            SingleWriter = true,
+            SingleWriter = false, // TryComplete may run on another thread than the frame callback
         };
         _channel = Channel.CreateBounded<Frame>(options, dropped =>
         {
@@ -75,14 +76,16 @@ public sealed class CaptureStream : IDisposable
     public void Stop()
     {
         if (Interlocked.Exchange(ref _stopped, 1) != 0) return;
-        if (_handle != 0) NativeMethods.StopCapture(_handle);
+        _stopConfirmed = _handle == 0 || NativeMethods.StopCapture(_handle) == 1;
         _channel.Writer.TryComplete();
     }
 
     public void Dispose()
     {
         Stop();
-        if (_self.IsAllocated) _self.Free();
+        // If native could not confirm the stream stopped, a late callback could still dereference the context,
+        // so the handle is deliberately leaked instead of freed.
+        if (_self.IsAllocated && _stopConfirmed) _self.Free();
     }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]

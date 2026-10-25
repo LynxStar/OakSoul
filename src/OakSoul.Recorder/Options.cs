@@ -20,13 +20,16 @@ public sealed class Options
     public int? Height { get; private set; }
     public int Queue { get; private set; } = 30;
 
+    /// <summary>4:2:0 encoders need even dimensions; pad by one row or column rather than resampling the capture.</summary>
+    private const string EvenPad = "-vf pad=ceil(iw/2)*2:ceil(ih/2)*2";
+
     public static readonly IReadOnlyDictionary<string, (string Args, string Extension)> EncoderPresets =
         new Dictionary<string, (string, string)>
         {
-            ["hevc"] = ("-c:v hevc_videotoolbox -q:v 65 -pix_fmt yuv420p -tag:v hvc1", "mp4"),
-            ["h264vt"] = ("-c:v h264_videotoolbox -q:v 65 -pix_fmt yuv420p", "mp4"),
+            ["hevc"] = (EvenPad + " -c:v hevc_videotoolbox -q:v 65 -pix_fmt yuv420p -tag:v hvc1", "mp4"),
+            ["h264vt"] = (EvenPad + " -c:v h264_videotoolbox -q:v 65 -pix_fmt yuv420p", "mp4"),
             ["x264"] = ("-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv444p", "mp4"),
-            ["x264-420"] = ("-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p", "mp4"),
+            ["x264-420"] = (EvenPad + " -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p", "mp4"),
             ["lossless"] = ("-c:v libx264rgb -preset veryfast -qp 0", "mkv"),
         };
 
@@ -74,12 +77,31 @@ public sealed class Options
             Console.Error.WriteLine($"error: {ex.Message}");
             return null;
         }
+        var problem = o.Validate();
+        if (problem is not null)
+        {
+            Console.Error.WriteLine($"error: {problem}");
+            return null;
+        }
         if (!o.List && o.WindowId is null && o.Title is null)
         {
             Console.Error.WriteLine("error: choose a window with --window-id, or --pid/--app plus --title (exact). Use --list to see them.");
             return null;
         }
         return o;
+    }
+
+    private string? Validate()
+    {
+        if (Fps <= 0 || Fps > 240) return "--fps must be between 1 and 240";
+        if (Seconds < 0) return "--seconds cannot be negative";
+        if (KeyframeEvery < 0) return "--keyframe-every cannot be negative";
+        if (Queue <= 0) return "--queue must be at least 1";
+        if (Width is <= 0 || Height is <= 0) return "--width and --height must be positive";
+        if ((Width is null) != (Height is null)) return "--width and --height must be given together";
+        if (FfmpegArgs is null && !EncoderPresets.ContainsKey(Encoder))
+            return $"unknown encoder preset '{Encoder}'; known: {string.Join(", ", EncoderPresets.Keys)}";
+        return null;
     }
 
     public static void PrintUsage()

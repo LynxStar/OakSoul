@@ -33,6 +33,15 @@ if (window.Width <= 0 || window.Height <= 0)
     Console.Error.WriteLine($"error: window {window.Id} reports a zero-size frame; refusing to capture it.");
     return 1;
 }
+// A window that is still being laid out can also report a transient size; wait for two consecutive listings to agree.
+for (var attempt = 0; attempt < 10; attempt++)
+{
+    ScreenCapture.PumpMainLoop(TimeSpan.FromMilliseconds(300));
+    var again = SelectWindow(options, quiet: true) ?? window;
+    var stable = again.Width == window.Width && again.Height == window.Height;
+    window = again;
+    if (stable) break;
+}
 
 var requestedWidth = options.Width ?? (int)window.Width;
 var requestedHeight = options.Height ?? (int)window.Height;
@@ -55,7 +64,18 @@ var startedUtc = DateTime.UtcNow;
 var video = new FfmpegVideoSink(videoPath, options.Fps, encoderArgs, Path.Combine(sessionDir, "ffmpeg.log"));
 var keyframes = new KeyframeWriter(sessionDir, "keyframes", options.KeyframeEvery);
 using var metadata = new MetadataWriter(Path.Combine(sessionDir, "frames.jsonl"));
-using var stream = CaptureStream.Start(window.Id, requestedWidth, requestedHeight, options.Fps, options.Queue);
+CaptureStream stream;
+try
+{
+    stream = CaptureStream.Start(window.Id, requestedWidth, requestedHeight, options.Fps, options.Queue);
+}
+catch (InvalidOperationException ex)
+{
+    Console.Error.WriteLine($"error: {ex.Message}");
+    video.Dispose();
+    return 1;
+}
+using var streamScope = stream;
 
 Exception? consumerError = null;
 var consumer = Task.Run(async () =>
@@ -120,6 +140,9 @@ var summary = new
     droppedFrames = stream.DroppedFrames,
     idleFrames = stream.IdleFrames,
     filledVideoFrames = video.FilledFrames,
+    skippedVideoFrames = video.SkippedFrames,
+    cutSeconds = video.CutSeconds,
+    ffmpegExitCode = video.ExitCode,
     keyframes = keyframes.Written,
     videoBytes,
     streamFailed = stream.Failed,
@@ -128,7 +151,7 @@ var summary = new
 File.WriteAllText(Path.Combine(sessionDir, "session.json"), JsonSerializer.Serialize(summary, new JsonSerializerOptions(MetadataWriter.JsonOptions) { WriteIndented = true }));
 
 Console.WriteLine($"done: {consumedFrames} frames in {elapsed:0.0}s ({consumedFrames / Math.Max(elapsed, 0.001):0.0} fps), " +
-                  $"dropped={stream.DroppedFrames}, idle={stream.IdleFrames}, filled={video.FilledFrames}, keyframes={keyframes.Written}, " +
+                  $"dropped={stream.DroppedFrames}, idle={stream.IdleFrames}, filled={video.FilledFrames}, skipped={video.SkippedFrames}, cut={video.CutSeconds:0.0}s, keyframes={keyframes.Written}, " +
                   $"video={videoBytes / 1e6:0.0} MB -> {videoBytes / Math.Max(elapsed, 0.001) * 3600 / 1e9:0.00} GB/hour");
 if (stream.Failed) Console.Error.WriteLine("warning: ScreenCaptureKit stopped the stream on its own (window closed?)");
 if (consumerError is not null)

@@ -16,7 +16,9 @@ Design rationale and measurements for the capture layer.
 
 **Recording strategy.** Continuous video through ffmpeg, plus sparse lossless PNG keyframes, plus per-frame JSONL metadata. The video is for replay and detector training. The PNGs are pixel-exact, for template extraction and threshold tuning. The metadata joins them.
 
-**Constant frame rate output.** ScreenCaptureKit only delivers a frame when the window changed. The video sink fills gaps by repeating the previous frame and reports the fill count.
+**Constant frame rate output.** ScreenCaptureKit only delivers a frame when the window changed. The video sink keeps a constant-rate timeline anchored at the first frame: gaps of up to two seconds are filled by repeating the previous frame, longer idle stretches are cut out of the video and reported as `cutSeconds`, and a frame that arrives ahead of the timeline is left out and reported as `skippedVideoFrames`. The per-frame metadata keeps true timestamps, so nothing is lost; the video is simply not a clock.
+
+**ffmpeg in its own process group.** .NET starts children in the parent's process group, so a terminal Ctrl-C would hit ffmpeg too and it would exit before the recorder finished writing. The shim spawns ffmpeg with `POSIX_SPAWN_SETPGROUP` instead, so only the recorder sees the signal; it stops the capture, drains the queue, closes ffmpeg's stdin and waits for it to finalize the file.
 
 ## Storage benchmark
 

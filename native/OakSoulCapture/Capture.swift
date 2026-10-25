@@ -171,8 +171,15 @@ public func oaksoul_start_capture(
         startError = e
         semaphore.signal()
     }
-    if semaphore.wait(timeout: .now() + 10) == .timedOut { return fail("startCapture timed out") }
-    if let e = startError { return fail("startCapture failed: \(e.localizedDescription)") }
+    if semaphore.wait(timeout: .now() + 10) == .timedOut {
+        stream.stopCapture { _ in }
+        queue.sync {}
+        return fail("startCapture timed out")
+    }
+    if let e = startError {
+        queue.sync {}
+        return fail("startCapture failed: \(e.localizedDescription)")
+    }
 
     sessionsLock.lock()
     let handle = nextHandle
@@ -183,17 +190,95 @@ public func oaksoul_start_capture(
 }
 
 @_cdecl("oaksoul_stop_capture")
-public func oaksoul_stop_capture(_ handle: Int64) {
+public func oaksoul_stop_capture(_ handle: Int64) -> Int32 {
     sessionsLock.lock()
     let session = sessions.removeValue(forKey: handle)
     sessionsLock.unlock()
-    guard let session = session else { return }
+    guard let session = session else { return 1 }
     let semaphore = DispatchSemaphore(value: 0)
     session.stream.stopCapture { _ in semaphore.signal() }
-    _ = semaphore.wait(timeout: .now() + 10)
+    let stopped = semaphore.wait(timeout: .now() + 10) != .timedOut
+    // Drain the sample queue so no callback can run after the caller releases its context.
+    session.queue.sync {}
+    return stopped ? 1 : 0
 }
 
 @_cdecl("oaksoul_pump_main_loop")
 public func oaksoul_pump_main_loop(_ seconds: Double) {
     _ = CFRunLoopRunInMode(CFRunLoopMode.defaultMode, seconds, false)
+}
+
+// MARK: - Child processes in their own process group
+//
+// .NET's Process class leaves children in the parent's process group, so a terminal Ctrl-C aimed at the
+// recorder also hits ffmpeg, which then stops reading and exits before the recorder can finish cleanly.
+// These two functions spawn a child with POSIX_SPAWN_SETPGROUP so terminal signals never reach it; the
+// child still exits on its own when the recorder closes its stdin.
+
+/// Spawns `argv[0]` (searched on PATH) with the given arguments, joined by newlines. Returns the pid, or a
+/// negative errno. On success `stdinFd` is the write end of the child's stdin and `stderrFd` the read end of
+/// its stderr; the caller owns both.
+@_cdecl("oaksoul_spawn_detached")
+public func oaksoul_spawn_detached(
+    _ argvJoined: UnsafePointer<CChar>,
+    _ stdinFd: UnsafeMutablePointer<Int32>,
+    _ stderrFd: UnsafeMutablePointer<Int32>
+) -> Int32 {
+    let arguments = String(cString: argvJoined).components(separatedBy: "\n")
+    guard let program = arguments.first, !program.isEmpty else { return -EINVAL }
+
+    var inPipe: [Int32] = [0, 0]
+    var errPipe: [Int32] = [0, 0]
+    guard pipe(&inPipe) == 0 else { return -errno }
+    guard pipe(&errPipe) == 0 else {
+        close(inPipe[0]); close(inPipe[1])
+        return -errno
+    }
+
+    var actions: posix_spawn_file_actions_t? = nil
+    posix_spawn_file_actions_init(&actions)
+    posix_spawn_file_actions_adddup2(&actions, inPipe[0], 0)
+    posix_spawn_file_actions_adddup2(&actions, errPipe[1], 2)
+    posix_spawn_file_actions_addinherit_np(&actions, 1)
+
+    var attributes: posix_spawnattr_t? = nil
+    posix_spawnattr_init(&attributes)
+    // SETPGROUP with pgroup 0 puts the child in a new group of its own; CLOEXEC_DEFAULT closes every
+    // descriptor the file actions do not mention, so the child does not inherit our other pipes.
+    posix_spawnattr_setflags(&attributes, Int16(truncatingIfNeeded: POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT))
+    posix_spawnattr_setpgroup(&attributes, 0)
+
+    var argv: [UnsafeMutablePointer<CChar>?] = arguments.map { strdup($0) }
+    argv.append(nil)
+    var pid: pid_t = 0
+    let rc = posix_spawnp(&pid, program, &actions, &attributes, argv, environ)
+    for pointer in argv { free(pointer) }
+    posix_spawn_file_actions_destroy(&actions)
+    posix_spawnattr_destroy(&attributes)
+    close(inPipe[0])
+    close(errPipe[1])
+    if rc != 0 {
+        close(inPipe[1]); close(errPipe[0])
+        return -rc
+    }
+    stdinFd.pointee = inPipe[1]
+    stderrFd.pointee = errPipe[0]
+    return pid
+}
+
+/// Waits for a child spawned above. Returns its exit code (128 + signal if it was killed), -1 on error, or
+/// -2 when `noHang` is nonzero and the child is still running.
+@_cdecl("oaksoul_wait_process")
+public func oaksoul_wait_process(_ pid: Int32, _ noHang: Int32) -> Int32 {
+    var status: Int32 = 0
+    while true {
+        let result = waitpid(pid, &status, noHang != 0 ? WNOHANG : 0)
+        if result == pid { break }
+        if result == 0 { return -2 }
+        if errno == EINTR { continue }
+        return -1
+    }
+    let termSignal = status & 0x7f
+    if termSignal == 0 { return (status >> 8) & 0xff }
+    return 128 + termSignal
 }
