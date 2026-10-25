@@ -156,6 +156,22 @@ dotnet run --project src/OakSoul.MapExport -- --out data/maps
 
 The archives are opened read-only in place, under the client's Wine bottle, and are never copied into the repository; the export lands in `data/maps/` (gitignored), one `<mapId>.json` per map plus `index.json`, with view bounds, minimap parameters (`centerX`, `centerY`, `mag`, size), footholds with their links, ladders and ropes, portals with targets, and life spawns. Re-run it after a client update to stay in sync. The whole client, 336 maps, exports in under half a second. Findings from the first run: this client renumbers maps (Henesys is 10001000, Ellinia 10002000, Perion 10004000), every archive is version 779 with strings masked but not keyed, the minimap bitmaps live in separate `_Canvas` archives while the numbers sit in the map image, and `--dump <id>` prints a map's raw property tree.
 
+## World model
+
+`src/OakSoul.World` turns the readers' output into world coordinates using the exported map metadata. `MapCatalog` loads `data/maps` by id or by the street and map names the HUD shows; `FootholdIndex` answers which foothold lies under a point, which one the character stands on, which ladder or rope it is on, where the foothold chain leads, and the nearest portal; `MinimapTransform` converts the own dot to world and back; `CameraModel` holds the clamping and anchor rules; `WorldTracker` combines dot, name tag and metadata per frame into the map id, world position, camera, foothold or rope, and a confidence.
+
+What the fixtures settled, with the measurements in the code comments:
+
+- **Minimap.** The HUD draws the minimap canvas at a fixed quarter size, 16 world units per pixel (4 x mag), not stretched or fitted to the panel. The visible image is the reader's `MapArea` moved one column left and two rows down, 2 wider and 5 shorter. A map narrower than the panel (which widens for a long name) is centred; a map taller than the panel allows (Perion, Ellinia, East Domain of Perion, The Forest North of Ellinia: 112 rows shown) is a window centred on the player and clamped to the image, so on those maps the dot gives no height while the window is mid-map; the tracker then places the window from the portal markers, follows the foothold chain, or holds the camera. The own dot is drawn at the floor of its 16-unit cell, 6 pixels up, so the dot alone is good to +-8 units.
+- **Camera.** It clamps to vr with the full 1366x768 frame as the view (not the 702-row world viewport). The tag's `Feet` point sits 4 pixels below the soles. Unclamped, the camera eases towards the player with a dead zone: resting feet sit around x 683 (655 to 733) and y 490, and while walking the feet run about 122 pixels ahead of centre.
+- **Map changes.** The names lag the new panel by the OCR stability gate, so the tracker treats a change in the panel size as "map unknown" until the names change.
+
+`OakSoul.Watch` loads `data/maps` (or `--maps DIR`) and adds the map id, world position, foothold or rope, and camera to each line; `--world-report` prints the validation at the end of a replay (minimap model per map scored against portal markers, foothold agreement, camera anchor and bounds, self-consistency, and the portals used at each map change):
+
+```
+dotnet run --project src/OakSoul.Watch -- --recording recordings/fx-combat --keyframes --speed 0 --world-report
+```
+
 ## Notes
 
 Design rationale, the storage benchmark and other findings are in [docs/capture-notes.md](docs/capture-notes.md).

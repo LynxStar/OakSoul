@@ -247,13 +247,15 @@ public sealed class MapNameTracker
 
     public MapNameTracker(int stableFrames = 3)
     {
-        // Expanded: a fixed-size block at a fixed offset inside the panel, so the hash ignores width wobble.
+        // Expanded: a fixed-size block at a fixed offset inside the panel, so the hash ignores width wobble, but never
+        // wider than the panel: on a narrow panel (141 wide on Rocky Road I and II) a 160-wide block reached past the
+        // right edge into the world, whose scrolling kept the hash from settling, so Rocky Road II was never read.
         // Collapsed: the bar text "Region : Map" left of the buttons.
         // The collapsed bar's width is not reliably known, so its text is read from a generous fixed span and the
         // button captions are stripped afterwards.
         _tracker = new TextRegionTracker(() => _collapsed
             ? new CaptureRect(_panel.X + 4, _panel.Y + 2, Math.Min(330, MinimapReader.SearchArea.Width - _panel.X - 4), 18)
-            : new CaptureRect(_panel.X + 46, _panel.Y + 18, 160, 44), upscale: 3) { StableFrames = stableFrames };
+            : new CaptureRect(_panel.X + 46, _panel.Y + 18, Math.Min(160, _panel.Width - 50), 44), upscale: 3) { StableFrames = stableFrames };
     }
 
     public (string Region, string Map, double Confidence)? Current { get; private set; }

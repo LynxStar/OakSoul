@@ -2,16 +2,19 @@ using System.Diagnostics;
 using OakSoul.Capture;
 using OakSoul.Vision;
 using OakSoul.Vision.Readers;
+using OakSoul.Watch;
+using OakSoul.World;
 
 // OakSoul.Watch: run the HUD readers on a live window or a recording and print values as they change.
 //   --list | --window-id N | --pid N --title "T" | --app "Name" --title "T"      live capture
 //   --recording DIR [--keyframes] [--speed X]                                      replay a recorder session
 //   --crop-top N (28 for a windowed client)   --fps N (default 30)   --seconds S (default 0 = until the end or Ctrl-C)
+//   --maps DIR (default data/maps): map metadata for world positions   --world-report: print the world-model validation at the end
 
 using OakSoul.Capture.Replay;
 
-uint? windowId = null; int? pid = null; string? app = null, title = null, recording = null, buffsPath = null;
-int cropTop = 0, fps = 30; double seconds = 0, speed = 1; var list = false; var keyframes = false;
+uint? windowId = null; int? pid = null; string? app = null, title = null, recording = null, buffsPath = null, mapsPath = null;
+int cropTop = 0, fps = 30; double seconds = 0, speed = 1; var list = false; var keyframes = false; var worldReport = false;
 for (var i = 0; i < args.Length; i++)
 {
     string Next() => i + 1 < args.Length ? args[++i] : throw new ArgumentException($"{args[i]} needs a value");
@@ -29,6 +32,8 @@ for (var i = 0; i < args.Length; i++)
         case "--keyframes": keyframes = true; break;
         case "--speed": speed = double.Parse(Next()); break;
         case "--buffs": buffsPath = Next(); break;
+        case "--maps": mapsPath = Next(); break;
+        case "--world-report": worldReport = true; break;
         default: Console.Error.WriteLine($"unknown option {args[i]}"); return 2;
     }
 }
@@ -79,6 +84,11 @@ var buffReader = new BuffReader(layout);
 buffsPath ??= Path.Combine(Directory.GetCurrentDirectory(), "recordings", "known-buffs.json");
 if (File.Exists(buffsPath)) Console.WriteLine($"buffs    {buffReader.Load(buffsPath)} known icons from {buffsPath}");
 NameTagLocator? tagLocator = null;
+mapsPath ??= Path.Combine(Directory.GetCurrentDirectory(), "data", "maps");
+MapCatalog? catalog = File.Exists(Path.Combine(mapsPath, "index.json")) ? new MapCatalog(mapsPath) : null;
+Console.WriteLine(catalog is null ? $"maps     none at {mapsPath} (run OakSoul.MapExport --out data/maps); world positions off" : $"maps     {catalog.Count} maps from {mapsPath}");
+var world = catalog is null ? null : new WorldTracker(catalog);
+var report = worldReport && world is not null ? new WorldReport() : null;
 
 string Stamp(Frame frame) => source.NeedsMainLoop ? DateTime.Now.ToString("HH:mm:ss.fff") : $"t={TimeSpan.FromSeconds(frame.Pts):m\\:ss}  ";
 FrameGeometry? geometry = null;
@@ -110,13 +120,28 @@ var consumer = Task.Run(async () =>
             var cells = quickslot.Read(geometry, frame.Pixels);
             foreach (var idx in quickslot.CountChanges(cells)) Console.WriteLine($"{Stamp(frame)}  quickslot {cells[idx].Key} count changed");
             var buffs = buffReader.Read(geometry, frame.Pixels);
+            WorldObservation? observation = null;
+            WorldState? place = null;
+            if (world is not null)
+            {
+                observation = new WorldObservation(tracker.Current?.Region, tracker.Current?.Map,
+                    minimap.Valid && !minimap.Collapsed ? new PixelRect(minimap.MapArea.X, minimap.MapArea.Y, minimap.MapArea.Width, minimap.MapArea.Height) : null,
+                    minimap.SelfInMap is { } self ? new PointD(self.X, self.Y) : null,
+                    tag is { } hit ? new PointD(hit.Feet.X, hit.Feet.Y) : null,
+                    minimap.Dots.Where(d => d.Kind == MinimapDotKind.Portal).Select(d => new MinimapMarker(new PointD(d.X - minimap.MapArea.X, d.Y - minimap.MapArea.Y), d.Pixels)).ToList(),
+                    minimap.Collapsed, frame.Pts);
+                place = world.Update(observation);
+                report?.Add(frame.Sequence, observation, place);
+            }
             var state = new State(identity.Current?.Level, identity.Current?.Job, identity.Current?.Name, status.HpValue, status.MpValue, status.ExpValue,
                 tracker.Current is { } n ? $"{n.Region} / {n.Map}" : null,
                 minimap.SelfInMap is { } s ? ((int)Math.Round(s.X), (int)Math.Round(s.Y)) : null,
                 minimap.Valid && !minimap.Collapsed ? minimap.Players : null, minimap.Collapsed,
                 tag is { } t ? ((int)Math.Round(t.Feet.X), (int)Math.Round(t.Feet.Y)) : null,
                 string.Concat(cells.Select(c => c.Occupied ? c.Key : '.')),
-                string.Join("+", buffs.Select(b => b.Name + (b.Faded ? "~" : ""))));
+                string.Join("+", buffs.Select(b => b.Name + (b.Faded ? "~" : ""))),
+                place?.MapId, place?.Position is { } wp ? ((int)Math.Round(wp.X), (int)Math.Round(wp.Y)) : null, place?.Support,
+                place?.Camera is { } cam ? ((int)Math.Round(cam.X), (int)Math.Round(cam.Y)) : null);
             readMs += sw.Elapsed.TotalMilliseconds;
             frames++;
             if (state != last)
@@ -144,10 +169,12 @@ capture?.Stop();
 cancellation.Cancel();
 try { await consumer; } catch (OperationCanceledException) { }
 Console.WriteLine($"done: {frames} frames in {started.Elapsed.TotalSeconds:0.0}s, read {readMs / Math.Max(frames, 1):0.0} ms/frame");
+if (report is not null && catalog is not null) report.Print(Console.Out, catalog);
 return 0;
 
 /// <summary>Everything the watcher reports; a change in any field prints a line.</summary>
-sealed record State(int? Level, string? Job, string? Name, (long Current, long Maximum)? Hp, (long Current, long Maximum)? Mp, (long Total, double Percent)? Exp, string? Map, (int X, int Y)? Position, int? Players, bool Collapsed, (int X, int Y)? Feet, string Slots, string Buffs)
+sealed record State(int? Level, string? Job, string? Name, (long Current, long Maximum)? Hp, (long Current, long Maximum)? Mp, (long Total, double Percent)? Exp, string? Map, (int X, int Y)? Position, int? Players, bool Collapsed, (int X, int Y)? Feet, string Slots, string Buffs,
+    int? MapId = null, (int X, int Y)? World = null, string? Support = null, (int X, int Y)? Camera = null)
 {
     public string Describe(State? previous)
     {
@@ -158,6 +185,9 @@ sealed record State(int? Level, string? Job, string? Name, (long Current, long M
         var pos = Collapsed ? "closed" : Position is { } p ? $"{p.X},{p.Y}" : "?";
         var who = $"Lv{Mark(Level, previous?.Level)}{Level?.ToString() ?? "?",-4}{Mark(Job, previous?.Job)}{Job ?? "?",-22}{Mark(Name, previous?.Name)}{Name ?? "?",-12}";
         var feet = Feet is { } f ? $"{f.X},{f.Y}" : "?";
-        return $"{who} HP{Mark(Hp, previous?.Hp)}{hp,-16} MP{Mark(Mp, previous?.Mp)}{mp,-10} EXP{Mark(Exp, previous?.Exp)}{exp,-16} map{Mark(Map, previous?.Map)}{Map ?? "?",-28} pos{Mark(Position, previous?.Position)}{pos,-8} players{Mark(Players, previous?.Players)}{Players?.ToString() ?? "?",-3} feet{Mark(Feet, previous?.Feet)}{feet,-9} slots{Mark(Slots, previous?.Slots)}{Slots} buffs{Mark(Buffs, previous?.Buffs)}{Buffs}";
+        var worldPos = World is { } w ? $"{w.X},{w.Y}" : "?";
+        var camera = Camera is { } c ? $"{c.X},{c.Y}" : "?";
+        var place = MapId is null && World is null ? "" : $" id{Mark(MapId, previous?.MapId)}{MapId?.ToString() ?? "?",-9} world{Mark(World, previous?.World)}{worldPos,-10} on{Mark(Support, previous?.Support)}{Support ?? "?",-10} cam{Mark(Camera, previous?.Camera)}{camera,-10}";
+        return $"{who} HP{Mark(Hp, previous?.Hp)}{hp,-16} MP{Mark(Mp, previous?.Mp)}{mp,-10} EXP{Mark(Exp, previous?.Exp)}{exp,-16} map{Mark(Map, previous?.Map)}{Map ?? "?",-28} pos{Mark(Position, previous?.Position)}{pos,-8} players{Mark(Players, previous?.Players)}{Players?.ToString() ?? "?",-3} feet{Mark(Feet, previous?.Feet)}{feet,-9} slots{Mark(Slots, previous?.Slots)}{Slots} buffs{Mark(Buffs, previous?.Buffs)}{Buffs}{place}";
     }
 }

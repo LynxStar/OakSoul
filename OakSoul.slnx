@@ -5,6 +5,7 @@
     <Project Path="src/OakSoul.Recorder/OakSoul.Recorder.csproj" />
     <Project Path="src/OakSoul.Vision/OakSoul.Vision.csproj" />
     <Project Path="src/OakSoul.Watch/OakSoul.Watch.csproj" />
+    <Project Path="src/OakSoul.World/OakSoul.World.csproj" />
     <Project Path="src/OakSoul.Wz/OakSoul.Wz.csproj" />
   </Folder>
 </Solution>
