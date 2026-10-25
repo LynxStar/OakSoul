@@ -145,6 +145,17 @@ dotnet run --project src/OakSoul.Watch -- --recording recordings/<session> --key
 
 Recordings under `recordings/` (gitignored) are the test fixtures. The first multi-map one, `fx-maps`, is a 197-second walk from Perion to Ellinia with a keyframe every second: 189 pixel-exact frames across ten maps. Replayed through the watcher it yields a complete, correctly spelled map timeline, stable per-map minimap panel sizes (the client resizes the panel per map and sometimes within one), the collapsed-minimap state, and unknown readings only on map-transition frames. Each new fixture has found something: the hazy Perion sky defeating the old panel-bottom scan, the collapsed minimap, roman numerals read as "IIl", and the bold W in "Wizard".
 
+## Map metadata from the client
+
+`src/OakSoul.Wz` is a read-only reader for the client's WZ archives (the PKG1 format: header, version hash, encrypted offsets, property trees), and `src/OakSoul.MapExport` uses it to export every map's metadata to JSON:
+
+```
+dotnet run --project src/OakSoul.MapExport -- --list
+dotnet run --project src/OakSoul.MapExport -- --out data/maps
+```
+
+The archives are opened read-only in place, under the client's Wine bottle, and are never copied into the repository; the export lands in `data/maps/` (gitignored), one `<mapId>.json` per map plus `index.json`, with view bounds, minimap parameters (`centerX`, `centerY`, `mag`, size), footholds with their links, ladders and ropes, portals with targets, and life spawns. Re-run it after a client update to stay in sync. The whole client, 336 maps, exports in under half a second. Findings from the first run: this client renumbers maps (Henesys is 10001000, Ellinia 10002000, Perion 10004000), every archive is version 779 with strings masked but not keyed, the minimap bitmaps live in separate `_Canvas` archives while the numbers sit in the map image, and `--dump <id>` prints a map's raw property tree.
+
 ## Notes
 
 Design rationale, the storage benchmark and other findings are in [docs/capture-notes.md](docs/capture-notes.md).

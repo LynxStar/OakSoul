@@ -4,3 +4,4 @@ native/out/
 recordings/
 *.user
 .DS_Store
+data/
