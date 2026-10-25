@@ -15,15 +15,15 @@ public sealed record MinimapDot(double X, double Y, int Pixels, MinimapDotKind K
 /// player's own dot, and every other marker. <see cref="SelfInMap"/> is the own dot relative to the map image,
 /// which is what later converts to world coordinates through the server's minimap metadata.
 /// </summary>
-public sealed record MinimapReading(CaptureRect Panel, CaptureRect MapArea, MinimapDot? Self, IReadOnlyList<MinimapDot> Dots, bool Valid)
+public sealed record MinimapReading(CaptureRect Panel, CaptureRect MapArea, MinimapDot? Self, IReadOnlyList<MinimapDot> Dots, bool Valid, bool Collapsed = false)
 {
     public (double X, double Y)? SelfInMap => Self is { } s ? (s.X - MapArea.X, s.Y - MapArea.Y) : null;
     public int Players => Dots.Count(d => d.Kind == MinimapDotKind.Player);
     public int Portals => Dots.Count(d => d.Kind == MinimapDotKind.Portal);
 
-    public override string ToString() => Valid
-        ? $"panel {Panel} map {MapArea} self {(SelfInMap is { } p ? $"{p.X:0.#},{p.Y:0.#}" : "none")} players {Players} portals {Portals}"
-        : "minimap not found";
+    public override string ToString() => !Valid ? "minimap not found" : Collapsed ? $"collapsed bar {Panel}"
+        : $"panel {Panel} map {MapArea} self {(SelfInMap is { } p ? $"{p.X:0.#},{p.Y:0.#}" : "none")} players {Players} portals {Portals}"
+;
 }
 
 /// <summary>
@@ -43,6 +43,7 @@ public static class MinimapReader
     private const int WorldButtonToEdge = 7;    // from the WORLD button's last orange column to the panel's right edge
     private const int MapInsetLeft = 6, MapInsetRight = 6, MapInsetTop = 68, MapInsetBottom = 11;
     private const int MinDotPixels = 6, MaxDotPixels = 160;
+    private const int CollapsedBarHeight = 20;
 
     public static MinimapReading Read(FrameGeometry geometry, ReadOnlySpan<byte> frame)
     {
@@ -84,7 +85,16 @@ public static class MinimapReader
             if (IsBorderBlue(px, w, LeftBorderColumn, y) || IsLightGrey(px, w, LeftBorderColumn, y)) { bottom = y; misses = 0; }
             else if (++misses > 2) break; // a resampled frame can blur one or two rows at the bottom corner
         }
-        if (right < PanelLeft + 60 || bottom < PanelTop + MapInsetTop + MapInsetBottom + 10) return Invalid();
+        if (right < PanelLeft + 60) return Invalid();
+
+        // Collapsed: only the title bar remains, so where the name block's blue background should be there is world.
+        if (!IsNameBlockBlue(px, w, PanelLeft + 100, PanelTop + 38) && !IsNameBlockBlue(px, w, PanelLeft + 60, PanelTop + 44))
+            return new MinimapReading(new CaptureRect(PanelLeft, PanelTop, right - PanelLeft + 1, CollapsedBarHeight), default, null, [], true, Collapsed: true);
+
+        // Bottom edge: the panel ends with a blue-grey bar, a light line and a dark shadow line, all across its
+        // width. Map art under the panel, sky or cliff, never has that three-row signature.
+        bottom = FindBottom(px, w, right, bottom);
+        if (bottom < PanelTop + MapInsetTop + MapInsetBottom + 10) return Invalid();
 
         var panel = new CaptureRect(PanelLeft, PanelTop, right - PanelLeft + 1, bottom - PanelTop + 1);
         var map = new CaptureRect(PanelLeft + MapInsetLeft, PanelTop + MapInsetTop,
@@ -115,6 +125,33 @@ public static class MinimapReader
     }
 
     private static MinimapReading Invalid() => new(default, default, null, [], false);
+
+    /// <summary>The lowest row that is a light line over a dark shadow line, under a blue-grey bar, across the panel.</summary>
+    private static int FindBottom(byte[] px, int w, int right, int fallback)
+    {
+        int x0 = PanelLeft + 6, x1 = right - 6, span = x1 - x0 + 1;
+        for (var y = PanelTop + MapInsetTop + 20; y < SearchArea.Height - 1; y++)
+        {
+            int light = 0, dark = 0, bar = 0;
+            for (var x = x0; x <= x1; x++)
+            {
+                var here = Luma(px, w, x, y);
+                if (here > 180) light++;
+                // The shadow line is alpha-blended, so over a bright sky it is grey, not black: test the drop, not the level.
+                if (here - Luma(px, w, x, y + 1) > 60) dark++;
+                if (IsBorderBlue(px, w, x, y - 3) || IsNameBlockBlue(px, w, x, y - 3)) bar++;
+            }
+            if (light > span * 0.7 && dark > span * 0.7 && bar > span * 0.5) return y;
+        }
+        return fallback;
+    }
+
+    /// <summary>The name block and bottom bar, light blue-grey around (157,171,196) to (207,220,223).</summary>
+    private static bool IsNameBlockBlue(byte[] px, int w, int x, int y)
+    {
+        var (r, g, b) = Rgb(px, w, x, y);
+        return b - r is >= 10 and <= 60 && g >= r && g <= b + 4 && r is >= 110 and <= 215;
+    }
 
     private static List<MinimapDot> FindDots(byte[] px, int w, CaptureRect map)
     {
@@ -206,20 +243,42 @@ public sealed class MapNameTracker
     private readonly TextRegionTracker _tracker;
     private CaptureRect _panel;
 
-    public MapNameTracker()
+    private bool _collapsed;
+
+    public MapNameTracker(int stableFrames = 3)
     {
-        // A fixed-size block at a fixed offset inside the panel, so the hash ignores panel-width wobble.
-        _tracker = new TextRegionTracker(() => new CaptureRect(_panel.X + 46, _panel.Y + 18, 160, 44), upscale: 3);
+        // Expanded: a fixed-size block at a fixed offset inside the panel, so the hash ignores width wobble.
+        // Collapsed: the bar text "Region : Map" left of the buttons.
+        // The collapsed bar's width is not reliably known, so its text is read from a generous fixed span and the
+        // button captions are stripped afterwards.
+        _tracker = new TextRegionTracker(() => _collapsed
+            ? new CaptureRect(_panel.X + 4, _panel.Y + 2, Math.Min(330, MinimapReader.SearchArea.Width - _panel.X - 4), 18)
+            : new CaptureRect(_panel.X + 46, _panel.Y + 18, 160, 44), upscale: 3) { StableFrames = stableFrames };
     }
 
     public (string Region, string Map, double Confidence)? Current { get; private set; }
 
     /// <summary>Returns true when the names were re-read this frame.</summary>
-    public bool Update(FrameGeometry geometry, ReadOnlySpan<byte> frame, CaptureRect panel)
+    public bool Update(FrameGeometry geometry, ReadOnlySpan<byte> frame, CaptureRect panel) => Update(geometry, frame, panel, collapsed: false);
+
+    public bool Update(FrameGeometry geometry, ReadOnlySpan<byte> frame, MinimapReading minimap) => Update(geometry, frame, minimap.Panel, minimap.Collapsed);
+
+    public bool Update(FrameGeometry geometry, ReadOnlySpan<byte> frame, CaptureRect panel, bool collapsed)
     {
         _panel = panel;
+        _collapsed = collapsed;
         if (!_tracker.Update(geometry, frame)) return false;
-        var lines = _tracker.Lines!;
+        var lines = _tracker.Lines!.Where(Plausible).ToList();
+        if (collapsed)
+        {
+            var text = string.Join(" ", lines.Select(l => l.Text.Trim()));
+            text = System.Text.RegularExpressions.Regex.Replace(text, @"\s*\bWORLD\b.*$", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            var colon = text.IndexOf(':');
+            Current = lines.Count == 0 ? null
+                : colon < 0 ? ("", Normalize(text), lines.Min(l => l.Confidence))
+                : (Normalize(text[..colon]), Normalize(text[(colon + 1)..]), lines.Min(l => l.Confidence));
+            return true;
+        }
         Current = lines.Count switch
         {
             0 => null,
@@ -229,9 +288,13 @@ public sealed class MapNameTracker
         return true;
     }
 
+    /// <summary>A line worth keeping: confident, at least two letters, and not the panel's own "mini map" caption.</summary>
+    private static bool Plausible(TextLine line) =>
+        line.Confidence >= 0.5 && line.Text.Count(char.IsLetter) >= 2 && !line.Text.Contains("mini map", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>
-    /// Map names end in roman numerals, which OCR confuses with lower-case L and the digit one ("Rocky Road IIl").
-    /// A trailing token made only of I, V, X, l, 1 and | is rewritten as a numeral.
+    /// Map names end in roman numerals, which OCR confuses with lower-case L, the digit one and T ("Rocky Road IIl",
+    /// "Rocky Road IT"). A trailing token made only of I, V, X, l, 1, | and T is rewritten as a numeral.
     /// </summary>
     public static string Normalize(string text)
     {
@@ -239,7 +302,7 @@ public sealed class MapNameTracker
         var space = trimmed.LastIndexOf(' ');
         if (space < 0) return trimmed;
         var last = trimmed[(space + 1)..];
-        if (last.Length == 0 || !last.All(c => "IVXl1|".Contains(c)) || !last.Any(c => "IVXl1|".Contains(c))) return trimmed;
-        return trimmed[..(space + 1)] + last.Replace('l', 'I').Replace('1', 'I').Replace('|', 'I');
+        if (last.Length == 0 || !last.All(c => "IVXl1|T".Contains(c)) || !last.Any(c => "IVXl1|".Contains(c))) return trimmed;
+        return trimmed[..(space + 1)] + last.Replace('l', 'I').Replace('1', 'I').Replace('|', 'I').Replace('T', 'I');
     }
 }

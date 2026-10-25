@@ -18,12 +18,12 @@ public sealed class IdentityReader
     private readonly TextRegionTracker _level;
     private readonly TextRegionTracker _jobName;
 
-    public IdentityReader(HudLayout layout)
+    public IdentityReader(HudLayout layout, int stableFrames = 3)
     {
         // Vision needs the "LV." label as context and a large upscale to read the small badge digits; measured on
         // the real client, 8x reads both lines at full confidence where 3x to 6x read nothing or one digit.
-        _level = new TextRegionTracker(layout["status.level"].Rect, upscale: 8);
-        _jobName = new TextRegionTracker(layout["status.class_name"].Rect, upscale: 8);
+        _level = new TextRegionTracker(layout["status.level"].Rect, upscale: 8) { StableFrames = stableFrames };
+        _jobName = new TextRegionTracker(layout["status.class_name"].Rect, upscale: 8) { StableFrames = stableFrames };
     }
 
     public IdentityReading? Current { get; private set; }

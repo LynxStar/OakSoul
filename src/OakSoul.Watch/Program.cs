@@ -66,11 +66,13 @@ source = new CaptureFrameSource(CaptureStream.Start(window.Id, 0, 0, fps, 8, cro
 Console.WriteLine($"source   {source.Description}");
 
 var layout = HudLayout.Native1366x768;
-var tracker = new MapNameTracker();
+// Keyframe replay is one frame per second, so a stability gate of one frame; live and video keep three.
+var stableFrames = source is RecordingFrameSource { Fps: <= 1 } ? 2 : 3;
+var tracker = new MapNameTracker(stableFrames);
 using var cancellation = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cancellation.Cancel(); };
 using var frameSource = source;
-var identity = new IdentityReader(layout);
+var identity = new IdentityReader(layout, stableFrames);
 
 FrameGeometry? geometry = null;
 State? last = null;
@@ -92,12 +94,12 @@ var consumer = Task.Run(async () =>
             }
             var status = StatusReader.Read(geometry, frame.Pixels);
             var minimap = MinimapReader.Read(geometry, frame.Pixels);
-            if (minimap.Valid) tracker.Update(geometry, frame.Pixels, minimap.Panel);
+            if (minimap.Valid) tracker.Update(geometry, frame.Pixels, minimap);
             identity.Update(geometry, frame.Pixels);
             var state = new State(identity.Current?.Level, identity.Current?.Job, identity.Current?.Name, status.HpValue, status.MpValue, status.ExpValue,
                 tracker.Current is { } n ? $"{n.Region} / {n.Map}" : null,
                 minimap.SelfInMap is { } s ? ((int)Math.Round(s.X), (int)Math.Round(s.Y)) : null,
-                minimap.Valid ? minimap.Players : null);
+                minimap.Valid && !minimap.Collapsed ? minimap.Players : null, minimap.Collapsed);
             readMs += sw.Elapsed.TotalMilliseconds;
             frames++;
             if (state != last)
@@ -129,7 +131,7 @@ Console.WriteLine($"done: {frames} frames in {started.Elapsed.TotalSeconds:0.0}s
 return 0;
 
 /// <summary>Everything the watcher reports; a change in any field prints a line.</summary>
-sealed record State(int? Level, string? Job, string? Name, (long Current, long Maximum)? Hp, (long Current, long Maximum)? Mp, (long Total, double Percent)? Exp, string? Map, (int X, int Y)? Position, int? Players)
+sealed record State(int? Level, string? Job, string? Name, (long Current, long Maximum)? Hp, (long Current, long Maximum)? Mp, (long Total, double Percent)? Exp, string? Map, (int X, int Y)? Position, int? Players, bool Collapsed)
 {
     public string Describe(State? previous)
     {
@@ -137,7 +139,7 @@ sealed record State(int? Level, string? Job, string? Name, (long Current, long M
         var hp = Hp is { } h ? $"{h.Current}/{h.Maximum} ({100.0 * h.Current / h.Maximum:0}%)" : "?";
         var mp = Mp is { } m ? $"{m.Current}/{m.Maximum}" : "?";
         var exp = Exp is { } e ? $"{e.Total:N0} {e.Percent:0.00}%" : "?";
-        var pos = Position is { } p ? $"{p.X},{p.Y}" : "?";
+        var pos = Collapsed ? "closed" : Position is { } p ? $"{p.X},{p.Y}" : "?";
         var who = $"Lv{Mark(Level, previous?.Level)}{Level?.ToString() ?? "?",-4}{Mark(Job, previous?.Job)}{Job ?? "?",-22}{Mark(Name, previous?.Name)}{Name ?? "?",-12}";
         return $"{who} HP{Mark(Hp, previous?.Hp)}{hp,-16} MP{Mark(Mp, previous?.Mp)}{mp,-10} EXP{Mark(Exp, previous?.Exp)}{exp,-16} map{Mark(Map, previous?.Map)}{Map ?? "?",-28} pos{Mark(Position, previous?.Position)}{pos,-8} players{Mark(Players, previous?.Players)}{Players?.ToString() ?? "?"}";
     }
