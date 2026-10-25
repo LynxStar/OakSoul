@@ -133,6 +133,10 @@ dotnet run --project src/OakSoul.Watch -- --recording recordings/<session> --key
 
 `--keyframes` replays the sparse PNG keyframes, which are pixel-exact; without it the video is replayed frame by frame, which is only as faithful as its preset. `--speed 1` paces playback at the recorded rate, `0` runs as fast as frames decode. `--crop-top` applies to replay exactly as it would have at capture time, for sessions recorded with the title bar. Under the hood every consumer takes an `IFrameSource`, with `CaptureFrameSource` for live windows and `RecordingFrameSource` for sessions.
 
+### Fixture recordings
+
+Recordings under `recordings/` (gitignored) are the test fixtures. The first multi-map one, `fx-maps`, is a 197-second walk from Perion to Ellinia with a keyframe every second: 189 pixel-exact frames across ten maps. Replayed through the watcher it yields a complete, correctly spelled map timeline, stable per-map minimap panel sizes (the client resizes the panel per map and sometimes within one), the collapsed-minimap state, and unknown readings only on map-transition frames. Each new fixture has found something: the hazy Perion sky defeating the old panel-bottom scan, the collapsed minimap, roman numerals read as "IIl", and the bold W in "Wizard".
+
 ## Notes
 
 Design rationale, the storage benchmark and other findings are in [docs/capture-notes.md](docs/capture-notes.md).
