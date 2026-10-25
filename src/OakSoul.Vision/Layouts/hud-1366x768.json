@@ -16,7 +16,7 @@
     {"id": 13, "name": "quickslot",            "kind": "fixed",       "rect": [935, 624, 146, 78], "read": "2 rows x 4 cells, 35 px pitch: skill icon, cooldown shade, item count digits"},
     {"id": 14, "name": "buffs.row1",           "kind": "fixed",       "rect": [1050, 4, 312, 32],  "read": "active buff icons, 32 px, anchored at the right edge (first at x 1330) and growing leftward; icon pitch still to measure with two or more buffs"},
     {"id": 15, "name": "buffs.row2",           "kind": "provisional", "rect": [1050, 38, 312, 32], "read": "second buff row expected when the first fills; verify"},
-    {"id": 16, "name": "system_notices",       "kind": "fixed",       "rect": [1140, 520, 226, 110], "read": "right-aligned 'You received EXP' style lines, confirmed on a fullscreen frame; OCR optional, mostly ignore"},
+    {"id": 16, "name": "exp_loot_log",         "kind": "fixed",       "rect": [1140, 520, 226, 110], "read": "right-aligned log of EXP gained and items picked up; OCR to attribute exp and loot per kill"},
     {"id": 17, "name": "chat.history",         "kind": "provisional", "rect": [290, 560, 792, 140], "read": "expanded chat log; collapsed in this frame; ignore unless party chat is needed"},
     {"id": 18, "name": "own_character",        "kind": "dynamic",     "rect": [728, 578, 70, 72],  "read": "found each frame by own name tag (white text on dark box); feet = tag top minus a fixed offset; camera-to-world anchor"},
     {"id": 19, "name": "world.viewport",       "kind": "fixed",       "rect": [0, 0, 1366, 702],   "read": "detectors for mobs, drops, players, ladders run here with regions 1, 13, 14 masked out"}

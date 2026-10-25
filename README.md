@@ -101,6 +101,14 @@ Screen Recording permission is granted per responsible application. When running
 
 `FrameGeometry` maps that native layout onto any captured frame. The client aspect-fits its render into the window, so a frame is the native image at one uniform scale, centered, with black bars on the spare axis; `FrameGeometry.Detect` computes the scale and offset from the frame size, checks that the predicted bars are black (an uncropped title bar fails this check), maps rectangles and points both ways, and `ExtractNative` resamples a region back to its native size so readers are written once for native pixels. Verified on a fullscreen 1728x1116 recording: content 1728x972 at offset 72, scale 1.265.
 
+### Readers
+
+`StatusReader.Read(geometry, frame)` returns HP, MP and EXP from one frame: the exact numbers from the text row, and each bar's fill ratio as an independent cross-check.
+
+- **Numbers** come from matching binarized glyphs against the client's own bitmap font, embedded as `Fonts/status-font.json` and learned from frames whose values were known (`GlyphFont.Learn`). Label letters are skipped because they fill the top of the text band where digits leave two empty rows; the green brackets split the EXP total from its percentage; touching digits are split at their thinnest column. On native frames every glyph matches at distance zero.
+- **Bars** are measured from their highlight line and the run of saturated columns, so they survive small layout shifts. They read about one percent high on HP; the numbers are the authoritative value.
+- **Scaled frames** are best effort: the reader tries three ink thresholds and keeps the reading with the fewest unknown glyphs. On the 1.265x fullscreen recording HP read exactly on every keyframe, MP on three of five and EXP on four of five; the misses are blurred glyphs reported as `?`, never wrong digits.
+
 ## Notes
 
 Design rationale, the storage benchmark and other findings are in [docs/capture-notes.md](docs/capture-notes.md).

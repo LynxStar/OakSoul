@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Layouts/*.json" LogicalName="%(Filename)%(Extension)" />
+    <EmbeddedResource Include="Fonts/*.json" LogicalName="%(Filename)%(Extension)" />
   </ItemGroup>
 
   <ItemGroup>
