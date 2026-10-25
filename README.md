@@ -67,13 +67,13 @@ A windowed CrossOver client carries a standard 28 point macOS title bar, so `--c
 
 | Preset | ffmpeg arguments | Container |
 |---|---|---|
-| `hevc` (default) | `-c:v hevc_videotoolbox -q:v 65 -pix_fmt yuv420p -tag:v hvc1` | mp4 |
-| `h264vt` | `-c:v h264_videotoolbox -q:v 65 -pix_fmt yuv420p` | mp4 |
-| `x264` | `-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv444p` | mp4 |
+| `x264` (default) | `-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv444p` | mp4 |
+| `hevc` | `-vf pad=... -c:v hevc_videotoolbox -q:v 65 -pix_fmt yuv420p -tag:v hvc1` | mp4 |
+| `h264vt` | `-vf pad=... -c:v h264_videotoolbox -q:v 65 -pix_fmt yuv420p` | mp4 |
 | `x264-420` | `-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p` | mp4 |
 | `lossless` | `-c:v libx264rgb -preset veryfast -qp 0` | mkv |
 
-With `--ffmpeg-args` the container defaults to mkv unless `--ext` is given. For vision datasets prefer `x264` (4:4:4); for continuous recording the default `hevc` uses the hardware encoder. Sizes are in [docs/capture-notes.md](docs/capture-notes.md).
+With `--ffmpeg-args` the container defaults to mkv unless `--ext` is given. The default is `x264` because recordings double as test fixtures: re-encoding the pixel-exact keyframes with each preset and running the readers on the decoded frames, `x264` at CRF 18 read all eleven frames exactly (glyph distance 2) while the hardware `hevc` preset at q65 read HP on five, MP on six and EXP on none, so use `hevc` only for long archival recordings where exact reads do not matter. Sizes are in [docs/capture-notes.md](docs/capture-notes.md).
 
 ## Session folder
 
@@ -122,6 +122,16 @@ dotnet run --project src/OakSoul.Watch -- --pid 1234 --title "MapleStory" --crop
 ```
 
 It takes the same window selection as the recorder plus `--crop-top`, `--fps` and `--seconds`. Each line shows HP with its percentage, MP, EXP total and percent, region and map name, your minimap position and the number of other players on the minimap, with a `*` after each field that changed. Every ten seconds a heartbeat reports frames, frame rate, reader time per frame and dropped frames; the readers cost well under a millisecond per native frame. If the frame does not match the native layout, for example a windowed client captured with its title bar, it says so and suggests `--crop-top 28`.
+
+### Replaying recordings
+
+The watcher takes a recorder session folder instead of a window, so the whole pipeline after capture runs on real game samples with the game closed:
+
+```
+dotnet run --project src/OakSoul.Watch -- --recording recordings/<session> --keyframes --crop-top 28 --speed 0
+```
+
+`--keyframes` replays the sparse PNG keyframes, which are pixel-exact; without it the video is replayed frame by frame, which is only as faithful as its preset. `--speed 1` paces playback at the recorded rate, `0` runs as fast as frames decode. `--crop-top` applies to replay exactly as it would have at capture time, for sessions recorded with the title bar. Under the hood every consumer takes an `IFrameSource`, with `CaptureFrameSource` for live windows and `RecordingFrameSource` for sessions.
 
 ## Notes
 

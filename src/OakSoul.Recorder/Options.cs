@@ -15,7 +15,7 @@ public sealed class Options
     public string OutputRoot { get; private set; } = "recordings";
     public string? SessionName { get; private set; }
     public double KeyframeEvery { get; private set; } = 2.0;
-    public string Encoder { get; private set; } = "hevc";
+    public string Encoder { get; private set; } = "x264";
     public string? FfmpegArgs { get; private set; }
     public string? Extension { get; private set; }
     public int? Width { get; private set; }
@@ -134,7 +134,7 @@ public sealed class Options
               --out DIR                  root for session folders (default recordings)
               --name NAME                session folder name (default timestamp + window title)
               --keyframe-every S         seconds between lossless PNG keyframes (default 2, 0 = none)
-              --encoder P                hevc (default), h264vt, x264, x264-420, lossless
+              --encoder P                x264 (default, readers stay exact), x264-420, hevc, h264vt, lossless
               --ffmpeg-args "..."        raw encoder arguments instead of a preset (use with --ext)
               --width N --height N       capture size in pixels (default: window size in points = 1x)
               --queue N                  frames buffered between capture and encoder (default 30)

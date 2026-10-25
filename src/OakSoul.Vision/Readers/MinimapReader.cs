@@ -199,46 +199,33 @@ public static class MinimapReader
 }
 
 /// <summary>
-/// Runs map-name OCR only when the name block's pixels change, which happens on map change and almost never
-/// otherwise, so per-frame cost is a hash of a few kilobytes.
+/// Region and map names from the minimap panel, read through hash-gated OCR so the cost is paid on map change.
 /// </summary>
 public sealed class MapNameTracker
 {
-    private ulong _lastHash, _candidateHash;
-    private int _candidateFrames;
-    private (string Region, string Map, double Confidence)? _last;
+    private readonly TextRegionTracker _tracker;
+    private CaptureRect _panel;
 
-    /// <summary>Frames the name block must hold a new appearance before it is read; rides out transitions and noise.</summary>
-    public int StableFrames { get; init; } = 3;
-
-    public (string Region, string Map, double Confidence)? Current => _last;
-
-    /// <summary>Returns the current names, re-reading them if the name block changed. True when a new read happened.</summary>
-    public bool Update(FrameGeometry geometry, ReadOnlySpan<byte> frame, CaptureRect panel)
+    public MapNameTracker()
     {
-        // A fixed-size block at a fixed offset, coarsely quantised, so a one-pixel wobble in the detected panel
-        // width or resampling noise does not look like a change.
-        var block = new CaptureRect(panel.X + 46, panel.Y + 18, 160, 44);
-        var px = geometry.ExtractNative(frame, new HudRegion(0, "minimap.name_block", RegionKind.Fixed, block, ""));
-        var hash = Hash(px);
-        if (hash == _lastHash && _last is not null) return false;
-        if (hash == _candidateHash) _candidateFrames++;
-        else { _candidateHash = hash; _candidateFrames = 1; }
-        if (_candidateFrames < StableFrames) return false;
-        _lastHash = hash;
-        _last = MinimapReader.ReadMapName(geometry, frame, panel);
-        return true;
+        // A fixed-size block at a fixed offset inside the panel, so the hash ignores panel-width wobble.
+        _tracker = new TextRegionTracker(() => new CaptureRect(_panel.X + 46, _panel.Y + 18, 160, 44), upscale: 3);
     }
 
-    private static ulong Hash(byte[] bgra)
+    public (string Region, string Map, double Confidence)? Current { get; private set; }
+
+    /// <summary>Returns true when the names were re-read this frame.</summary>
+    public bool Update(FrameGeometry geometry, ReadOnlySpan<byte> frame, CaptureRect panel)
     {
-        var h = 14695981039346656037UL;
-        for (var o = 0; o + 3 < bgra.Length; o += 4)
+        _panel = panel;
+        if (!_tracker.Update(geometry, frame)) return false;
+        var lines = _tracker.Lines!;
+        Current = lines.Count switch
         {
-            var luma = (bgra[o] + bgra[o + 1] * 2 + bgra[o + 2]) >> 6; // 16 levels
-            h ^= (byte)luma;
-            h *= 1099511628211UL;
-        }
-        return h;
+            0 => null,
+            1 => ("", lines[0].Text.Trim(), lines[0].Confidence),
+            _ => (lines[0].Text.Trim(), lines[1].Text.Trim(), Math.Min(lines[0].Confidence, lines[1].Confidence)),
+        };
+        return true;
     }
 }

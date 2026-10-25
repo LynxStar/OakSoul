@@ -3,12 +3,15 @@ using OakSoul.Capture;
 using OakSoul.Vision;
 using OakSoul.Vision.Readers;
 
-// OakSoul.Watch: run the HUD readers live on a captured window and print values as they change.
-//   --list | --window-id N | --pid N --title "T" | --app "Name" --title "T"
-//   --crop-top N (28 for a windowed client)   --fps N (default 30)   --seconds S (default 0 = until Ctrl-C)
+// OakSoul.Watch: run the HUD readers on a live window or a recording and print values as they change.
+//   --list | --window-id N | --pid N --title "T" | --app "Name" --title "T"      live capture
+//   --recording DIR [--keyframes] [--speed X]                                      replay a recorder session
+//   --crop-top N (28 for a windowed client)   --fps N (default 30)   --seconds S (default 0 = until the end or Ctrl-C)
 
-uint? windowId = null; int? pid = null; string? app = null, title = null;
-int cropTop = 0, fps = 30; double seconds = 0; var list = false;
+using OakSoul.Capture.Replay;
+
+uint? windowId = null; int? pid = null; string? app = null, title = null, recording = null;
+int cropTop = 0, fps = 30; double seconds = 0, speed = 1; var list = false; var keyframes = false;
 for (var i = 0; i < args.Length; i++)
 {
     string Next() => i + 1 < args.Length ? args[++i] : throw new ArgumentException($"{args[i]} needs a value");
@@ -22,11 +25,21 @@ for (var i = 0; i < args.Length; i++)
         case "--crop-top": cropTop = int.Parse(Next()); break;
         case "--fps": fps = int.Parse(Next()); break;
         case "--seconds": seconds = double.Parse(Next()); break;
+        case "--recording": recording = Next(); break;
+        case "--keyframes": keyframes = true; break;
+        case "--speed": speed = double.Parse(Next()); break;
         default: Console.Error.WriteLine($"unknown option {args[i]}"); return 2;
     }
 }
 
 ScreenCapture.Initialize();
+IFrameSource source;
+if (recording is not null)
+{
+    source = new RecordingFrameSource(recording, keyframes, cropTop, speed);
+}
+else
+{
 var windows = ScreenCapture.ListWindows();
 if (list)
 {
@@ -48,13 +61,16 @@ if (matches.Count != 1)
 var window = matches[0];
 if (window.Width <= 0 || window.Height <= 0) { Console.Error.WriteLine("error: window reports a zero-size frame."); return 1; }
 CaptureRect? crop = cropTop > 0 ? new CaptureRect(0, cropTop, (int)window.Width, (int)window.Height - cropTop) : null;
-Console.WriteLine($"window   {window}{(crop is null ? "" : $"  crop {crop}")}");
+source = new CaptureFrameSource(CaptureStream.Start(window.Id, 0, 0, fps, 8, crop), $"{window}{(crop is null ? "" : $"  crop {crop}")}");
+}
+Console.WriteLine($"source   {source.Description}");
 
 var layout = HudLayout.Native1366x768;
 var tracker = new MapNameTracker();
 using var cancellation = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cancellation.Cancel(); };
-using var stream = CaptureStream.Start(window.Id, 0, 0, fps, 8, crop);
+using var frameSource = source;
+var identity = new IdentityReader(layout);
 
 FrameGeometry? geometry = null;
 State? last = null;
@@ -62,7 +78,7 @@ long frames = 0;
 double readMs = 0;
 var consumer = Task.Run(async () =>
 {
-    await foreach (var frame in stream.Frames.ReadAllAsync())
+    await foreach (var frame in frameSource.Frames(cancellation.Token))
     {
         using (frame)
         {
@@ -77,7 +93,8 @@ var consumer = Task.Run(async () =>
             var status = StatusReader.Read(geometry, frame.Pixels);
             var minimap = MinimapReader.Read(geometry, frame.Pixels);
             if (minimap.Valid) tracker.Update(geometry, frame.Pixels, minimap.Panel);
-            var state = new State(status.HpValue, status.MpValue, status.ExpValue,
+            identity.Update(geometry, frame.Pixels);
+            var state = new State(identity.Current?.Level, identity.Current?.Job, identity.Current?.Name, status.HpValue, status.MpValue, status.ExpValue,
                 tracker.Current is { } n ? $"{n.Region} / {n.Map}" : null,
                 minimap.SelfInMap is { } s ? ((int)Math.Round(s.X), (int)Math.Round(s.Y)) : null,
                 minimap.Valid ? minimap.Players : null);
@@ -94,22 +111,24 @@ var consumer = Task.Run(async () =>
 
 var started = Stopwatch.StartNew();
 var nextBeat = TimeSpan.FromSeconds(10);
-while (!cancellation.IsCancellationRequested && !stream.Failed && !consumer.IsCompleted && (seconds <= 0 || started.Elapsed.TotalSeconds < seconds))
+var capture = (source as CaptureFrameSource)?.Stream;
+while (!cancellation.IsCancellationRequested && !(capture?.Failed ?? false) && !consumer.IsCompleted && (seconds <= 0 || started.Elapsed.TotalSeconds < seconds))
 {
-    ScreenCapture.PumpMainLoop(TimeSpan.FromMilliseconds(100));
+    if (source.NeedsMainLoop) ScreenCapture.PumpMainLoop(TimeSpan.FromMilliseconds(100)); else await Task.Delay(100);
     if (started.Elapsed >= nextBeat)
     {
-        Console.WriteLine($"-- {started.Elapsed.TotalSeconds:0}s: {frames} frames, {frames / started.Elapsed.TotalSeconds:0.0} fps, read {readMs / Math.Max(frames, 1):0.0} ms/frame, dropped {stream.DroppedFrames}, idle {stream.IdleFrames}");
+        Console.WriteLine($"-- {started.Elapsed.TotalSeconds:0}s: {frames} frames, {frames / started.Elapsed.TotalSeconds:0.0} fps, read {readMs / Math.Max(frames, 1):0.0} ms/frame{(capture is null ? "" : $", dropped {capture.DroppedFrames}, idle {capture.IdleFrames}")}");
         nextBeat += TimeSpan.FromSeconds(10);
     }
 }
-stream.Stop();
-await consumer;
+capture?.Stop();
+cancellation.Cancel();
+try { await consumer; } catch (OperationCanceledException) { }
 Console.WriteLine($"done: {frames} frames in {started.Elapsed.TotalSeconds:0.0}s, read {readMs / Math.Max(frames, 1):0.0} ms/frame");
 return 0;
 
 /// <summary>Everything the watcher reports; a change in any field prints a line.</summary>
-sealed record State((long Current, long Maximum)? Hp, (long Current, long Maximum)? Mp, (long Total, double Percent)? Exp, string? Map, (int X, int Y)? Position, int? Players)
+sealed record State(int? Level, string? Job, string? Name, (long Current, long Maximum)? Hp, (long Current, long Maximum)? Mp, (long Total, double Percent)? Exp, string? Map, (int X, int Y)? Position, int? Players)
 {
     public string Describe(State? previous)
     {
@@ -118,6 +137,7 @@ sealed record State((long Current, long Maximum)? Hp, (long Current, long Maximu
         var mp = Mp is { } m ? $"{m.Current}/{m.Maximum}" : "?";
         var exp = Exp is { } e ? $"{e.Total:N0} {e.Percent:0.00}%" : "?";
         var pos = Position is { } p ? $"{p.X},{p.Y}" : "?";
-        return $"HP{Mark(Hp, previous?.Hp)}{hp,-16} MP{Mark(Mp, previous?.Mp)}{mp,-10} EXP{Mark(Exp, previous?.Exp)}{exp,-16} map{Mark(Map, previous?.Map)}{Map ?? "?",-28} pos{Mark(Position, previous?.Position)}{pos,-8} players{Mark(Players, previous?.Players)}{Players?.ToString() ?? "?"}";
+        var who = $"Lv{Mark(Level, previous?.Level)}{Level?.ToString() ?? "?",-4}{Mark(Job, previous?.Job)}{Job ?? "?",-22}{Mark(Name, previous?.Name)}{Name ?? "?",-12}";
+        return $"{who} HP{Mark(Hp, previous?.Hp)}{hp,-16} MP{Mark(Mp, previous?.Mp)}{mp,-10} EXP{Mark(Exp, previous?.Exp)}{exp,-16} map{Mark(Map, previous?.Map)}{Map ?? "?",-28} pos{Mark(Position, previous?.Position)}{pos,-8} players{Mark(Players, previous?.Players)}{Players?.ToString() ?? "?"}";
     }
 }
