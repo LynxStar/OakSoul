@@ -95,6 +95,8 @@ public static class StatusNumberReader
     private static IEnumerable<GlyphSegment> SplitByFont(GlyphSegment segment, GlyphFont font)
     {
         if (segment.IsGreen || segment.Width <= MaxGlyphWidth) return [segment];
+        if (segment.Bitmap.Rows[0].Contains('#') || segment.Bitmap.Rows[1].Contains('#')) return [segment]; // label letters: skipped later anyway
+        if (segment.Width > MaxGlyphWidth * 4) return [segment];
         return BestSplit(segment, font, 0).Parts;
     }
 
@@ -107,7 +109,7 @@ public static class StatusNumberReader
         {
             var left = GlyphSegmenter.Slice(segment, 0, cut - 1);
             var leftScore = Score(left, font);
-            if (leftScore >= bestScore) continue;
+            if (leftScore > MaxDistance || leftScore >= bestScore) continue; // the left piece must itself be a glyph
             foreach (var dropBridge in new[] { true, false })
             {
                 var start = dropBridge ? cut + 1 : cut;
