@@ -105,6 +105,23 @@ public static class GlyphSegmenter
         return new GlyphSegment(segment.X0 + from, segment.X0 + to, new GlyphBitmap(to - from + 1, segment.Bitmap.Height, rows), segment.IsGreen);
     }
 
+    /// <summary>Splits a precomputed ink mask into glyphs at empty columns; for fonts binarized by other rules.</summary>
+    public static List<GlyphSegment> SegmentInk(bool[,] ink)
+    {
+        int height = ink.GetLength(0), width = ink.GetLength(1);
+        var none = new bool[height, width];
+        var segments = new List<GlyphSegment>();
+        var x0 = -1;
+        for (var x = 0; x <= width; x++)
+        {
+            var any = false;
+            if (x < width) for (var y = 0; y < height && !any; y++) any = ink[y, x];
+            if (any && x0 < 0) x0 = x;
+            if (!any && x0 >= 0) { segments.Add(Cut(ink, none, height, x0, x - 1)); x0 = -1; }
+        }
+        return segments;
+    }
+
     private static GlyphSegment Cut(bool[,] bright, bool[,] green, int height, int x0, int x1)
     {
         var rows = new string[height];

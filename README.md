@@ -113,6 +113,14 @@ Screen Recording permission is granted per responsible application. When running
 
 `MapNameTracker` reads the region and map names (for example Dungeon and Ant Tunnel IV) through Apple's Vision text recognizer, exposed by the shim as `TextRecognizer`. It only re-reads when a coarse hash of the name block changes, so the roughly 30 ms OCR cost is paid on map change rather than per frame; the first call takes a few hundred milliseconds while Vision loads. Validated on all sixteen keyframes, windowed and fullscreen alike.
 
+### Character, quickslot and buffs
+
+`NameTagLocator` finds your own character in the world viewport by its name tag. The client renders a tag as light text on a translucent dark box, identically every frame, so the locator learns a binarized template once, from a frame where Vision OCR sees your name on its own (the name comes from the status bar), and then matches by pixel signature: nearly all text pixels bright, nearly all gap pixels dark, judged as a combined fraction so a bright background behind the box still matches. It searches near the last hit first and falls back to the whole viewport; about 20 ms per frame on misses, far less while tracking. On the combat fixture it placed the tag on three quarters of the keyframes, and the misses are frames where another tag or a mob overlaps yours. `NameTagHit.Feet` is the point just above the tag, which is where the character stands.
+
+`QuickslotReader` reads the eight cells: which key, whether the cell holds anything (an empty cell is flat grey in the middle), a fingerprint of the icon, and a fingerprint of the count corner. The item counts themselves are tiny anti-aliased digits drawn over the icon art at the same brightness as the art, and no thresholding separates them, so they are not read as numbers; instead `CountChanges` reports the cells whose count corner changed since the last frame. On the combat fixture those events line up exactly with the potions used. A bot that knows a starting count can count down from the events.
+
+`BuffReader` reads the buff row at the top-right. A slot is occupied when it correlates with a buff icon the reader has been taught (`Learn`, `Save`, `Load`; the watcher loads `recordings/known-buffs.json` if present), compared outside the corner that shows the remaining minutes. Correlation rather than difference, because the client draws the icon faded on roughly a third of frames, reported as `Faded`. The minute digit is not read yet, and the slot pitch has only been seen with one buff active.
+
 ### Live watcher
 
 `OakSoul.Watch` runs the readers on a live capture and prints a line whenever a value changes:
@@ -121,7 +129,7 @@ Screen Recording permission is granted per responsible application. When running
 dotnet run --project src/OakSoul.Watch -- --pid 1234 --title "MapleStory" --crop-top 28
 ```
 
-It takes the same window selection as the recorder plus `--crop-top`, `--fps` and `--seconds`. Each line shows HP with its percentage, MP, EXP total and percent, region and map name, your minimap position and the number of other players on the minimap, with a `*` after each field that changed. Every ten seconds a heartbeat reports frames, frame rate, reader time per frame and dropped frames; the readers cost well under a millisecond per native frame. If the frame does not match the native layout, for example a windowed client captured with its title bar, it says so and suggests `--crop-top 28`.
+It takes the same window selection as the recorder plus `--crop-top`, `--fps` and `--seconds`. Each line shows level, job and name, HP with its percentage, MP, EXP total and percent, region and map name, your minimap position and the number of other players on the minimap, your feet position from the name tag, the occupied quickslot keys and the active buffs (a `~` marks a faded icon), with a `*` after each field that changed. Quickslot count changes print as their own lines. Every ten seconds a heartbeat reports frames, frame rate, reader time per frame and dropped frames; the readers cost well under a millisecond per native frame. If the frame does not match the native layout, for example a windowed client captured with its title bar, it says so and suggests `--crop-top 28`.
 
 ### Replaying recordings
 

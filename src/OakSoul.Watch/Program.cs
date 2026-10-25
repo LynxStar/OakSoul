@@ -10,7 +10,7 @@ using OakSoul.Vision.Readers;
 
 using OakSoul.Capture.Replay;
 
-uint? windowId = null; int? pid = null; string? app = null, title = null, recording = null;
+uint? windowId = null; int? pid = null; string? app = null, title = null, recording = null, buffsPath = null;
 int cropTop = 0, fps = 30; double seconds = 0, speed = 1; var list = false; var keyframes = false;
 for (var i = 0; i < args.Length; i++)
 {
@@ -28,6 +28,7 @@ for (var i = 0; i < args.Length; i++)
         case "--recording": recording = Next(); break;
         case "--keyframes": keyframes = true; break;
         case "--speed": speed = double.Parse(Next()); break;
+        case "--buffs": buffsPath = Next(); break;
         default: Console.Error.WriteLine($"unknown option {args[i]}"); return 2;
     }
 }
@@ -73,7 +74,13 @@ using var cancellation = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cancellation.Cancel(); };
 using var frameSource = source;
 var identity = new IdentityReader(layout, stableFrames);
+var quickslot = new QuickslotReader(layout);
+var buffReader = new BuffReader(layout);
+buffsPath ??= Path.Combine(Directory.GetCurrentDirectory(), "recordings", "known-buffs.json");
+if (File.Exists(buffsPath)) Console.WriteLine($"buffs    {buffReader.Load(buffsPath)} known icons from {buffsPath}");
+NameTagLocator? tagLocator = null;
 
+string Stamp(Frame frame) => source.NeedsMainLoop ? DateTime.Now.ToString("HH:mm:ss.fff") : $"t={TimeSpan.FromSeconds(frame.Pts):m\\:ss}  ";
 FrameGeometry? geometry = null;
 State? last = null;
 long frames = 0;
@@ -96,16 +103,25 @@ var consumer = Task.Run(async () =>
             var minimap = MinimapReader.Read(geometry, frame.Pixels);
             if (minimap.Valid) tracker.Update(geometry, frame.Pixels, minimap);
             identity.Update(geometry, frame.Pixels);
+            // The own name tag is learned once, from a frame where OCR sees the name by itself, then tracked by pixels.
+            if (tagLocator is null && identity.Current?.Name is { Length: > 2 } ownName) tagLocator = new NameTagLocator(ownName);
+            if (tagLocator is { Ready: false }) { if (tagLocator.TryLearn(geometry, frame.Pixels)) Console.WriteLine($"tag      learned '{tagLocator.Name}' template {tagLocator.TemplateWidth}x{tagLocator.TemplateHeight}"); }
+            var tag = tagLocator is { Ready: true } ? tagLocator.Locate(geometry, frame.Pixels) : null;
+            var cells = quickslot.Read(geometry, frame.Pixels);
+            foreach (var idx in quickslot.CountChanges(cells)) Console.WriteLine($"{Stamp(frame)}  quickslot {cells[idx].Key} count changed");
+            var buffs = buffReader.Read(geometry, frame.Pixels);
             var state = new State(identity.Current?.Level, identity.Current?.Job, identity.Current?.Name, status.HpValue, status.MpValue, status.ExpValue,
                 tracker.Current is { } n ? $"{n.Region} / {n.Map}" : null,
                 minimap.SelfInMap is { } s ? ((int)Math.Round(s.X), (int)Math.Round(s.Y)) : null,
-                minimap.Valid && !minimap.Collapsed ? minimap.Players : null, minimap.Collapsed);
+                minimap.Valid && !minimap.Collapsed ? minimap.Players : null, minimap.Collapsed,
+                tag is { } t ? ((int)Math.Round(t.Feet.X), (int)Math.Round(t.Feet.Y)) : null,
+                string.Concat(cells.Select(c => c.Occupied ? c.Key : '.')),
+                string.Join("+", buffs.Select(b => b.Name + (b.Faded ? "~" : ""))));
             readMs += sw.Elapsed.TotalMilliseconds;
             frames++;
             if (state != last)
             {
-                var stamp = source.NeedsMainLoop ? DateTime.Now.ToString("HH:mm:ss.fff") : $"t={TimeSpan.FromSeconds(frame.Pts):m\\:ss}  ";
-                Console.WriteLine($"{stamp}  {state.Describe(last)}");
+                Console.WriteLine($"{Stamp(frame)}  {state.Describe(last)}");
                 last = state;
             }
         }
@@ -131,7 +147,7 @@ Console.WriteLine($"done: {frames} frames in {started.Elapsed.TotalSeconds:0.0}s
 return 0;
 
 /// <summary>Everything the watcher reports; a change in any field prints a line.</summary>
-sealed record State(int? Level, string? Job, string? Name, (long Current, long Maximum)? Hp, (long Current, long Maximum)? Mp, (long Total, double Percent)? Exp, string? Map, (int X, int Y)? Position, int? Players, bool Collapsed)
+sealed record State(int? Level, string? Job, string? Name, (long Current, long Maximum)? Hp, (long Current, long Maximum)? Mp, (long Total, double Percent)? Exp, string? Map, (int X, int Y)? Position, int? Players, bool Collapsed, (int X, int Y)? Feet, string Slots, string Buffs)
 {
     public string Describe(State? previous)
     {
@@ -141,6 +157,7 @@ sealed record State(int? Level, string? Job, string? Name, (long Current, long M
         var exp = Exp is { } e ? $"{e.Total:N0} {e.Percent:0.00}%" : "?";
         var pos = Collapsed ? "closed" : Position is { } p ? $"{p.X},{p.Y}" : "?";
         var who = $"Lv{Mark(Level, previous?.Level)}{Level?.ToString() ?? "?",-4}{Mark(Job, previous?.Job)}{Job ?? "?",-22}{Mark(Name, previous?.Name)}{Name ?? "?",-12}";
-        return $"{who} HP{Mark(Hp, previous?.Hp)}{hp,-16} MP{Mark(Mp, previous?.Mp)}{mp,-10} EXP{Mark(Exp, previous?.Exp)}{exp,-16} map{Mark(Map, previous?.Map)}{Map ?? "?",-28} pos{Mark(Position, previous?.Position)}{pos,-8} players{Mark(Players, previous?.Players)}{Players?.ToString() ?? "?"}";
+        var feet = Feet is { } f ? $"{f.X},{f.Y}" : "?";
+        return $"{who} HP{Mark(Hp, previous?.Hp)}{hp,-16} MP{Mark(Mp, previous?.Mp)}{mp,-10} EXP{Mark(Exp, previous?.Exp)}{exp,-16} map{Mark(Map, previous?.Map)}{Map ?? "?",-28} pos{Mark(Position, previous?.Position)}{pos,-8} players{Mark(Players, previous?.Players)}{Players?.ToString() ?? "?",-3} feet{Mark(Feet, previous?.Feet)}{feet,-9} slots{Mark(Slots, previous?.Slots)}{Slots} buffs{Mark(Buffs, previous?.Buffs)}{Buffs}";
     }
 }
