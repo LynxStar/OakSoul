@@ -172,6 +172,32 @@ What the fixtures settled, with the measurements in the code comments:
 dotnet run --project src/OakSoul.Watch -- --recording recordings/fx-combat --keyframes --speed 0 --world-report
 ```
 
+## Entities: mobs, players, pets, drops
+
+`src/OakSoul.Detect` finds what is drawn over a map and tracks it. Mob sprites live in opaque `.ms` packs and the WZ reader does not decode item bitmaps yet, so nothing is matched against game art: everything is measured against a background learned from recordings. The project depends on Vision and World (which stay independent of each other).
+
+Build the background of every map a session visited (offline, cached in `data/backgrounds/`, gitignored), then run the detector on the replay:
+
+```
+dotnet run --project src/OakSoul.Watch -- --recording recordings/fx-combat --keyframes --speed 0 --build-background
+dotnet run -c Release --project src/OakSoul.Watch -- --recording recordings/fx-combat --keyframes --speed 0 --entity-report --entity-sheet data/entity-sheets
+```
+
+`--entities` prints a line whenever the counts by kind or the nearest mob change (`entities mob 5 player 0 pet 1 drop 0 effect 3 unknown 2  nearest mob #20 'Lv. 23 Dark Axe Stump' at 96 units`), `--entity-report` (implies `--entities`) prints the validation below, `--entity-sheet DIR` writes two contact sheets of twelve evenly spaced annotated frames (keep DIR under `data/` or `recordings/`), and `--backgrounds DIR` moves the cache. For a closer look, `OAKSOUL_DEBUG_DUMP=dir OAKSOUL_DEBUG_FRAMES=16,200` writes full-size overlays of those frames with the foreground classes tinted.
+
+- **Background mosaic** (`MosaicBuilder`, `BackgroundMosaic`). Frames with a measured camera (dot and own tag) are stitched in world space over the map's vr box with the HUD regions, the minimap panel, the top rows of the chat bar and a box around the own character masked out. Each frame is first registered to the pixel against the mosaic so far (the dot gives x only to +-8), then casts a streaming majority vote per pixel; a second pass counts how many camera positions agreed with the voted value (the background under steam or a name-tag box agrees too). The whole thing runs twice, the second round registering against the first round's reliable pixels. Cached as `<mapId>.png` (RGBA), `<mapId>.mask.png` (disagreement, 0..253; 254 too few samples; 255 unseen) and `<mapId>.json`.
+- **Per frame** (`EntityDetector`). Register the frame against the mosaic (narrow search around a measured camera; otherwise a coarse search of 4x4 block means over +-64 pixels, then a fine one), difference it, classify each differing pixel as solid, a darkening (name-tag box), a whitening (steam, clouds) or bright text, open 3x3 and label components. Pixels the mosaic cannot vouch for fall back to a screen-space model while the camera rests (parallax layers hold still on screen). Name-tag boxes are found as 16-row stacks of darkened background with near-white text, fingerprinted and OCR'd once per distinct appearance, and attached to the blob standing on them. Candidates get their feet (from the tag when there is one), world position and foothold, then a nearest-neighbour tracker with a one-second memory assigns track ids, ages, velocities and kinds.
+- **Kinds.** A level badge or a known mob name makes a Mob; a plain name is the Pet when it is the name read repeatedly beside the own character, else a Player; without a tag, feet on a foothold make a Mob (or a Drop when small, static and unchanging), floating short-lived blobs are Effects (damage numbers, spells), the rest Unknown. The tracker learns mob names and levels from the tags and cleans later reads against them (`Dark Axe Stu`, `Fire BMara` with the pet's tag run into it).
+- **API.** `EntityDetector.Detect(frame, width, DetectionContext)` returns an `EntityFrame` with `DetectedEntity` records: kind, confidence, screen box, feet, world position, foothold id, tag text, level and name, track id, age, first frame, velocity.
+
+What fx-combat (403 keyframes in Deep Valley I) settled:
+
+- **Mob tags are drawn only on mobs that were hit**, together with an HP bar above them, wherever they are (a Fire Boar hit from 300 pixels away had one), and are gone again some time later (not measured); mobs standing right next to the character but not hit have none, so they are neither always drawn nor proximity-based. So they are a strong classifier but a rare one: 7% of mob detections and 22% of mob tracks carried a readable tag. The badge reads as `Lv. 32`, `Lv, 23`, `LV.25`, `Lw, 11` or just `23`; the mobs seen were Lv. 23 Dark Axe Stump, Lv. 32 Fire Boar, Lv. 25 Wild Boar, Lv. 11 Dark Stump and Snail (its badge never read); also the pet Mara and one other player, MrSoySauce. Pets and players have the same box without a badge.
+- **Mosaic.** The vr box is 2906x2189 world units; 83.1% was seen, 77.7% often enough from shifted viewpoints, and 41.4% of that is unreliable at 25% disagreement (parallax cliffs and clouds, the waterfall, steam, mob walkways); 69.8% is usable for foreground at 45%. Registration moved the tracker's camera by up to 19 x and 22 y and raised the exact-match fraction from 0.14 to 0.88.
+- **Validation** (`--entity-report`, label-free): 387 of 402 frames registered; per frame on average 3.6 mobs, 0.35 pets, 0.14 players, 0.02 drops, 4.2 effects, 3.8 unknown; 84% of mob detections have their feet within 6 units of a foothold (98% of the tagged ones); mob tracks run a median of 5 frames (p90 17). Of the 50 EXP gains, 84% have a mob track ending within 450 units from three keyframes before to one after, against 64% for an arbitrary frame; for hit mobs (tag or HP bar seen) 38% against 29%. Drops barely occur: the pet loots them within a second.
+- **Cost.** 11.6 ms per frame on average (median 10.1, p90 15.6; Release, native keyframes, OCR excluded), of which registration 3.9, difference 4.7, tags 2.0; the frames needing the wide registration search make the tail.
+- **Limits.** Mobs in front of parallax background are only seen while the camera rests, and a mob idling in one spot for seconds is absorbed by the screen-space model; the mosaic knows only what the recordings showed, so a map visited briefly is mostly unreliable; tags drawn over each other OCR as one; the HP bar is seldom separable from the sprite; drop classification is untested on this fixture.
+
 ## Notes
 
 Design rationale, the storage benchmark and other findings are in [docs/capture-notes.md](docs/capture-notes.md).
@@ -181,5 +207,5 @@ Design rationale, the storage benchmark and other findings are in [docs/capture-
 - HUD readers (HP, MP, EXP) running on recorded frames
 - Minimap-based localisation
 - Name-tag detection for players
-- Template matching for mobs
+- Entities beyond the first milestone: a fixture with drops left lying (no pet), mobs in front of parallax, more recordings per map for the mosaic
 - Input injection, later

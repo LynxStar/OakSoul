@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using OakSoul.Capture;
+using OakSoul.Detect;
 using OakSoul.Vision;
 using OakSoul.Vision.Readers;
 using OakSoul.Watch;
@@ -10,11 +11,16 @@ using OakSoul.World;
 //   --recording DIR [--keyframes] [--speed X]                                      replay a recorder session
 //   --crop-top N (28 for a windowed client)   --fps N (default 30)   --seconds S (default 0 = until the end or Ctrl-C)
 //   --maps DIR (default data/maps): map metadata for world positions   --world-report: print the world-model validation at the end
+//   --build-background: (recordings only) build each visited map's background mosaic into --backgrounds DIR (default data/backgrounds)
+//   --entities: detect mobs, players, pets, drops and effects against the cached mosaic and print a line per change
+//   --entity-sheet DIR: write annotated contact sheets of a dozen evenly spaced frames (keep DIR gitignored, e.g. data/ or recordings/)
+//   --entity-report: print the entity validation at the end (implies --entities)
 
 using OakSoul.Capture.Replay;
 
-uint? windowId = null; int? pid = null; string? app = null, title = null, recording = null, buffsPath = null, mapsPath = null;
+uint? windowId = null; int? pid = null; string? app = null, title = null, recording = null, buffsPath = null, mapsPath = null, backgroundsPath = null, sheetDir = null;
 int cropTop = 0, fps = 30; double seconds = 0, speed = 1; var list = false; var keyframes = false; var worldReport = false;
+var buildBackground = false; var entities = false; var entityReport = false;
 for (var i = 0; i < args.Length; i++)
 {
     string Next() => i + 1 < args.Length ? args[++i] : throw new ArgumentException($"{args[i]} needs a value");
@@ -34,6 +40,11 @@ for (var i = 0; i < args.Length; i++)
         case "--buffs": buffsPath = Next(); break;
         case "--maps": mapsPath = Next(); break;
         case "--world-report": worldReport = true; break;
+        case "--build-background": buildBackground = true; break;
+        case "--backgrounds": backgroundsPath = Next(); break;
+        case "--entities": entities = true; break;
+        case "--entity-sheet": sheetDir = Next(); entities = true; break;
+        case "--entity-report": entityReport = true; entities = true; break;
         default: Console.Error.WriteLine($"unknown option {args[i]}"); return 2;
     }
 }
@@ -89,6 +100,14 @@ MapCatalog? catalog = File.Exists(Path.Combine(mapsPath, "index.json")) ? new Ma
 Console.WriteLine(catalog is null ? $"maps     none at {mapsPath} (run OakSoul.MapExport --out data/maps); world positions off" : $"maps     {catalog.Count} maps from {mapsPath}");
 var world = catalog is null ? null : new WorldTracker(catalog);
 var report = worldReport && world is not null ? new WorldReport() : null;
+backgroundsPath ??= Path.Combine(Directory.GetCurrentDirectory(), "data", "backgrounds");
+if (buildBackground && (recording is null || world is null)) { Console.Error.WriteLine("error: --build-background needs --recording and map metadata"); return 2; }
+var screenMask = new ScreenMask(layout);
+var buildFrames = new Dictionary<long, BackgroundBuild.FrameInfo>();
+var sessionTimes = new SessionTimes(recording is not null && keyframes ? recording : null);
+var entityWatch = entities && world is not null ? new EntityWatch(layout, backgroundsPath, sessionTimes, sheetDir,
+    recording is not null && keyframes && Directory.Exists(Path.Combine(recording, "keyframes")) ? Directory.GetFiles(Path.Combine(recording, "keyframes"), "*.png").Length : null) : null;
+if (entities && world is null) Console.WriteLine("entities off: no map metadata");
 
 string Stamp(Frame frame) => source.NeedsMainLoop ? DateTime.Now.ToString("HH:mm:ss.fff") : $"t={TimeSpan.FromSeconds(frame.Pts):m\\:ss}  ";
 FrameGeometry? geometry = null;
@@ -133,6 +152,11 @@ var consumer = Task.Run(async () =>
                 place = world.Update(observation);
                 report?.Add(frame.Sequence, observation, place);
             }
+            // Background building only notes which frames have a measured camera; the mosaic passes replay them afterwards.
+            if (buildBackground && geometry.IsNative && place is { Source: WorldSource.DotAndTag, Camera: { } voteCamera, MapId: { } mapId, Map: { } mapData } && tag is { } ownTag)
+                buildFrames[frame.Sequence] = new BackgroundBuild.FrameInfo(mapData, voteCamera, world!.CameraModel!.IsClamped(voteCamera).X && place.Confidence >= 0.9,
+                    minimap.Valid ? minimap.Panel : ScreenMask.DefaultMinimapPanel, ownTag.Tag);
+            entityWatch?.Update(frame, geometry, place, world, tag, minimap.Valid ? minimap.Panel : null, status, identity.Current?.Name, Stamp(frame));
             var state = new State(identity.Current?.Level, identity.Current?.Job, identity.Current?.Name, status.HpValue, status.MpValue, status.ExpValue,
                 tracker.Current is { } n ? $"{n.Region} / {n.Map}" : null,
                 minimap.SelfInMap is { } s ? ((int)Math.Round(s.X), (int)Math.Round(s.Y)) : null,
@@ -170,6 +194,10 @@ cancellation.Cancel();
 try { await consumer; } catch (OperationCanceledException) { }
 Console.WriteLine($"done: {frames} frames in {started.Elapsed.TotalSeconds:0.0}s, read {readMs / Math.Max(frames, 1):0.0} ms/frame");
 if (report is not null && catalog is not null) report.Print(Console.Out, catalog);
+entityWatch?.WriteSheets();
+if (entityReport && entityWatch is not null) EntityReport.Print(Console.Out, entityWatch);
+if (buildBackground && recording is not null)
+    await BackgroundBuild.Run(Console.Out, () => new RecordingFrameSource(recording, keyframes, cropTop, 0), buildFrames, screenMask, backgroundsPath);
 return 0;
 
 /// <summary>Everything the watcher reports; a change in any field prints a line.</summary>

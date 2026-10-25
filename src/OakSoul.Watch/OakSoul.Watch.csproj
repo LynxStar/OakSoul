@@ -13,6 +13,7 @@
     <ProjectReference Include="../OakSoul.Capture/OakSoul.Capture.csproj" />
     <ProjectReference Include="../OakSoul.Vision/OakSoul.Vision.csproj" />
     <ProjectReference Include="../OakSoul.World/OakSoul.World.csproj" />
+    <ProjectReference Include="../OakSoul.Detect/OakSoul.Detect.csproj" />
   </ItemGroup>
 
 </Project>

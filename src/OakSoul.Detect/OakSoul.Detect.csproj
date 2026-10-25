@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Mob, player and drop detection against a cached per-map background mosaic. Depends on both Vision (readers,
+       OCR, HUD layout) and World (map metadata, footholds, camera), which must not depend on each other. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>OakSoul.Detect</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../OakSoul.Capture/OakSoul.Capture.csproj" />
+    <ProjectReference Include="../OakSoul.Vision/OakSoul.Vision.csproj" />
+    <ProjectReference Include="../OakSoul.World/OakSoul.World.csproj" />
+  </ItemGroup>
+
+</Project>

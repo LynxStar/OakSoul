@@ -1,0 +1,398 @@
+using System.Diagnostics;
+using OakSoul.Capture;
+using OakSoul.Vision;
+using OakSoul.World;
+
+namespace OakSoul.Detect;
+
+/// <summary>What the rest of the pipeline knows about a frame, for the detector.</summary>
+/// <param name="Camera">The world tracker's camera (world position of the screen's top-left), or null.</param>
+/// <param name="CameraMeasured">True when the camera came from the dot and the own tag (good to the dot's +-8 on x).</param>
+/// <param name="OwnTag">The own name tag, when the locator found it.</param>
+/// <param name="OwnWorld">The own character's world position (soles), for masking it when the tag is hidden.</param>
+/// <param name="MinimapPanel">The minimap panel as read, masked out of the world.</param>
+public sealed record DetectionContext(long Frame, double Time, MapData Map, FootholdIndex Footholds, PointD? Camera, bool CameraMeasured,
+    CaptureRect? OwnTag, PointD? OwnWorld, CaptureRect? MinimapPanel);
+
+/// <summary>
+/// Detects and tracks entities in native frames of one map against its cached <see cref="BackgroundMosaic"/>:
+/// refines the camera by registration, extracts foreground, finds name tags (OCR'd once per distinct tag), turns
+/// blobs and tags into candidates with a world position and foothold, then classifies and tracks them.
+/// </summary>
+public sealed class EntityDetector
+{
+    /// <summary>
+    /// First, narrow registration window around a measured camera (dot and own tag; x good to the dot's +-8). The
+    /// mosaic build's refinements put most frames within +-9 x and +-8 y of the tracker; the rest (up to 19 x, 22 y)
+    /// fail this search and go to the wide one.
+    /// </summary>
+    public const int MeasuredRangeX = 12, MeasuredRangeY = 10;
+
+    /// <summary>
+    /// A narrow search scoring at least this is accepted without the wide one. On fx-combat correct registrations
+    /// scored 0.7 to 0.95 (mobs, effects and steam cover the rest of the samples) and failed ones 0.05 to 0.3.
+    /// </summary>
+    public const double AcceptScore = 0.6;
+
+    /// <summary>
+    /// Wide search: +-64 pixels in 4-pixel steps over block means, then +-4 at full resolution, around the tracker's
+    /// camera and, failing that, around the last registered one. With the tag hidden the tracker predicts the camera
+    /// and was 30 pixels off (frames 12 to 14) and up to about 70 while the player dropped down a rope (frames 37 to
+    /// 40); 15 of 402 keyframes still fail.
+    /// </summary>
+    public const int CoarseRange = 64, CoarseRefine = 4;
+
+    /// <summary>Below this match fraction the registration is not trusted and the frame is skipped (see <see cref="AcceptScore"/>).</summary>
+    public const double MinRegistrationScore = 0.5;
+
+    /// <summary>Samples per registration: half the mosaic builder's, which still gives a sharp exact-match peak.</summary>
+    public const int RegistrationSamples = 1500;
+
+    /// <summary>Padding around the own-character box when its position comes from the dot (+-8 units) instead of the tag.</summary>
+    public const int HiddenOwnPad = 12;
+
+    /// <summary>
+    /// Blobs touching the own-character box with fewer pixels than this are the parts of the own sprite (weapon,
+    /// cape, spell sparks at the hands) or the pet that stick out of the box, and are dropped; larger ones are kept,
+    /// since a mob in melee range touches the box too. A judgement call, not tuned.
+    /// </summary>
+    public const int OwnFragmentPixels = 250;
+
+    /// <summary>
+    /// Blobs whose boxes come within this many pixels of each other and whose union stays sprite-sized are merged:
+    /// a sprite split by an unreliable stripe of the mosaic or by a colour that happens to match the background. The
+    /// largest tagged mob box seen was 94x49 (a Fire Boar with its tag box).
+    /// </summary>
+    public const int MergeGap = 2, MergeMaxWidth = 160, MergeMaxHeight = 150;
+
+    /// <summary>
+    /// Smallest fraction of a blob's pixels that must be solid (not explainable as the background under a black or
+    /// white translucent layer). Measured on fx-combat: the blobs of tagged mobs have a median of 0.79 and a p10 of
+    /// 0.35, while all blobs are bimodal with a fifth of them under 0.2 (darkened parallax rock and waterfall, steam
+    /// edges). 0.3 keeps 69 of 75 tagged-mob blobs and drops 26% of all blobs; 0.4 would lose 8 of 75.
+    /// </summary>
+    public const double MinSolidFraction = 0.3;
+
+    /// <summary>
+    /// A tag belongs to the blob whose bottom ends within this many rows above the tag's top (the sprite stands one
+    /// to three rows above its tag) and whose centre is within half the tag's width plus <see cref="TagSlackX"/>.
+    /// </summary>
+    public const int TagAboveRows = 12, TagSlackX = 10;
+
+    /// <summary>
+    /// HP bar: a grey frame around a green and dark red fill, drawn above a mob that was hit, about 50x9 on the Dark
+    /// Axe Stumps and the Fire Boar. It is often merged with the sprite or the background behind it is unreliable, so
+    /// on fx-combat it was found over only 16% of the tagged mobs; it is a bonus signal, not a classifier.
+    /// </summary>
+    public const int HpBarMinWidth = 36, HpBarMaxWidth = 70, HpBarMinHeight = 5, HpBarMaxHeight = 13, HpBarGreenPixels = 4;
+
+    /// <summary>Cumulative milliseconds per stage (registration, difference, tags, components, the rest without OCR) and frames timed.</summary>
+    public double[] StageMs { get; } = new double[5];
+    public int StageFrames { get; private set; }
+
+    /// <summary>Frames that needed the wide search.</summary>
+    public int WideSearches { get; private set; }
+
+    private CoarseMosaic? _coarse;
+    private (int X, int Y, double Time)? _lastCamera;
+
+    private readonly BackgroundMosaic _mosaic;
+    private readonly ScreenMask _mask;
+    private readonly ForegroundExtractor _fg = new();
+    private readonly TagDetector _tags = new();
+    private readonly EntityTracker _tracker = new();
+
+    public EntityDetector(BackgroundMosaic mosaic, HudLayout layout)
+    {
+        _mosaic = mosaic;
+        _mask = new ScreenMask(layout);
+    }
+
+    public BackgroundMosaic Mosaic => _mosaic;
+    public ForegroundExtractor Foreground => _fg;
+    public TagDetector Tags => _tags;
+    public EntityTracker Tracker => _tracker;
+
+    /// <summary>When false, tags are matched against the cache only and never OCR'd (for timing the per-frame path).</summary>
+    public bool Ocr { get; set; } = true;
+
+    /// <summary>Directory for per-frame debug overlays (foreground, tags, blobs), or null.</summary>
+    public string? DebugDir { get; set; }
+
+    /// <summary>The tag boxes and own box of the last frame, for annotation.</summary>
+    public IReadOnlyList<TagBox> LastTags { get; private set; } = [];
+    public CaptureRect? LastOwnBox { get; private set; }
+
+    public EntityFrame Detect(ReadOnlySpan<byte> frame, int frameWidth, DetectionContext ctx)
+    {
+        var sw = Stopwatch.StartNew();
+        LastTags = [];
+        LastOwnBox = null;
+        if (ctx.Camera is not { } guess) return EntityFrame.Empty(ctx.Frame, ctx.Time, "no camera");
+        var panel = ctx.MinimapPanel ?? ScreenMask.DefaultMinimapPanel;
+        _mask.Reset();
+        _mask.Exclude(panel, 4);
+        CaptureRect? own = ctx.OwnTag is { } tag ? OwnCharacter.Box(tag) : null;
+        if (own is null && ctx.OwnWorld is { } ow)
+        {
+            var soles = CameraModel.WorldToScreen(guess, ow);
+            own = OwnCharacter.BoxFromSoles(soles.X, soles.Y, HiddenOwnPad);
+        }
+        if (own is { } box) _mask.Exclude(box);
+
+        var samples = CameraRegistration.Samples(frame, frameWidth, _mask, RegistrationSamples);
+        int guessX = (int)Math.Round(guess.X), guessY = (int)Math.Round(guess.Y);
+        // A measured camera is searched near the guess first; a predicted one, or a failed first try, goes through the
+        // coarse search of block means over a wide window and is then refined to the pixel.
+        Registration? reg = ctx.CameraMeasured ? Fine(frame, frameWidth, samples, guessX, guessY, MeasuredRangeX, MeasuredRangeY) : null;
+        if (reg is not { Score: >= AcceptScore })
+        {
+            _coarse ??= new CoarseMosaic(_mosaic);
+            if (_coarse.Search(frame, frameWidth, _mask, guessX, guessY, CoarseRange) is { } c)
+            {
+                var wide = Fine(frame, frameWidth, samples, c.X, c.Y, CoarseRefine, CoarseRefine);
+                if (reg is null || wide.Score > reg.Value.Score) reg = wide with { GuessMatches = reg?.GuessMatches ?? wide.GuessMatches, GuessCompared = reg?.GuessCompared ?? wide.GuessCompared };
+            }
+            // Still nothing: the tracker's camera can be far off while the tag is hidden and the camera eases; the
+            // last registered camera is usually closer.
+            if (reg is not { Score: >= MinRegistrationScore } && _lastCamera is { } last && ctx.Time - last.Time <= 2
+                && _coarse.Search(frame, frameWidth, _mask, last.X, last.Y, CoarseRange) is { } c2)
+            {
+                var wide = Fine(frame, frameWidth, samples, c2.X, c2.Y, CoarseRefine, CoarseRefine);
+                if (reg is null || wide.Score > reg.Value.Score) reg = wide;
+            }
+            reg ??= Fine(frame, frameWidth, samples, guessX, guessY, 0, 0);
+            WideSearches++;
+        }
+        if (reg.Value.Score < MinRegistrationScore)
+        {
+            _tracker.Update([], ctx.Frame, ctx.Time);
+            return new EntityFrame(ctx.Frame, ctx.Time, [], null, reg, sw.Elapsed.TotalMilliseconds, 0, $"registration failed ({reg.Value.Score:0.00})");
+        }
+        int camX = reg.Value.CameraX, camY = reg.Value.CameraY;
+        _lastCamera = (camX, camY, ctx.Time);
+        // When the own box came from the dot it moves with the refined camera.
+        if (ctx.OwnTag is null && ctx.OwnWorld is { } ow2)
+        {
+            _mask.Reset();
+            _mask.Exclude(panel, 4);
+            own = OwnCharacter.BoxFromSoles(ow2.X - camX, ow2.Y - camY, HiddenOwnPad);
+            _mask.Exclude(own.Value);
+        }
+        LastOwnBox = own;
+
+        var tReg = sw.Elapsed.TotalMilliseconds;
+        _fg.Difference(frame, frameWidth, _mask, _mosaic, camX, camY);
+        var tDiff = sw.Elapsed.TotalMilliseconds;
+        var vp = _mask.Viewport;
+        var tags = _tags.Find(_fg, frame, frameWidth, vp);
+        foreach (var t in tags) _fg.Clear(t.X0 - 1, t.Y0 - 1, t.X1 + 1, t.Y1 + 1);
+        var tTags = sw.Elapsed.TotalMilliseconds;
+        // Blobs made mostly of darkened or brightened background (a parallax layer or the waterfall seen against the
+        // screen-space model, the edge of a steam cloud) are not sprites.
+        var blobs = Merge(_fg.Components().Where(b => b.SolidFraction >= MinSolidFraction).ToList());
+        var tComp = sw.Elapsed.TotalMilliseconds;
+
+        // HP bars become a flag on the blob under them.
+        var bars = new List<Blob>();
+        foreach (var b in blobs) if (IsHpBar(b, frame, frameWidth, vp)) bars.Add(b);
+        blobs.RemoveAll(bars.Contains);
+
+        var ocrBefore = _tags.OcrMilliseconds;
+        _tags.Read(tags, frame, frameWidth, vp, Ocr);
+        var ocrMs = _tags.OcrMilliseconds - ocrBefore;
+
+        var ownWorld = ctx.OwnWorld;
+        var candidates = new List<Candidate>();
+        var tagUsed = new bool[tags.Count];
+        var tagOwner = new Blob?[tags.Count];
+        foreach (var b in blobs)
+        {
+            var touchesOwn = own is { } ob && b.X0 + vp.X <= ob.X + ob.Width + 2 && b.X1 + vp.X >= ob.X - 2 && b.Y0 + vp.Y <= ob.Y + ob.Height + 2 && b.Y1 + vp.Y >= ob.Y - 2;
+            if (touchesOwn && b.Pixels < OwnFragmentPixels) continue;
+            // The tag under the blob, if any.
+            var cx = (b.X0 + b.X1) / 2.0;
+            var ti = -1;
+            var bestCost = double.MaxValue;
+            for (var i = 0; i < tags.Count; i++)
+            {
+                var t = tags[i];
+                var gapRows = t.Y0 - b.Y1;
+                if (gapRows < -4 || gapRows > TagAboveRows || Math.Abs(t.CentreX - cx) > t.Width / 2.0 + TagSlackX) continue;
+                // A blob much wider than the tag is two sprites run together (the pet against a boar); the tag then
+                // stands on its own rather than naming both.
+                if (b.Width > Math.Max(t.Width * 1.6, t.Width + 40)) continue;
+                var cost = Math.Abs(t.CentreX - cx) + Math.Abs(gapRows - 2);
+                if (cost < bestCost) { bestCost = cost; ti = i; }
+            }
+            // The tag goes to the biggest blob standing on it, not to a stray fragment that happens to be closer.
+            if (ti >= 0 && tagOwner[ti] is { } prev && prev.Pixels >= b.Pixels) ti = -1;
+            if (ti >= 0) tagOwner[ti] = b;
+        }
+        foreach (var b in blobs)
+        {
+            var touchesOwn = own is { } ob && b.X0 + vp.X <= ob.X + ob.Width + 2 && b.X1 + vp.X >= ob.X - 2 && b.Y0 + vp.Y <= ob.Y + ob.Height + 2 && b.Y1 + vp.Y >= ob.Y - 2;
+            if (touchesOwn && b.Pixels < OwnFragmentPixels) continue;
+            var cx = (b.X0 + b.X1) / 2.0;
+            var ti = Array.FindIndex(tagOwner, o => ReferenceEquals(o, b));
+            TagBox? tb = null;
+            if (ti >= 0 && !tagUsed[ti]) { tagUsed[ti] = true; tb = tags[ti]; }
+            // With a tag the feet are exact: centred on the tag, a couple of rows above its box.
+            var feet = tb is not null ? new PointD(tb.CentreX + vp.X, tb.Y0 - 2 + vp.Y) : new PointD(cx + vp.X, b.Y1 + 1 + vp.Y);
+            var bar = bars.FirstOrDefault(r => r.Y1 <= b.Y0 + 4 && r.Y1 >= b.Y0 - 40 && Math.Abs((r.X0 + r.X1) / 2.0 - cx) <= 30);
+            if (bar is not null) bars.Remove(bar);
+            candidates.Add(MakeCandidate(ctx, camX, camY, new CaptureRect(b.X0 + vp.X, b.Y0 + vp.Y, b.Width, b.Height), feet, b.Pixels, tb,
+                bar is not null, touchesOwn, Thumb(frame, frameWidth, vp, b), ownWorld));
+        }
+        // Tags with no blob over them still mark an entity: its sprite stands over unreliable background, or is hidden.
+        for (var i = 0; i < tags.Count; i++)
+        {
+            if (tagUsed[i]) continue;
+            var t = tags[i];
+            // Skip the own tag (inside the own box) and fragments of it.
+            if (own is { } ob && t.CentreX + vp.X >= ob.X && t.CentreX + vp.X <= ob.X + ob.Width && t.Y0 + vp.Y >= ob.Y && t.Y0 + vp.Y <= ob.Y + ob.Height + 4) continue;
+            var feet = new PointD(t.CentreX + vp.X, t.Y0 - 2 + vp.Y);
+            var guessBox = new CaptureRect((int)feet.X - 20, (int)feet.Y - 45, 40, 45);
+            candidates.Add(MakeCandidate(ctx, camX, camY, guessBox, feet, 0, t, false, false, null, ownWorld));
+        }
+
+        var entities = _tracker.Update(candidates, ctx.Frame, ctx.Time);
+        LastTags = tags;
+        var ms = sw.Elapsed.TotalMilliseconds - ocrMs;
+        StageMs[0] += tReg; StageMs[1] += tDiff - tReg; StageMs[2] += tTags - tDiff; StageMs[3] += tComp - tTags; StageMs[4] += ms - tComp;
+        StageFrames++;
+        if (DebugDir is not null) Dump(frame, frameWidth, ctx, entities, camX, camY);
+        return new EntityFrame(ctx.Frame, ctx.Time, entities, (camX, camY), reg.Value, ms, ocrMs);
+    }
+
+    private Registration Fine(ReadOnlySpan<byte> frame, int frameWidth, int[] samples, int gx, int gy, int rx, int ry) =>
+        CameraRegistration.Register(frame, frameWidth, _mask, samples, _mosaic.Pixels, _mosaic.Usable, _mosaic.OriginX, _mosaic.OriginY,
+            _mosaic.Width, _mosaic.Height, gx, gy, rx, ry);
+
+    private static Candidate MakeCandidate(DetectionContext ctx, int camX, int camY, CaptureRect box, PointD feet, int pixels, TagBox? tag,
+        bool hpBar, bool touchesOwn, byte[]? thumb, PointD? ownWorld)
+    {
+        var world = new PointD(camX + feet.X, camY + feet.Y);
+        var nearest = ctx.Footholds.Nearest(world, 40);
+        var on = nearest is { } n && Math.Abs(n.Distance) <= EntityTracker.OnFootholdUnits ? nearest : null;
+        return new Candidate
+        {
+            Box = box, Feet = feet, World = world, Foothold = on, SurfaceDistance = nearest?.Distance, Pixels = pixels, Tag = tag,
+            HpBar = hpBar, TouchesOwn = touchesOwn, Thumb = thumb, OwnDistance = ownWorld is { } o ? o.DistanceTo(world) : null,
+        };
+    }
+
+    /// <summary>Merges blobs that nearly touch while the union stays sprite-sized.</summary>
+    private static List<Blob> Merge(List<Blob> blobs)
+    {
+        var merged = true;
+        while (merged)
+        {
+            merged = false;
+            for (var i = 0; i < blobs.Count && !merged; i++)
+                for (var j = i + 1; j < blobs.Count && !merged; j++)
+                {
+                    Blob a = blobs[i], b = blobs[j];
+                    if (a.X0 > b.X1 + MergeGap || b.X0 > a.X1 + MergeGap || a.Y0 > b.Y1 + MergeGap || b.Y0 > a.Y1 + MergeGap) continue;
+                    int x0 = Math.Min(a.X0, b.X0), y0 = Math.Min(a.Y0, b.Y0), x1 = Math.Max(a.X1, b.X1), y1 = Math.Max(a.Y1, b.Y1);
+                    if (x1 - x0 + 1 > MergeMaxWidth || y1 - y0 + 1 > MergeMaxHeight) continue;
+                    blobs[i] = new Blob(x0, y0, x1, y1, a.Pixels + b.Pixels, a.SumX + b.SumX, a.SumY + b.SumY, a.Solid + b.Solid);
+                    blobs.RemoveAt(j);
+                    merged = true;
+                }
+        }
+        return blobs;
+    }
+
+    private static bool IsHpBar(Blob b, ReadOnlySpan<byte> frame, int frameWidth, CaptureRect vp)
+    {
+        if (b.Width < HpBarMinWidth || b.Width > HpBarMaxWidth || b.Height < HpBarMinHeight || b.Height > HpBarMaxHeight) return false;
+        var green = 0;
+        for (var y = b.Y0; y <= b.Y1; y++)
+            for (var x = b.X0; x <= b.X1; x++)
+            {
+                var o = ((y + vp.Y) * frameWidth + x + vp.X) * 4;
+                if (frame[o + 1] > 150 && frame[o + 2] < 120 && frame[o] < 120) green++;
+            }
+        return green >= HpBarGreenPixels;
+    }
+
+    /// <summary>8x8 mean luma of the blob's foreground pixels (background cells 0), for the appearance check.</summary>
+    private byte[] Thumb(ReadOnlySpan<byte> frame, int frameWidth, CaptureRect vp, Blob b)
+    {
+        var sum = new int[64];
+        var n = new int[64];
+        var mask = _fg.Mask;
+        int w = _fg.Width;
+        for (var y = b.Y0; y <= b.Y1; y++)
+        {
+            var cy = (y - b.Y0) * 8 / b.Height;
+            for (var x = b.X0; x <= b.X1; x++)
+            {
+                if (mask[y * w + x] == 0) continue;
+                var cx = (x - b.X0) * 8 / b.Width;
+                var o = ((y + vp.Y) * frameWidth + x + vp.X) * 4;
+                sum[cy * 8 + cx] += (frame[o] + 2 * frame[o + 1] + frame[o + 2]) >> 2;
+                n[cy * 8 + cx]++;
+            }
+        }
+        var thumb = new byte[64];
+        for (var i = 0; i < 64; i++) thumb[i] = (byte)(n[i] == 0 ? 0 : sum[i] / n[i]);
+        return thumb;
+    }
+
+    public static uint KindColour(EntityKind kind) => kind switch
+    {
+        EntityKind.Mob => 0xFFFF3030,
+        EntityKind.Player => 0xFF30A0FF,
+        EntityKind.Pet => 0xFF30FFFF,
+        EntityKind.Drop => 0xFFFFE030,
+        EntityKind.Effect => 0xFFC060FF,
+        _ => 0xFFB0B0B0,
+    };
+
+    /// <summary>
+    /// Draws the detections of the last frame onto a copy of it: boxes by kind, tag boxes (cyan), the own box (white),
+    /// optionally the foreground classes; at half size when <paramref name="half"/>, with the labels drawn after
+    /// scaling so they stay legible.
+    /// </summary>
+    public Canvas Annotate(ReadOnlySpan<byte> frame, int frameWidth, EntityFrame result, bool foreground, bool half = false)
+    {
+        var canvas = new Canvas(frame, frameWidth, frame.Length / 4 / frameWidth);
+        var vp = _mask.Viewport;
+        if (foreground && result.Camera is not null)
+        {
+            int w = _mask.Width, h = _mask.Height;
+            for (var y = 0; y < h; y++)
+                for (var x = 0; x < w; x++)
+                {
+                    var c = (PixelClass)_fg.Classes[y * w + x];
+                    if (_mask.Bits[y * w + x] != 0) canvas.Tint(x + vp.X, y + vp.Y, 0xFF0000FF, 0.3);
+                    else if (c == PixelClass.Ignored) canvas.Tint(x + vp.X, y + vp.Y, 0xFF808080, 0.45);
+                    else if (DebugDir is not null && c == PixelClass.Shade) canvas.Tint(x + vp.X, y + vp.Y, 0xFF00FFFF, 0.6);
+                    else if (DebugDir is not null && c == PixelClass.Bright) canvas.Tint(x + vp.X, y + vp.Y, 0xFFFFFF00, 0.6);
+                    else if (_fg.Mask[y * w + x] != 0) canvas.Tint(x + vp.X, y + vp.Y, 0xFFFF0000, 0.4);
+                    else if (c == PixelClass.Fog) canvas.Tint(x + vp.X, y + vp.Y, 0xFF00FF00, 0.25);
+                }
+        }
+        var t = half ? 3 : 2;
+        if (LastOwnBox is { } own) canvas.Rect(own.X, own.Y, own.Width, own.Height, 0xFFFFFFFF, half ? 2 : 1);
+        foreach (var tag in LastTags) canvas.Rect(tag.X0 + vp.X, tag.Y0 + vp.Y, tag.Width, tag.Height, 0xFF00FFFF, half ? 2 : 1);
+        foreach (var e in result.Entities) canvas.Rect(e.Box.X, e.Box.Y, e.Box.Width, e.Box.Height, KindColour(e.Kind), t);
+        if (half) canvas = canvas.Half();
+        var s = half ? 2 : 1;
+        foreach (var e in result.Entities)
+        {
+            var label = $"{e.Kind} {e.Confidence:0.0} #{e.TrackId}{(e.Name is null ? "" : " " + (e.Level is { } lv ? lv > 0 ? $"Lv{lv} " : "Lv? " : "") + e.Name)}";
+            canvas.Text(e.Box.X / s, Math.Max(0, e.Box.Y / s - 9), label, KindColour(e.Kind));
+        }
+        return canvas;
+    }
+
+    private void Dump(ReadOnlySpan<byte> frame, int frameWidth, DetectionContext ctx, List<DetectedEntity> entities, int camX, int camY)
+    {
+        Directory.CreateDirectory(DebugDir!);
+        var r = new EntityFrame(ctx.Frame, ctx.Time, entities, (camX, camY), null, 0, 0);
+        Annotate(frame, frameWidth, r, foreground: true).Save(Path.Combine(DebugDir!, $"{ctx.Frame:0000}.png"));
+    }
+}
