@@ -49,7 +49,7 @@ public sealed class IdentityReader
         string job = "", name = "";
         if (_jobName.Lines is { Count: > 0 } jn)
         {
-            job = jn[0].Text.Trim();
+            job = JobNames.Snap(jn[0].Text.Trim());
             name = jn.Count > 1 ? jn[1].Text.Trim() : "";
             confidence = Math.Min(confidence, jn.Min(x => x.Confidence));
         }

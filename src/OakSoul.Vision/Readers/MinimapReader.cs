@@ -223,9 +223,23 @@ public sealed class MapNameTracker
         Current = lines.Count switch
         {
             0 => null,
-            1 => ("", lines[0].Text.Trim(), lines[0].Confidence),
-            _ => (lines[0].Text.Trim(), lines[1].Text.Trim(), Math.Min(lines[0].Confidence, lines[1].Confidence)),
+            1 => ("", Normalize(lines[0].Text), lines[0].Confidence),
+            _ => (Normalize(lines[0].Text), Normalize(lines[1].Text), Math.Min(lines[0].Confidence, lines[1].Confidence)),
         };
         return true;
+    }
+
+    /// <summary>
+    /// Map names end in roman numerals, which OCR confuses with lower-case L and the digit one ("Rocky Road IIl").
+    /// A trailing token made only of I, V, X, l, 1 and | is rewritten as a numeral.
+    /// </summary>
+    public static string Normalize(string text)
+    {
+        var trimmed = text.Trim();
+        var space = trimmed.LastIndexOf(' ');
+        if (space < 0) return trimmed;
+        var last = trimmed[(space + 1)..];
+        if (last.Length == 0 || !last.All(c => "IVXl1|".Contains(c)) || !last.Any(c => "IVXl1|".Contains(c))) return trimmed;
+        return trimmed[..(space + 1)] + last.Replace('l', 'I').Replace('1', 'I').Replace('|', 'I');
     }
 }

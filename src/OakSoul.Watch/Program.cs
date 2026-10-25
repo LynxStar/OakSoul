@@ -102,7 +102,8 @@ var consumer = Task.Run(async () =>
             frames++;
             if (state != last)
             {
-                Console.WriteLine($"{DateTime.Now:HH:mm:ss.fff}  {state.Describe(last)}");
+                var stamp = source.NeedsMainLoop ? DateTime.Now.ToString("HH:mm:ss.fff") : $"t={TimeSpan.FromSeconds(frame.Pts):m\\:ss}  ";
+                Console.WriteLine($"{stamp}  {state.Describe(last)}");
                 last = state;
             }
         }
