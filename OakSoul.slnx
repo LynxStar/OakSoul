@@ -3,5 +3,6 @@
     <Project Path="src/OakSoul.Capture/OakSoul.Capture.csproj" />
     <Project Path="src/OakSoul.Recorder/OakSoul.Recorder.csproj" />
     <Project Path="src/OakSoul.Vision/OakSoul.Vision.csproj" />
+    <Project Path="src/OakSoul.Watch/OakSoul.Watch.csproj" />
   </Folder>
 </Solution>

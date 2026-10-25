@@ -204,8 +204,12 @@ public static class MinimapReader
 /// </summary>
 public sealed class MapNameTracker
 {
-    private ulong _lastHash;
+    private ulong _lastHash, _candidateHash;
+    private int _candidateFrames;
     private (string Region, string Map, double Confidence)? _last;
+
+    /// <summary>Frames the name block must hold a new appearance before it is read; rides out transitions and noise.</summary>
+    public int StableFrames { get; init; } = 3;
 
     public (string Region, string Map, double Confidence)? Current => _last;
 
@@ -218,6 +222,9 @@ public sealed class MapNameTracker
         var px = geometry.ExtractNative(frame, new HudRegion(0, "minimap.name_block", RegionKind.Fixed, block, ""));
         var hash = Hash(px);
         if (hash == _lastHash && _last is not null) return false;
+        if (hash == _candidateHash) _candidateFrames++;
+        else { _candidateHash = hash; _candidateFrames = 1; }
+        if (_candidateFrames < StableFrames) return false;
         _lastHash = hash;
         _last = MinimapReader.ReadMapName(geometry, frame, panel);
         return true;

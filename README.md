@@ -113,6 +113,16 @@ Screen Recording permission is granted per responsible application. When running
 
 `MapNameTracker` reads the region and map names (for example Dungeon and Ant Tunnel IV) through Apple's Vision text recognizer, exposed by the shim as `TextRecognizer`. It only re-reads when a coarse hash of the name block changes, so the roughly 30 ms OCR cost is paid on map change rather than per frame; the first call takes a few hundred milliseconds while Vision loads. Validated on all sixteen keyframes, windowed and fullscreen alike.
 
+### Live watcher
+
+`OakSoul.Watch` runs the readers on a live capture and prints a line whenever a value changes:
+
+```
+dotnet run --project src/OakSoul.Watch -- --pid 1234 --title "MapleStory" --crop-top 28
+```
+
+It takes the same window selection as the recorder plus `--crop-top`, `--fps` and `--seconds`. Each line shows HP with its percentage, MP, EXP total and percent, region and map name, your minimap position and the number of other players on the minimap, with a `*` after each field that changed. Every ten seconds a heartbeat reports frames, frame rate, reader time per frame and dropped frames; the readers cost well under a millisecond per native frame. If the frame does not match the native layout, for example a windowed client captured with its title bar, it says so and suggests `--crop-top 28`.
+
 ## Notes
 
 Design rationale, the storage benchmark and other findings are in [docs/capture-notes.md](docs/capture-notes.md).
