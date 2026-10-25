@@ -14,7 +14,7 @@
   <!-- Compile the Swift ScreenCaptureKit shim with the command-line tools; no Xcode needed. -->
   <Target Name="BuildSwiftShim" BeforeTargets="BeforeBuild" Inputs="$(SwiftShimSource);$(MSBuildThisFileFullPath)" Outputs="$(SwiftShimOutput)" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
     <MakeDir Directories="$(SwiftShimOutputDir)" />
-    <Exec Command="swiftc -O -swift-version 5 -emit-library -module-name OakSoulCapture -o &quot;$(SwiftShimOutput)&quot; &quot;$(SwiftShimSource)&quot; -framework Foundation -framework CoreGraphics -framework CoreMedia -framework CoreVideo -framework ScreenCaptureKit" />
+    <Exec Command="swiftc -O -swift-version 5 -emit-library -module-name OakSoulCapture -o &quot;$(SwiftShimOutput)&quot; &quot;$(SwiftShimSource)&quot; -framework Foundation -framework CoreGraphics -framework CoreMedia -framework CoreVideo -framework ScreenCaptureKit -framework Vision" />
   </Target>
 
   <ItemGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">

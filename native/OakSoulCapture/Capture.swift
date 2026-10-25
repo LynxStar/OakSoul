@@ -290,3 +290,69 @@ public func oaksoul_wait_process(_ pid: Int32, _ noHang: Int32) -> Int32 {
     if termSignal == 0 { return (status >> 8) & 0xff }
     return 128 + termSignal
 }
+
+// MARK: - Text recognition (Apple Vision)
+
+import Vision
+
+/// Recognises text in a tightly packed BGRA image. The image is upscaled by `upscale` first, since Vision does
+/// better on text taller than a dozen pixels. Returns the number of lines found, or -1 with *errorOut set; on
+/// success *jsonOut holds a JSON array of {text, confidence, x, y, width, height} in input pixel coordinates
+/// with the origin at the top-left. Free both strings with oaksoul_free_string.
+@_cdecl("oaksoul_recognize_text")
+public func oaksoul_recognize_text(
+    _ bgra: UnsafePointer<UInt8>, _ width: Int32, _ height: Int32, _ bytesPerRow: Int32, _ upscale: Int32,
+    _ jsonOut: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?,
+    _ errorOut: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
+) -> Int32 {
+    func fail(_ message: String) -> Int32 {
+        errorOut?.pointee = strdup(message)
+        return -1
+    }
+    let w = Int(width), h = Int(height), bpr = Int(bytesPerRow)
+    let scale = max(1, Int(upscale))
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+    guard let provider = CGDataProvider(dataInfo: nil, data: bgra, size: bpr * h, releaseData: { _, _, _ in }),
+          let source = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: bpr,
+                               space: colorSpace, bitmapInfo: bitmapInfo, provider: provider, decode: nil,
+                               shouldInterpolate: true, intent: .defaultIntent)
+    else { return fail("could not wrap the pixels as a CGImage") }
+
+    guard let context = CGContext(data: nil, width: w * scale, height: h * scale, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: colorSpace, bitmapInfo: bitmapInfo.rawValue)
+    else { return fail("could not create the upscale context") }
+    context.interpolationQuality = .high
+    context.draw(source, in: CGRect(x: 0, y: 0, width: w * scale, height: h * scale))
+    guard let image = context.makeImage() else { return fail("could not render the upscaled image") }
+
+    let request = VNRecognizeTextRequest()
+    request.recognitionLevel = .accurate
+    request.usesLanguageCorrection = false
+    request.minimumTextHeight = 0.02
+    do {
+        try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+    } catch {
+        return fail("text recognition failed: \(error.localizedDescription)")
+    }
+
+    var rows: [[String: Any]] = []
+    for observation in request.results ?? [] {
+        guard let candidate = observation.topCandidates(1).first else { continue }
+        let box = observation.boundingBox   // normalised, origin bottom-left
+        rows.append([
+            "text": candidate.string,
+            "confidence": Double(candidate.confidence),
+            "x": box.origin.x * Double(w),
+            "y": (1 - box.origin.y - box.size.height) * Double(h),
+            "width": box.size.width * Double(w),
+            "height": box.size.height * Double(h),
+        ])
+    }
+    rows.sort { ($0["y"] as! Double) < ($1["y"] as! Double) }
+    guard let payload = try? JSONSerialization.data(withJSONObject: rows),
+          let json = String(data: payload, encoding: .utf8)
+    else { return fail("could not encode the result") }
+    jsonOut?.pointee = strdup(json)
+    return Int32(rows.count)
+}

@@ -109,6 +109,10 @@ Screen Recording permission is granted per responsible application. When running
 - **Bars** are measured from their highlight line and the run of saturated columns, so they survive small layout shifts. They read about one percent high on HP; the numbers are the authoritative value.
 - **Scaled frames** are best effort: the reader tries three ink thresholds and keeps the reading with the fewest unknown glyphs. On the 1.265x fullscreen recording HP read exactly on every keyframe, MP on three of five and EXP on four of five; the misses are blurred glyphs reported as `?`, never wrong digits.
 
+`MinimapReader.Read(geometry, frame)` returns the minimap panel as drawn, the map image inside it, the player's own dot and every other marker. The panel's top-left corner is fixed but its size follows the map, so the right edge is anchored on the orange WORLD button in the title bar and the bottom on the border colours down the left side; the map image sits at fixed insets inside. Dots are colour blobs: yellow is you, red other players, teal portals. `SelfInMap` gives your dot relative to the map image, which is what the server's minimap metadata will turn into world coordinates. About half a millisecond on a native frame.
+
+`MapNameTracker` reads the region and map names (for example Dungeon and Ant Tunnel IV) through Apple's Vision text recognizer, exposed by the shim as `TextRecognizer`. It only re-reads when a coarse hash of the name block changes, so the roughly 30 ms OCR cost is paid on map change rather than per frame; the first call takes a few hundred milliseconds while Vision loads. Validated on all sixteen keyframes, windowed and fullscreen alike.
+
 ## Notes
 
 Design rationale, the storage benchmark and other findings are in [docs/capture-notes.md](docs/capture-notes.md).

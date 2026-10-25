@@ -38,6 +38,10 @@ internal static unsafe partial class NativeMethods
     [LibraryImport(Lib, EntryPoint = "oaksoul_pump_main_loop")]
     internal static partial void PumpMainLoop(double seconds);
 
+    /// <summary>Apple Vision text recognition on a BGRA image; returns the line count or -1 with an error string.</summary>
+    [LibraryImport(Lib, EntryPoint = "oaksoul_recognize_text")]
+    internal static partial int RecognizeText(byte* bgra, int width, int height, int bytesPerRow, int upscale, out nint json, out nint error);
+
     /// <summary>Copies a native UTF-8 string into managed memory and frees the native one.</summary>
     internal static string? TakeString(nint pointer)
     {
