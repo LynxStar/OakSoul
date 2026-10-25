@@ -1,0 +1,24 @@
+{
+  "frame": "1366x768 native client frame, title bar cropped; x,y from top-left; rect = [x, y, w, h]",
+  "regions": [
+    {"id": 1,  "name": "minimap.panel",        "kind": "fixed",       "rect": [2, 4, 228, 218],    "read": "whole minimap window; anchor for 1a-1c; can be dragged or collapsed by the player"},
+    {"id": 2,  "name": "minimap.title_bar",    "kind": "fixed",       "rect": [2, 4, 228, 18],     "read": "minimize / maximize / WORLD buttons: detect collapsed state"},
+    {"id": 3,  "name": "minimap.map_name",     "kind": "fixed",       "rect": [2, 22, 228, 46],    "read": "OCR two lines: region name, map name -> map id via server metadata"},
+    {"id": 4,  "name": "minimap.map",          "kind": "fixed",       "rect": [8, 70, 216, 120],   "read": "dots by colour: yellow = self, red = other players, blue/green = portals and NPCs -> world position"},
+    {"id": 5,  "name": "status.level",         "kind": "fixed",       "rect": [292, 736, 68, 26],  "read": "OCR digits in the orange level badge"},
+    {"id": 6,  "name": "status.class_name",    "kind": "fixed",       "rect": [362, 736, 132, 26], "read": "OCR two lines: job (top), character name (bottom); name also seeds own-name-tag search"},
+    {"id": 7,  "name": "status.hp",            "kind": "fixed",       "rect": [500, 736, 106, 24], "read": "top row OCR 'cur/max'; bottom row red fill ratio of the bar (y 750..760)"},
+    {"id": 8,  "name": "status.mp",            "kind": "fixed",       "rect": [612, 736, 106, 24], "read": "top row OCR 'cur/max'; bottom row blue fill ratio"},
+    {"id": 9,  "name": "status.exp",           "kind": "fixed",       "rect": [724, 736, 122, 24], "read": "top row OCR total and percent; bottom row green fill ratio"},
+    {"id": 10, "name": "status.buttons",       "kind": "fixed",       "rect": [858, 734, 222, 32], "read": "CASH SHOP / MENU / SHORT CUT: ignore, layout anchor only"},
+    {"id": 11, "name": "chat.input_line",      "kind": "fixed",       "rect": [290, 702, 520, 28], "read": "latest chat line / input box; OCR only when the bot needs party chat"},
+    {"id": 12, "name": "chat.icons",           "kind": "fixed",       "rect": [816, 702, 266, 28], "read": "chat mode and shortcut icons: ignore"},
+    {"id": 13, "name": "quickslot",            "kind": "fixed",       "rect": [935, 624, 146, 78], "read": "2 rows x 4 cells, 35 px pitch: skill icon, cooldown shade, item count digits"},
+    {"id": 14, "name": "buffs.row1",           "kind": "fixed",       "rect": [1050, 4, 312, 32],  "read": "active buff icons, 32 px, anchored at the right edge (first at x 1330) and growing leftward; icon pitch still to measure with two or more buffs"},
+    {"id": 15, "name": "buffs.row2",           "kind": "provisional", "rect": [1050, 38, 312, 32], "read": "second buff row expected when the first fills; verify"},
+    {"id": 16, "name": "system_notices",       "kind": "provisional", "rect": [1140, 520, 226, 110], "read": "'You received EXP' style lines; OCR optional, mostly ignore"},
+    {"id": 17, "name": "chat.history",         "kind": "provisional", "rect": [290, 560, 792, 140], "read": "expanded chat log; collapsed in this frame; ignore unless party chat is needed"},
+    {"id": 18, "name": "own_character",        "kind": "dynamic",     "rect": [728, 578, 70, 72],  "read": "found each frame by own name tag (white text on dark box); feet = tag top minus a fixed offset; camera-to-world anchor"},
+    {"id": 19, "name": "world.viewport",       "kind": "fixed",       "rect": [0, 0, 1366, 702],   "read": "detectors for mobs, drops, players, ladders run here with regions 1, 13, 14 masked out"}
+  ]
+}

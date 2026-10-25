@@ -95,6 +95,10 @@ ffmpeg runs in its own process group, so Ctrl-C stops the recorder cleanly: the 
 
 Screen Recording permission is granted per responsible application. When running from Terminal, allow Terminal under System Settings > Privacy & Security > Screen Recording. Without it, listing windows times out or returns nothing.
 
+## Vision
+
+`src/OakSoul.Vision` holds the HUD attention regions for the client at its native 1366x768 (title bar cropped) in `Layouts/hud-1366x768.json`, loaded through `HudLayout.Native1366x768`. Each region has a name, a kind (fixed, provisional, or dynamic), a rectangle in frame pixels from the top-left, and a note on what gets read from it. Edit the JSON to move a region; the loader rejects rectangles that do not fit the frame.
+
 ## Notes
 
 Design rationale, the storage benchmark and other findings are in [docs/capture-notes.md](docs/capture-notes.md).
