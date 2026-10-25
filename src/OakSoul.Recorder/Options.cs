@@ -1,3 +1,5 @@
+using OakSoul.Capture;
+
 namespace OakSoul.Recorder;
 
 /// <summary>Command-line options. Window selection is deliberately exact: no fuzzy matching, no defaults.</summary>
@@ -19,6 +21,8 @@ public sealed class Options
     public int? Width { get; private set; }
     public int? Height { get; private set; }
     public int Queue { get; private set; } = 30;
+    public CaptureRect? Crop { get; private set; }
+    public int CropTop { get; private set; }
 
     /// <summary>4:2:0 encoders need even dimensions; pad by one row or column rather than resampling the capture.</summary>
     private const string EvenPad = "-vf pad=ceil(iw/2)*2:ceil(ih/2)*2";
@@ -67,6 +71,8 @@ public sealed class Options
                     case "--width": o.Width = int.Parse(Next(i++)); break;
                     case "--height": o.Height = int.Parse(Next(i++)); break;
                     case "--queue": o.Queue = int.Parse(Next(i++)); break;
+                    case "--crop": o.Crop = ParseRect(Next(i++)); break;
+                    case "--crop-top": o.CropTop = int.Parse(Next(i++)); break;
                     case "-h": case "--help": return null;
                     default: throw new ArgumentException($"unknown option {args[i]}");
                 }
@@ -91,8 +97,18 @@ public sealed class Options
         return o;
     }
 
+    private static CaptureRect ParseRect(string text)
+    {
+        var parts = text.Split(',');
+        if (parts.Length != 4) throw new ArgumentException("--crop expects X,Y,W,H in points");
+        return new CaptureRect(int.Parse(parts[0]), int.Parse(parts[1]), int.Parse(parts[2]), int.Parse(parts[3]));
+    }
+
     private string? Validate()
     {
+        if (Crop is { } c && (c.X < 0 || c.Y < 0 || c.Width <= 0 || c.Height <= 0)) return "--crop needs non-negative X,Y and positive W,H";
+        if (CropTop < 0) return "--crop-top cannot be negative";
+        if (Crop is not null && CropTop > 0) return "use either --crop or --crop-top, not both";
         if (Fps <= 0 || Fps > 240) return "--fps must be between 1 and 240";
         if (Seconds < 0) return "--seconds cannot be negative";
         if (KeyframeEvery < 0) return "--keyframe-every cannot be negative";
@@ -122,6 +138,8 @@ public sealed class Options
               --ffmpeg-args "..."        raw encoder arguments instead of a preset (use with --ext)
               --width N --height N       capture size in pixels (default: window size in points = 1x)
               --queue N                  frames buffered between capture and encoder (default 30)
+              --crop X,Y,W,H             capture only this region of the window, in points from its top-left
+              --crop-top N               drop N points from the top, e.g. 28 for a standard macOS title bar
             """);
     }
 }

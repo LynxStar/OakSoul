@@ -43,8 +43,23 @@ for (var attempt = 0; attempt < 10; attempt++)
     if (stable) break;
 }
 
-var requestedWidth = options.Width ?? (int)window.Width;
-var requestedHeight = options.Height ?? (int)window.Height;
+CaptureRect? crop = options.Crop;
+if (options.CropTop > 0)
+{
+    if (options.CropTop >= window.Height)
+    {
+        Console.Error.WriteLine($"error: --crop-top {options.CropTop} is not smaller than the window height {window.Height:0}.");
+        return 1;
+    }
+    crop = new CaptureRect(0, options.CropTop, (int)window.Width, (int)window.Height - options.CropTop);
+}
+if (crop is { } r && (r.X + r.Width > window.Width || r.Y + r.Height > window.Height))
+{
+    Console.Error.WriteLine($"error: crop {r} does not fit inside the {window.Width:0}x{window.Height:0} window.");
+    return 1;
+}
+var requestedWidth = options.Width ?? crop?.Width ?? (int)window.Width;
+var requestedHeight = options.Height ?? crop?.Height ?? (int)window.Height;
 var (encoderArgs, extension) = options.ResolveEncoder();
 
 var sessionName = options.SessionName ?? $"{DateTime.Now:yyyyMMdd-HHmmss}-{Sanitize(window.Title)}";
@@ -53,7 +68,7 @@ Directory.CreateDirectory(sessionDir);
 var videoPath = Path.Combine(sessionDir, $"video.{extension}");
 
 Console.WriteLine($"window   {window}");
-Console.WriteLine($"capture  {requestedWidth}x{requestedHeight} @ {options.Fps} fps, encoder: {encoderArgs}");
+Console.WriteLine($"capture  {requestedWidth}x{requestedHeight} @ {options.Fps} fps{(crop is null ? "" : $", crop {crop}")}, encoder: {encoderArgs}");
 Console.WriteLine($"session  {sessionDir}");
 Console.WriteLine(options.Seconds > 0 ? $"stopping after {options.Seconds:0.#} s" : "press Ctrl-C to stop");
 
@@ -67,7 +82,7 @@ using var metadata = new MetadataWriter(Path.Combine(sessionDir, "frames.jsonl")
 CaptureStream stream;
 try
 {
-    stream = CaptureStream.Start(window.Id, requestedWidth, requestedHeight, options.Fps, options.Queue);
+    stream = CaptureStream.Start(window.Id, requestedWidth, requestedHeight, options.Fps, options.Queue, crop);
 }
 catch (InvalidOperationException ex)
 {
@@ -129,6 +144,7 @@ var summary = new
     window,
     width = video.Width,
     height = video.Height,
+    crop = crop?.ToString(),
     fps = options.Fps,
     encoderArgs,
     video = Path.GetFileName(videoPath),

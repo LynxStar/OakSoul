@@ -54,14 +54,16 @@ public sealed class CaptureStream : IDisposable
 
     /// <summary>
     /// Starts capturing <paramref name="windowId"/>. Pass 0 for width and height to capture at the window's
-    /// point size, which gives 1x game pixels on a Retina display.
+    /// point size (or the crop's size), which gives 1x game pixels on a Retina display. <paramref name="crop"/>
+    /// selects a region of the window in points, for example to leave out a title bar.
     /// </summary>
-    public static unsafe CaptureStream Start(uint windowId, int width = 0, int height = 0, int fps = 30, int queueCapacity = 8)
+    public static unsafe CaptureStream Start(uint windowId, int width = 0, int height = 0, int fps = 30, int queueCapacity = 8, CaptureRect? crop = null)
     {
         ScreenCapture.Initialize();
         var stream = new CaptureStream(queueCapacity);
         stream._self = GCHandle.Alloc(stream);
-        var handle = NativeMethods.StartCapture(windowId, width, height, fps, &OnFrame, GCHandle.ToIntPtr(stream._self), out var error);
+        var c = crop ?? default;
+        var handle = NativeMethods.StartCapture(windowId, width, height, fps, c.X, c.Y, c.Width, c.Height, &OnFrame, GCHandle.ToIntPtr(stream._self), out var error);
         if (handle == 0)
         {
             var message = NativeMethods.TakeString(error) ?? "unknown error";

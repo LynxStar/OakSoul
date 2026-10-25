@@ -3,7 +3,7 @@
 // Exports (all @_cdecl):
 //   oaksoul_init()                       initialise the CoreGraphics window-server connection (call once, main thread)
 //   oaksoul_list_windows() -> char*      JSON array of shareable windows; free with oaksoul_free_string
-//   oaksoul_start_capture(...) -> i64    start streaming one window by ID; 0 on failure with *errorOut set
+//   oaksoul_start_capture(...) -> i64    start streaming one window by ID, optionally cropped; 0 on failure with *errorOut set
 //   oaksoul_stop_capture(handle)         stop a stream started above
 //   oaksoul_pump_main_loop(seconds)      run the main CFRunLoop for up to `seconds` (hosts without AppKit call this)
 //
@@ -130,6 +130,7 @@ public func oaksoul_free_string(_ pointer: UnsafeMutablePointer<CChar>?) {
 @_cdecl("oaksoul_start_capture")
 public func oaksoul_start_capture(
     _ windowID: UInt32, _ width: Int32, _ height: Int32, _ fps: Int32,
+    _ cropX: Int32, _ cropY: Int32, _ cropWidth: Int32, _ cropHeight: Int32,
     _ callback: OakSoulFrameCallback, _ context: UnsafeMutableRawPointer?,
     _ errorOut: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
 ) -> Int64 {
@@ -145,8 +146,15 @@ public func oaksoul_start_capture(
 
     let filter = SCContentFilter(desktopIndependentWindow: window)
     let configuration = SCStreamConfiguration()
-    configuration.width = Int(width > 0 ? width : Int32(window.frame.size.width))
-    configuration.height = Int(height > 0 ? height : Int32(window.frame.size.height))
+    // An optional crop, in points relative to the window's top-left corner (for example to drop a title bar).
+    let hasCrop = cropWidth > 0 && cropHeight > 0
+    if hasCrop {
+        configuration.sourceRect = CGRect(x: CGFloat(cropX), y: CGFloat(cropY), width: CGFloat(cropWidth), height: CGFloat(cropHeight))
+    }
+    let baseWidth = hasCrop ? cropWidth : Int32(window.frame.size.width)
+    let baseHeight = hasCrop ? cropHeight : Int32(window.frame.size.height)
+    configuration.width = Int(width > 0 ? width : baseWidth)
+    configuration.height = Int(height > 0 ? height : baseHeight)
     configuration.pixelFormat = kCVPixelFormatType_32BGRA
     configuration.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(max(fps, 1)))
     configuration.queueDepth = 8

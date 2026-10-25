@@ -8,6 +8,8 @@ Design rationale and measurements for the capture layer.
 
 **Capture at 1x points.** On a Retina display the window is requested at its point size, so frames contain the original game pixels. This keeps template matching exact and halves the work. `--width` and `--height` override it.
 
+**Crop before scale.** `--crop X,Y,W,H` (or the `--crop-top N` shortcut) sets ScreenCaptureKit's source rectangle, in points from the window's top-left, so the title bar of a windowed client never enters the frame. Measured on the real client: windowed, the window is 1366x796 with a 28 point title bar over a native 1366x768 render, and `--crop-top 28` gives pixel-exact frames. Fullscreen, the same client is 1728x1116 with 72 point black bars top and bottom and the render scaled 1.27x, so fullscreen captures are resampled and softer; prefer windowed for vision work.
+
 **Why a Swift shim.** Python can reach Objective-C frameworks at run time through PyObjC, but .NET interop is P/Invoke to C functions. ScreenCaptureKit needs selectors, blocks and a delegate class, so a few dozen lines of Swift in `native/OakSoulCapture/Capture.swift` expose plain C functions instead (`oaksoul_init`, `oaksoul_list_windows`, `oaksoul_start_capture`, `oaksoul_stop_capture`, `oaksoul_pump_main_loop`). The .NET macOS workload would avoid the shim but requires full Xcode. The shim is built with `swiftc` from the Command Line Tools by an MSBuild target in `OakSoul.Capture.csproj`.
 
 **Main run loop.** A console host has no AppKit run loop, so `Program.cs` calls `PumpMainLoop` in a loop on the main thread while capturing. Frames arrive on a native thread, are copied into pooled buffers and queued on a bounded channel that drops the oldest frame when full.

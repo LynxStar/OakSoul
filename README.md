@@ -33,10 +33,10 @@ Record one minute of a window chosen by process ID and exact title:
 dotnet run --project src/OakSoul.Recorder -- --pid 1234 --title "Exact Title" --seconds 60
 ```
 
-Record by window ID with the x264 4:4:4 preset and a keyframe every second:
+Record by window ID with the x264 4:4:4 preset, a keyframe every second, and the macOS title bar cropped off:
 
 ```
-dotnet run --project src/OakSoul.Recorder -- --window-id 5678 --encoder x264 --keyframe-every 1
+dotnet run --project src/OakSoul.Recorder -- --window-id 5678 --encoder x264 --keyframe-every 1 --crop-top 28
 ```
 
 Window selection is exact. There is no fuzzy matching, and if zero or several windows match, the recorder refuses and says so.
@@ -57,7 +57,11 @@ Window selection is exact. There is no fuzzy matching, and if zero or several wi
 --ffmpeg-args "..."        raw encoder arguments instead of a preset (use with --ext)
 --width N --height N       capture size in pixels (default: window size in points = 1x)
 --queue N                  frames buffered between capture and encoder (default 30)
+--crop X,Y,W,H             capture only this region of the window, in points from its top-left
+--crop-top N               drop N points from the top, e.g. 28 for a standard macOS title bar
 ```
+
+A windowed CrossOver client carries a standard 28 point macOS title bar, so `--crop-top 28` yields frames of exactly the game's native size (1366x768 for a 1366x796 window). The crop is applied by ScreenCaptureKit before scaling, and `session.json` records it.
 
 ## Encoder presets
 
