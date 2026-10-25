@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/OakSoul.Capture/OakSoul.Capture.csproj" />
     <Project Path="src/OakSoul.MapExport/OakSoul.MapExport.csproj" />
+    <Project Path="src/OakSoul.MobInfo/OakSoul.MobInfo.csproj" />
     <Project Path="src/OakSoul.Recorder/OakSoul.Recorder.csproj" />
     <Project Path="src/OakSoul.SpriteExport/OakSoul.SpriteExport.csproj" />
     <Project Path="src/OakSoul.Vision/OakSoul.Vision.csproj" />
