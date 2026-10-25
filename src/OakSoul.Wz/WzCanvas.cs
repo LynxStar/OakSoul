@@ -44,7 +44,7 @@ public sealed class WzCanvas
     /// <summary>The effective pixel format, <see cref="Format"/> + <see cref="Format2"/>.</summary>
     public int PixelFormat => Format + Format2;
 
-    /// <summary>Absolute file offset of the pixel block (the 0 byte that precedes the compressed stream).</summary>
+    /// <summary>Absolute file offset (archive or pack) of the pixel block (the 0 byte that precedes the compressed stream).</summary>
     public long DataOffset { get; }
 
     /// <summary>Length of the pixel block in bytes, including the leading 0 byte.</summary>
@@ -54,14 +54,14 @@ public sealed class WzCanvas
     public string FullPath => Image.Path + "/" + Node.Path;
 
     /// <summary>The raw pixel block as stored in the archive.</summary>
-    public byte[] ReadRaw() => Image.File.ReadBytes(DataOffset, DataLength);
+    public byte[] ReadRaw() => Image.ReadBytes(DataOffset, DataLength);
 
     /// <summary>True when the stored stream is plain zlib (the only layout <see cref="Decode"/> accepts).</summary>
     public bool IsZlib()
     {
         if (DataLength < 3)
             return false;
-        var head = Image.File.ReadBytes(DataOffset, 3);
+        var head = Image.ReadBytes(DataOffset, 3);
         return IsZlibHeader(head.AsSpan(1));
     }
 
@@ -145,7 +145,7 @@ public sealed class WzCanvas
     }
 
     private WzFormatException Fail(string what, Exception? inner = null) =>
-        new($"{Image.File.FilePath}: canvas '{FullPath}' ({Width}x{Height}): {what}.", inner);
+        new($"{Image.SourcePath}: canvas '{FullPath}' ({Width}x{Height}): {what}.", inner);
 
     // ---- pixel converters; output is BGRA8888 ----
 

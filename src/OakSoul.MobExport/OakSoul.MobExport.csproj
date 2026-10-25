@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Exports mob property trees (info, animation frames) from the client's ".ms" Mob pack to JSON, optionally with
+       frame PNGs. The pack and the String archives are only ever opened read-only. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>OakSoul.MobExport</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../OakSoul.Wz/OakSoul.Wz.csproj" />
+  </ItemGroup>
+
+</Project>

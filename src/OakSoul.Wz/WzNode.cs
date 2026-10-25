@@ -169,6 +169,41 @@ public sealed class WzNode
         return node is { Type: WzNodeType.Uol } ? null : node;
     }
 
+    /// <summary>
+    /// Follows frame links until a real node is reached: UOLs (see <see cref="ResolveUol"/>) and canvases carrying an
+    /// "_inlink" string (a placeholder canvas, usually 1x1, whose pixels live at that path from the image root).
+    /// Returns this node when it is not a link, or null when a target is missing or the link is an "_outlink" into
+    /// another archive (not resolvable inside one image).
+    /// </summary>
+    public WzNode? ResolveLink(int maxHops = 16)
+    {
+        WzNode? node = this;
+        for (int hop = 0; node is not null && hop < maxHops; hop++)
+        {
+            if (node.Type == WzNodeType.Uol)
+                node = node.Parent?[node._text!];
+            else if (node.Type == WzNodeType.Canvas && node["_inlink"] is { Type: WzNodeType.String } inlink)
+                node = node.ImageRoot[inlink._text!];
+            else if (node.Type == WzNodeType.Canvas && node["_outlink"] is { Type: WzNodeType.String })
+                return null;
+            else
+                return node;
+        }
+        return null;
+    }
+
+    /// <summary>The root of the image this node belongs to.</summary>
+    public WzNode ImageRoot
+    {
+        get
+        {
+            var node = this;
+            while (node.Parent is not null)
+                node = node.Parent;
+            return node;
+        }
+    }
+
     public override string ToString() => Type switch
     {
         WzNodeType.Property or WzNodeType.Convex => $"{Name} [{Type}, {Children.Count} children]",
