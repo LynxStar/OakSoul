@@ -99,6 +99,8 @@ Screen Recording permission is granted per responsible application. When running
 
 `src/OakSoul.Vision` holds the HUD attention regions for the client at its native 1366x768 (title bar cropped) in `Layouts/hud-1366x768.json`, loaded through `HudLayout.Native1366x768`. Each region has a name, a kind (fixed, provisional, or dynamic), a rectangle in frame pixels from the top-left, and a note on what gets read from it. Edit the JSON to move a region; the loader rejects rectangles that do not fit the frame.
 
+`FrameGeometry` maps that native layout onto any captured frame. The client aspect-fits its render into the window, so a frame is the native image at one uniform scale, centered, with black bars on the spare axis; `FrameGeometry.Detect` computes the scale and offset from the frame size, checks that the predicted bars are black (an uncropped title bar fails this check), maps rectangles and points both ways, and `ExtractNative` resamples a region back to its native size so readers are written once for native pixels. Verified on a fullscreen 1728x1116 recording: content 1728x972 at offset 72, scale 1.265.
+
 ## Notes
 
 Design rationale, the storage benchmark and other findings are in [docs/capture-notes.md](docs/capture-notes.md).
