@@ -99,7 +99,7 @@ public static class GlyphSegmenter
         foreach (var s in SplitWide(right, maxWidth)) yield return s;
     }
 
-    private static GlyphSegment Slice(GlyphSegment segment, int from, int to)
+    public static GlyphSegment Slice(GlyphSegment segment, int from, int to)
     {
         var rows = segment.Bitmap.Rows.Select(r => r.Substring(from, to - from + 1)).ToArray();
         return new GlyphSegment(segment.X0 + from, segment.X0 + to, new GlyphBitmap(to - from + 1, segment.Bitmap.Height, rows), segment.IsGreen);

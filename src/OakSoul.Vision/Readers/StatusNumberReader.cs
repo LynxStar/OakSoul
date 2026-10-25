@@ -87,6 +87,45 @@ public static class StatusNumberReader
         return best!;
     }
 
+    /// <summary>
+    /// Splits a segment too wide for one glyph where the font recognises the pieces best. Two digits can touch
+    /// through a bridge of anti-aliased pixels that is thicker than a hollow digit's own interior columns, so the
+    /// thinnest-column rule cuts in the wrong place; trying every cut and scoring both halves does not.
+    /// </summary>
+    private static IEnumerable<GlyphSegment> SplitByFont(GlyphSegment segment, GlyphFont font)
+    {
+        if (segment.IsGreen || segment.Width <= MaxGlyphWidth) return [segment];
+        return BestSplit(segment, font, 0).Parts;
+    }
+
+    private static (List<GlyphSegment> Parts, int Score) BestSplit(GlyphSegment segment, GlyphFont font, int depth)
+    {
+        if (segment.Width <= MaxGlyphWidth || depth > 5) return ([segment], Score(segment, font));
+        List<GlyphSegment>? bestParts = null;
+        var bestScore = int.MaxValue;
+        for (var cut = 1; cut <= segment.Width - 2; cut++)
+        {
+            var left = GlyphSegmenter.Slice(segment, 0, cut - 1);
+            var leftScore = Score(left, font);
+            if (leftScore >= bestScore) continue;
+            foreach (var dropBridge in new[] { true, false })
+            {
+                var start = dropBridge ? cut + 1 : cut;
+                if (start > segment.Width - 1) continue;
+                var (rightParts, rightScore) = BestSplit(GlyphSegmenter.Slice(segment, start, segment.Width - 1), font, depth + 1);
+                if (leftScore + rightScore < bestScore)
+                {
+                    bestScore = leftScore + rightScore;
+                    bestParts = [left, .. rightParts];
+                }
+            }
+        }
+        return bestParts is null ? ([segment], 100) : (bestParts, bestScore);
+    }
+
+    private static int Score(GlyphSegment segment, GlyphFont font) =>
+        segment.Bitmap.Ink == 0 || segment.Width > MaxGlyphWidth ? 100 : Math.Min(font.Match(segment.Bitmap).Distance, 100);
+
     private static (NumberReading Reading, int DistanceSum) ReadAt(ReadOnlySpan<byte> native, int width, GlyphFont font, int threshold)
     {
         var text = new System.Text.StringBuilder();
@@ -94,7 +133,7 @@ public static class StatusNumberReader
         var distanceSum = 0;
         var separatorPending = false;
         GlyphSegment? previous = null;
-        foreach (var g in GlyphSegmenter.Segment(native, width, TextTop, TextBottom, threshold).SelectMany(s => GlyphSegmenter.SplitWide(s, MaxGlyphWidth)))
+        foreach (var g in GlyphSegmenter.Segment(native, width, TextTop, TextBottom, threshold).SelectMany(s => SplitByFont(s, font)))
         {
             if (g.IsGreen) { separatorPending = text.Length > 0; continue; }          // bracket: splits groups
             if (g.Bitmap.Rows[0].Contains('#') || g.Bitmap.Rows[1].Contains('#')) continue; // label letter
