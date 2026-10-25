@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/OakSoul.Capture/OakSoul.Capture.csproj" />
+    <Project Path="src/OakSoul.Recorder/OakSoul.Recorder.csproj" />
+  </Folder>
+</Solution>

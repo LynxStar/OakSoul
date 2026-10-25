@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>OakSoul.Capture</RootNamespace>
+    <SwiftShimSource>$(MSBuildThisFileDirectory)../../native/OakSoulCapture/Capture.swift</SwiftShimSource>
+    <SwiftShimOutputDir>$(MSBuildThisFileDirectory)../../native/out</SwiftShimOutputDir>
+    <SwiftShimOutput>$(SwiftShimOutputDir)/liboaksoulcapture.dylib</SwiftShimOutput>
+  </PropertyGroup>
+
+  <!-- Compile the Swift ScreenCaptureKit shim with the command-line tools; no Xcode needed. -->
+  <Target Name="BuildSwiftShim" BeforeTargets="BeforeBuild" Inputs="$(SwiftShimSource)" Outputs="$(SwiftShimOutput)" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+    <MakeDir Directories="$(SwiftShimOutputDir)" />
+    <Exec Command="swiftc -O -swift-version 5 -emit-library -module-name OakSoulCapture -o &quot;$(SwiftShimOutput)&quot; &quot;$(SwiftShimSource)&quot; -framework Foundation -framework CoreGraphics -framework CoreMedia -framework CoreVideo -framework ScreenCaptureKit" />
+  </Target>
+
+  <ItemGroup>
+    <None Include="$(SwiftShimOutput)" Link="liboaksoulcapture.dylib" CopyToOutputDirectory="PreserveNewest" Visible="false" />
+  </ItemGroup>
+
+</Project>
