@@ -9,19 +9,25 @@ internal sealed class ImageParser
 {
     private readonly WzBinaryReader _r;
     private readonly string _imageName;
+    private readonly WzImage? _owner;
 
     /// <summary>Extended type names seen that this parser does not understand (kept for diagnostics).</summary>
     public HashSet<string> UnknownTypes { get; } = new(StringComparer.Ordinal);
 
-    private ImageParser(byte[] data, string imageName)
+    private ImageParser(byte[] data, string imageName, WzImage? owner)
     {
         _r = new WzBinaryReader(new MemoryStream(data, writable: false));
         _imageName = imageName;
+        _owner = owner;
     }
 
-    public static (WzNode Root, IReadOnlySet<string> UnknownTypes) Parse(byte[] data, string imageName)
+    /// <summary>
+    /// Parses an image. When <paramref name="owner"/> is given, canvases record the absolute file offset of
+    /// their pixel block so <see cref="WzCanvas.Decode"/> can read it later without re-parsing.
+    /// </summary>
+    public static (WzNode Root, IReadOnlySet<string> UnknownTypes) Parse(byte[] data, string imageName, WzImage? owner = null)
     {
-        var parser = new ImageParser(data, imageName);
+        var parser = new ImageParser(data, imageName, owner);
         var root = parser.ParseRoot();
         return (root, parser.UnknownTypes);
     }
@@ -141,11 +147,21 @@ internal sealed class ImageParser
                     ParsePropertyList(node);
                 }
                 // Bitmap header: width, height, format (compressed ints), format2 (byte), int32 0, int32 length,
-                // then the compressed pixel data. Only the header is read; the caller skips the pixels.
+                // then `length` bytes of pixel data (a 0 byte, then the compressed stream). Only the position
+                // of the pixel block is recorded here; the caller skips it via the property block size.
+                long headerAt = _r.Position;
                 int width = _r.ReadCompressedInt();
                 int height = _r.ReadCompressedInt();
                 int format = _r.ReadCompressedInt();
+                int format2 = _r.ReadByte();
+                _r.ReadInt32();
+                int length = _r.ReadInt32();
+                long dataAt = _r.Position;
+                if (width < 0 || height < 0 || length < 0 || dataAt + length > _r.Length)
+                    throw Fail($"canvas '{node.Path}' has an implausible header ({width}x{height}, {length} data bytes)", headerAt);
                 node.SetCanvas(width, height, format);
+                if (_owner is not null)
+                    node.CanvasInfo = new WzCanvas(_owner, node, width, height, format, format2, _owner.Offset + dataAt, length);
                 return true;
             }
             case "Shape2D#Vector2D":

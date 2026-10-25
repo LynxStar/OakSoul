@@ -48,7 +48,7 @@ public sealed class WzImage
                 if (_root is null)
                 {
                     byte[] data = File.ReadBytes(Offset, Size);
-                    (_root, _unknownTypes) = ImageParser.Parse(data, Name);
+                    (_root, _unknownTypes) = ImageParser.Parse(data, Name, this);
                 }
                 return _root;
             }

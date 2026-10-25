@@ -3,6 +3,7 @@
     <Project Path="src/OakSoul.Capture/OakSoul.Capture.csproj" />
     <Project Path="src/OakSoul.MapExport/OakSoul.MapExport.csproj" />
     <Project Path="src/OakSoul.Recorder/OakSoul.Recorder.csproj" />
+    <Project Path="src/OakSoul.SpriteExport/OakSoul.SpriteExport.csproj" />
     <Project Path="src/OakSoul.Vision/OakSoul.Vision.csproj" />
     <Project Path="src/OakSoul.Watch/OakSoul.Watch.csproj" />
     <Project Path="src/OakSoul.World/OakSoul.World.csproj" />

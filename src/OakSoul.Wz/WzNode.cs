@@ -16,7 +16,7 @@ public enum WzNodeType
     String,
     /// <summary>"Shape2D#Vector2D": a point (X, Y).</summary>
     Vector,
-    /// <summary>"Canvas": a bitmap. Only the dimensions are read; may also have child properties.</summary>
+    /// <summary>"Canvas": a bitmap; see <see cref="WzNode.Canvas"/> to decode it. May also have child properties.</summary>
     Canvas,
     /// <summary>"Shape2D#Convex2D": a list of child vectors.</summary>
     Convex,
@@ -105,8 +105,14 @@ public sealed class WzNode
     public string String => Type == WzNodeType.String ? _text! : throw WrongType("a string");
     public (int X, int Y) Vector => Type == WzNodeType.Vector ? (_x, _y) : throw WrongType("a vector");
     public (int Width, int Height) CanvasSize => Type == WzNodeType.Canvas ? (_x, _y) : throw WrongType("a canvas");
-    /// <summary>Pixel format code of a Canvas as stored (the bitmap itself is never decoded).</summary>
+    /// <summary>Pixel format code of a Canvas as stored (without format2; see <see cref="WzCanvas.PixelFormat"/>).</summary>
     public int CanvasFormat => Type == WzNodeType.Canvas ? (int)_integer : throw WrongType("a canvas");
+
+    /// <summary>The bitmap of a Canvas node, with its pixel block location, ready to <see cref="WzCanvas.Decode"/>.</summary>
+    public WzCanvas Canvas => Type != WzNodeType.Canvas ? throw WrongType("a canvas")
+        : CanvasInfo ?? throw new InvalidOperationException($"WZ node '{Path}' was parsed without an owning image, so its pixels cannot be read.");
+
+    internal WzCanvas? CanvasInfo { get; set; }
     public string UolTarget => Type == WzNodeType.Uol ? _text! : throw WrongType("a UOL");
 
     public bool IsNumeric => Type is WzNodeType.Short or WzNodeType.Int or WzNodeType.Long or WzNodeType.Float or WzNodeType.Double;
