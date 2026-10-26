@@ -39,6 +39,32 @@ public sealed class FootholdIndex
 
     public Foothold? ById(int id) => _byId.GetValueOrDefault(id);
 
+    private Dictionary<int, int>? _floors;
+
+    /// <summary>
+    /// The floor a foothold belongs to: the connected component of the prev/next link graph containing it, named by
+    /// its smallest foothold id (a stable label). A floor-bound mob never leaves the floor it spawned on. Null for an
+    /// unknown id.
+    /// </summary>
+    public int? FloorOf(int footholdId)
+    {
+        if (_floors is null)
+        {
+            var parent = new Dictionary<int, int>();
+            int Find(int a) { while (parent[a] != a) { parent[a] = parent[parent[a]]; a = parent[a]; } return a; }
+            foreach (var fh in _map.Footholds) parent[fh.Id] = fh.Id;
+            foreach (var fh in _map.Footholds)
+                foreach (var link in new[] { fh.Prev, fh.Next })
+                {
+                    if (link == 0 || !parent.ContainsKey(link)) continue;
+                    int a = Find(fh.Id), b = Find(link);
+                    if (a != b) parent[Math.Max(a, b)] = Math.Min(a, b);
+                }
+            _floors = parent.Keys.ToDictionary(id => id, Find);
+        }
+        return _floors.TryGetValue(footholdId, out var floor) ? floor : null;
+    }
+
     /// <summary>
     /// The highest foothold surface at x that is at or below the point, allowing the point to sit up to
     /// <paramref name="tolerance"/> units below a surface (a sprite's feet sink a little, and estimates are noisy).

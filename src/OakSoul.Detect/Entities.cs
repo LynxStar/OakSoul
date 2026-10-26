@@ -30,10 +30,21 @@ public enum EntityKind
 public sealed record DetectedEntity(
     int TrackId, EntityKind Kind, double Confidence, CaptureRect Box, PointD Feet, PointD World,
     int? FootholdId, double? FootholdDistance, string? Tag, int? Level, string? Name,
-    int Age, long FirstFrame, double FirstTime, PointD Velocity, int Pixels, bool HpBar)
+    int Age, long FirstFrame, double FirstTime, PointD Velocity, int Pixels, bool HpBar,
+    MobIdentity? Identity = null, SpriteMatch? Sprite = null, DropMatch? Drop = null, double? BoxFootholdDistance = null)
 {
     public override string ToString() =>
-        $"#{TrackId} {Kind} {Confidence:0.00} {Box.Width}x{Box.Height}+{Box.X}+{Box.Y} world {World} {(FootholdId is { } f ? $"fh{f}" : "air")}{(Tag is null ? "" : $" '{Tag}'")} age {Age}";
+        $"#{TrackId} {Kind} {Confidence:0.00} {Box.Width}x{Box.Height}+{Box.X}+{Box.Y} world {World} {(FootholdId is { } f ? $"fh{f}" : "air")}{(Tag is null ? "" : $" '{Tag}'")}{(Identity is null ? "" : $" {Identity}")} age {Age}";
+}
+
+/// <summary>
+/// Who a mob is, from its sprite: the species (client id and name), and the facing (+1 right, -1 left), animation and
+/// frame it was last matched with. <see cref="Verified"/> is true when a sprite matched in this very frame, false when
+/// the identity is carried by the track from earlier frames; <see cref="Sightings"/> counts the frames that agreed.
+/// </summary>
+public sealed record MobIdentity(int MobId, string Name, int Facing, string Anim, int FrameIndex, double Score, bool Verified, int Sightings)
+{
+    public override string ToString() => $"{Name} {Anim}/{FrameIndex}{(Facing > 0 ? "R" : "L")}{(Verified ? "" : "~")}";
 }
 
 /// <summary>The detector's answer for one frame.</summary>

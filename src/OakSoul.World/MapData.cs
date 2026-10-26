@@ -44,10 +44,22 @@ public sealed record Portal(string Name, int Type, int X, int Y, int TargetMap, 
     public bool HasTarget => TargetMap != NoTarget;
 }
 
+/// <summary>
+/// A life spawn point: type "m" (mob) or "n" (NPC), the 7-digit id as in the client's data, the spawn position and the
+/// foothold the spawn stands on.
+/// </summary>
+public sealed record LifeSpawn(string Type, string Id, int X, int Y, int Fh)
+{
+    public bool IsMob => Type == "m";
+}
+
 /// <summary>One map's metadata, as exported by OakSoul.MapExport into data/maps/&lt;id&gt;.json.</summary>
 public sealed record MapData(int MapId, string StreetName, string MapName, int ReturnMap, ViewBounds Vr, MiniMapInfo? MiniMap,
-    IReadOnlyList<Foothold> Footholds, IReadOnlyList<LadderRope> LadderRopes, IReadOnlyList<Portal> Portals)
+    IReadOnlyList<Foothold> Footholds, IReadOnlyList<LadderRope> LadderRopes, IReadOnlyList<Portal> Portals, IReadOnlyList<LifeSpawn>? Life = null)
 {
+    /// <summary>The mob spawns (life entries of type "m").</summary>
+    public IEnumerable<LifeSpawn> MobSpawns => (Life ?? []).Where(l => l.IsMob);
+
     internal static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true, NumberHandling = JsonNumberHandling.AllowReadingFromString };
 
     public static MapData Load(string path)
@@ -55,13 +67,13 @@ public sealed record MapData(int MapId, string StreetName, string MapName, int R
         var dto = JsonSerializer.Deserialize<MapDto>(File.ReadAllText(path), Json) ?? throw new InvalidDataException($"{path}: empty map file");
         return new MapData(dto.MapId, dto.StreetName ?? "", dto.MapName ?? "", dto.ReturnMap,
             dto.Vr ?? throw new InvalidDataException($"{path}: no vr"), dto.MiniMap,
-            dto.Footholds ?? [], dto.LadderRopes ?? [], dto.Portals ?? []);
+            dto.Footholds ?? [], dto.LadderRopes ?? [], dto.Portals ?? [], dto.Life ?? []);
     }
 
     public override string ToString() => $"{MapId} {StreetName} / {MapName}";
 
     private sealed record MapDto(int MapId, string? StreetName, string? MapName, int ReturnMap, ViewBounds? Vr, MiniMapInfo? MiniMap,
-        List<Foothold>? Footholds, List<LadderRope>? LadderRopes, List<Portal>? Portals);
+        List<Foothold>? Footholds, List<LadderRope>? LadderRopes, List<Portal>? Portals, List<LifeSpawn>? Life);
 }
 
 /// <summary>

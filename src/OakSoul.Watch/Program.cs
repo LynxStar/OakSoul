@@ -13,14 +13,16 @@ using OakSoul.World;
 //   --crop-top N (28 for a windowed client)   --fps N (default 30)   --seconds S (default 0 = until the end or Ctrl-C)
 //   --scale N: live capture at N times the point size, decimated to the game's own pixels (default: the window's backing scale)
 //   --maps DIR (default data/maps): map metadata for world positions   --world-report: print the world-model validation at the end
-//   --build-background: (recordings only) build each visited map's background mosaic into --backgrounds DIR (default data/backgrounds)
+//   --build-background: (recordings only) build each visited map's background mosaic into --backgrounds DIR (default data/backgrounds;
+//     mosaics of pixel-exact sessions go to its exact/ subdirectory, which the entity detector then loads for exact frames)
 //   --entities: detect mobs, players, pets, drops and effects against the cached mosaic and print a line per change
 //   --entity-sheet DIR: write annotated contact sheets of a dozen evenly spaced frames (keep DIR gitignored, e.g. data/ or recordings/)
 //   --entity-report: print the entity validation at the end (implies --entities)
+//   --mobinfo DIR (default data/mobinfo): mob sprites for verification   --sprites DIR (default data/sprites): item icons for drops
 
 using OakSoul.Capture.Replay;
 
-uint? windowId = null; int? pid = null; string? app = null, title = null, recording = null, buffsPath = null, mapsPath = null, backgroundsPath = null, sheetDir = null;
+uint? windowId = null; int? pid = null; string? app = null, title = null, recording = null, buffsPath = null, mapsPath = null, backgroundsPath = null, sheetDir = null, mobInfoPath = null, spritesPath = null;
 int cropTop = 0, fps = 30; double seconds = 0, speed = 1; var list = false; var keyframes = false; var worldReport = false;
 var buildBackground = false; var entities = false; var entityReport = false;
 int? captureScale = null;
@@ -49,6 +51,8 @@ for (var i = 0; i < args.Length; i++)
         case "--entities": entities = true; break;
         case "--entity-sheet": sheetDir = Next(); entities = true; break;
         case "--entity-report": entityReport = true; entities = true; break;
+        case "--mobinfo": mobInfoPath = Next(); break;
+        case "--sprites": spritesPath = Next(); break;
         case "--scale": captureScale = int.Parse(Next()); break;
         case "--name": ownName = Next(); break;
         default: Console.Error.WriteLine($"unknown option {args[i]}"); return 2;
@@ -123,12 +127,22 @@ if (buildBackground && (recording is null || world is null)) { Console.Error.Wri
 var screenMask = new ScreenMask(layout);
 var buildFrames = new Dictionary<long, BackgroundBuild.FrameInfo>();
 var sessionTimes = new SessionTimes(recording is not null && keyframes ? recording : null);
+mobInfoPath ??= Path.Combine(Directory.GetCurrentDirectory(), "data", "mobinfo");
+spritesPath ??= Path.Combine(Directory.GetCurrentDirectory(), "data", "sprites");
 var entityWatch = entities && world is not null ? new EntityWatch(layout, backgroundsPath, sessionTimes, sheetDir,
-    recording is not null && keyframes && Directory.Exists(Path.Combine(recording, "keyframes")) ? Directory.GetFiles(Path.Combine(recording, "keyframes"), "*.png").Length : null) : null;
+    recording is not null && keyframes && Directory.Exists(Path.Combine(recording, "keyframes")) ? Directory.GetFiles(Path.Combine(recording, "keyframes"), "*.png").Length : null,
+    mobInfoPath, spritesPath, diagnostics: entityReport) : null;
 if (entities && world is null) Console.WriteLine("entities off: no map metadata");
 
 string Stamp(Frame frame) => source.NeedsMainLoop ? DateTime.Now.ToString("HH:mm:ss.fff") : $"t={TimeSpan.FromSeconds(frame.Pts):m\\:ss}  ";
 FrameGeometry? geometry = null;
+// Whether the source delivers the game's own pixels (exact capture) rather than the point-size capture's blurred copy:
+// set once from the first frame whose status bar text shows one-pixel strokes (a blurred frame never does). It picks
+// the background cache (BackgroundMosaic.DirFor) and the entity detector's strict sprite matching.
+var exactFrames = false;
+// A recording replayed from its video: x264 at CRF 18 moves a pixel by several levels (docs/capture-notes.md), so even an
+// exact recording's video is matched by the tolerant path; keyframes and live frames are lossless.
+var lossyVideo = recording is not null && !keyframes;
 State? last = null;
 long frames = 0;
 double readMs = 0;
@@ -146,6 +160,7 @@ var consumer = Task.Run(async () =>
                 if (geometry.BarsConfirmed == false)
                     Console.WriteLine("warning: the frame does not look like the native layout; for a windowed client pass --crop-top 28");
             }
+            if (!exactFrames && OcrInput.IsPixelExact(geometry, frame.Pixels)) exactFrames = true;
             var status = StatusReader.Read(geometry, frame.Pixels);
             var minimap = MinimapReader.Read(geometry, frame.Pixels);
             if (minimap.Valid) tracker.Update(geometry, frame.Pixels, minimap);
@@ -184,7 +199,7 @@ var consumer = Task.Run(async () =>
             if (buildBackground && geometry.IsNative && place is { Source: WorldSource.DotAndTag, Camera: { } voteCamera, MapId: { } mapId, Map: { } mapData } && tag is { } ownTag)
                 buildFrames[frame.Sequence] = new BackgroundBuild.FrameInfo(mapData, voteCamera, world!.CameraModel!.IsClamped(voteCamera).X && place.Confidence >= 0.9,
                     minimap.Valid ? minimap.Panel : ScreenMask.DefaultMinimapPanel, ownTag.Tag);
-            entityWatch?.Update(frame, geometry, place, world, tag, minimap.Valid ? minimap.Panel : null, status, ownName, Stamp(frame));
+            if (entityWatch is not null) place = entityWatch.Update(frame, geometry, place, world, tag, minimap.Valid ? minimap.Panel : null, status, ownName, Stamp(frame), exactFrames, lossyVideo);
             var state = new State(identity.Current?.Level, identity.Current?.Job, identity.Current?.Name, status.HpValue, status.MpValue, status.ExpValue,
                 tracker.Current is { } n ? $"{n.Region} / {n.Map}" : null,
                 minimap.SelfInMap is { } s ? ((int)Math.Round(s.X), (int)Math.Round(s.Y)) : null,
@@ -225,7 +240,8 @@ if (report is not null && catalog is not null) report.Print(Console.Out, catalog
 entityWatch?.WriteSheets();
 if (entityReport && entityWatch is not null) EntityReport.Print(Console.Out, entityWatch);
 if (buildBackground && recording is not null)
-    await BackgroundBuild.Run(Console.Out, () => new RecordingFrameSource(recording, keyframes, cropTop, 0), buildFrames, screenMask, backgroundsPath);
+    await BackgroundBuild.Run(Console.Out, () => new RecordingFrameSource(recording, keyframes, cropTop, 0), buildFrames, screenMask, BackgroundMosaic.DirFor(backgroundsPath, exactFrames),
+        exactFrames && !keyframes && cropTop == 0 ? BackgroundBuild.KeyframesOf(recording) : null);
 return 0;
 
 /// <summary>Everything the watcher reports; a change in any field prints a line.</summary>

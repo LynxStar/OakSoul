@@ -169,6 +169,23 @@ public sealed class WorldTracker
         return _last = state;
     }
 
+    /// <summary>
+    /// Feeds back a pixel-exact camera for the current frame (registered against the map's background by the entity
+    /// detector). The camera becomes the one held for later frames; with the name tag's Feet point the own position
+    /// becomes camera + soles, which the minimap dot only gives to +-8 units. Returns the refined state (unchanged
+    /// when the map is unknown).
+    /// </summary>
+    public WorldState Refine(PointD camera, PointD? tagFeet)
+    {
+        if (_map is null || _index is null || _last.MapId != _map.MapId) return _last;
+        _lastCamera = camera;
+        if (tagFeet is not { } feet) return _last = _last with { Camera = camera };
+        var world = CameraModel.ScreenToWorld(camera, CameraModel.SolesFromTag(feet));
+        var foothold = _index.StandingOn(world, StandTolerance);
+        var ladder = foothold is null ? _index.LadderAt(world, 4) : null;
+        return _last = _last with { Position = world, Camera = camera, Foothold = foothold, Ladder = ladder, Confidence = Math.Max(_last.Confidence, 0.95) };
+    }
+
     /// <summary>Dot and tag: measure the camera, then snap onto a surface or rope within the dot's uncertainty.</summary>
     private WorldState Measure(MinimapFix fix, double dotX, PointD soles)
     {

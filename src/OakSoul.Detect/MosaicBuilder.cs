@@ -206,6 +206,39 @@ public sealed class MosaicBuilder
         }
     }
 
+    /// <summary>
+    /// After the counting pass: overwrites the voted value of every pixel a lossless keyframe shows within
+    /// <see cref="SameTolerance"/> of it with the keyframe's own value. A mosaic voted from an exact session's video
+    /// (which has the coverage: thirty frames a second keep the incremental registration overlapping) carries the
+    /// video's compression error, a median of 7 levels per channel and 30 or more at sharp edges, which the foreground
+    /// threshold then sees as sprites all over high-contrast art; keyframes give the game's own pixels wherever they
+    /// saw the background. Returns the pixels replaced.
+    /// </summary>
+    public int ExactRefine(ReadOnlySpan<byte> frame, int frameWidth, int cameraX, int cameraY, ScreenMask mask)
+    {
+        int w = mask.Width, h = mask.Height, vx = mask.Viewport.X, vy = mask.Viewport.Y, replaced = 0;
+        for (var y = 0; y < h; y++)
+        {
+            var wy = cameraY + vy + y - _originY;
+            if ((uint)wy >= (uint)_height) continue;
+            var row = wy * _width;
+            var src = ((y + vy) * frameWidth + vx) * 4;
+            for (var x = 0; x < w; x++, src += 4)
+            {
+                if (mask.Bits[y * w + x] != 0) continue;
+                var wx = cameraX + vx + x - _originX;
+                if ((uint)wx >= (uint)_width) continue;
+                var i = row + wx;
+                if (_votes[i] == 0) continue;
+                var v = (uint)(frame[src] | frame[src + 1] << 8 | frame[src + 2] << 16) | 0xFF000000u;
+                if (v == (_candidate[i] | 0xFF000000u) || CameraRegistration.Distance(_candidate[i], v) > SameTolerance) continue;
+                _candidate[i] = v;
+                replaced++;
+            }
+        }
+        return replaced;
+    }
+
     public BackgroundMosaic Build()
     {
         if (_seen is null || _agree is null) throw new InvalidOperationException("run the counting pass first");

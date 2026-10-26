@@ -23,6 +23,9 @@ public static class OwnCharacter
         return new CaptureRect(cx - HalfWidth - pad, top, 2 * (HalfWidth + pad), tag.Y + tag.Height + 3 + pad - top);
     }
 
+    /// <summary>The tag's Feet point (as <c>NameTagHit.Feet</c>: centred, one row above the tag box), from the tag box.</summary>
+    public static OakSoul.World.PointD TagFeet(CaptureRect tag) => new(tag.X + tag.Width / 2.0, tag.Y - 1);
+
     /// <summary>The same box for a character whose soles are at a screen point (the tag hidden), widened by the uncertainty.</summary>
     public static CaptureRect BoxFromSoles(double solesX, double solesY, int pad)
     {

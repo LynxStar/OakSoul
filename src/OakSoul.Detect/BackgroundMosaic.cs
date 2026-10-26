@@ -67,6 +67,9 @@ public sealed class BackgroundMosaic
     /// <summary>1 where the pixel's mode can serve as background for foreground extraction, per <see cref="ForegroundLevel"/>.</summary>
     public byte[] ForegroundUsable { get; }
 
+    /// <summary>The same mosaic with its origin moved by (dx, dy) world units (pixels shared): for re-anchoring a provisional one.</summary>
+    public BackgroundMosaic Shifted(int dx, int dy) => new(MapId, OriginX + dx, OriginY + dy, Width, Height, Pixels, Disagreement, Frames);
+
     public bool Contains(int worldX, int worldY) => (uint)(worldX - OriginX) < (uint)Width && (uint)(worldY - OriginY) < (uint)Height;
 
     /// <summary>Coverage statistics: world pixels seen at all, seen often enough, reliable, and usable for foreground.</summary>
@@ -84,6 +87,17 @@ public sealed class BackgroundMosaic
     }
 
     public static string PathFor(string dir, int mapId, string suffix) => Path.Combine(dir, $"{mapId}{suffix}");
+
+    /// <summary>
+    /// Subdirectory of the cache for mosaics built from pixel-exact frames. The cache is keyed by exactness: a mosaic
+    /// learned from the blurred, colour-shifted point-size recordings (fx-combat, fx-maps) differs from the game's own
+    /// pixels at every edge and in every hue, so it does not register exact frames cleanly, and an exact mosaic does
+    /// not fit blurred frames either. Blurred mosaics stay at the top of the cache directory, as before.
+    /// </summary>
+    public const string ExactDirectory = "exact";
+
+    /// <summary>The directory holding the mosaics for frames of this kind under the cache directory <paramref name="dir"/>.</summary>
+    public static string DirFor(string dir, bool exact) => exact ? Path.Combine(dir, ExactDirectory) : dir;
 
     public void Save(string dir)
     {

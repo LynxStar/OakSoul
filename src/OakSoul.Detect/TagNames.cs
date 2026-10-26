@@ -66,6 +66,9 @@ public sealed class TagNames
         return bestScore <= MaxDistance ? best : null;
     }
 
+    /// <summary>Whether a read names a known name by the same rule as <see cref="MatchMob"/> (a few misread letters, or a long enough start or end).</summary>
+    public static bool SameName(string read, string known) => Similarity(read, known) <= MaxDistance;
+
     public bool IsPet(string? name) => name is not null && PetName is not null && Distance(Normalize(name), Normalize(PetName)) <= 1;
 
     /// <summary>

@@ -18,21 +18,36 @@ public sealed class EntityWatch
 
     private readonly HudLayout _layout;
     private readonly string _backgrounds;
+    private readonly MobLibrary? _mobLibrary;
+    private readonly DropMatcher? _drops;
+    private readonly bool _diagnostics;
+    private readonly EntityTracker _tracker = new();
+    private readonly Dictionary<(int MapId, bool Exact), EntityDetector?> _detectors = [];
+    private readonly Dictionary<int, MapMobSet> _mobSets = [];
     private readonly SessionTimes _times;
     private readonly string? _sheetDir;
     private readonly HashSet<long> _sheetPicks = [];
     private readonly List<(long Frame, double Time, Canvas Tile)> _tiles = [];
     private EntityDetector? _detector;
-    private int? _mapId;
+    private (int MapId, bool Exact)? _key;
     private readonly HashSet<long> _debugFrames;
     private readonly string? _debugDir;
     private string? _lastSummary;
 
     /// <param name="totalFrames">Frames the source will deliver, when known (a recording), to space the sheet frames.</param>
-    public EntityWatch(HudLayout layout, string backgrounds, SessionTimes times, string? sheetDir, long? totalFrames)
+    /// <param name="mobInfo">The mob data exported by OakSoul.MobExport --sprites (data/mobinfo), for sprite verification.</param>
+    /// <param name="sprites">The sprites exported by OakSoul.SpriteExport --items (data/sprites), for drop icons.</param>
+    /// <param name="diagnostics">Score every candidate against every species too, for the report's score distributions.</param>
+    public EntityWatch(HudLayout layout, string backgrounds, SessionTimes times, string? sheetDir, long? totalFrames,
+        string? mobInfo = null, string? sprites = null, bool diagnostics = false)
     {
         _layout = layout;
         _backgrounds = backgrounds;
+        _diagnostics = diagnostics;
+        _mobLibrary = mobInfo is null ? null : MobLibrary.Open(mobInfo);
+        Console.WriteLine(_mobLibrary is null ? $"entities: no mob data at {mobInfo} (run OakSoul.MobExport --sprites); sprites not verified" : $"entities: mob data from {mobInfo}");
+        _drops = sprites is null ? null : DropMatcher.Load(sprites);
+        Console.WriteLine(_drops is null ? $"entities: no item sprites at {sprites}; drops not identified" : $"entities: {_drops.Count} drop icons ({_drops.MesoIcons} meso) from {sprites}");
         _times = times;
         _sheetDir = sheetDir;
         if (sheetDir is not null)
@@ -45,41 +60,86 @@ public sealed class EntityWatch
         _debugFrames = (Environment.GetEnvironmentVariable("OAKSOUL_DEBUG_FRAMES") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries).Select(long.Parse).ToHashSet();
     }
 
-    /// <summary>Per processed frame: the result plus what the report compares it with.</summary>
-    public sealed record Row(EntityFrame Result, long? Exp, PointD? Own, bool OwnTag);
+    /// <summary>
+    /// Per processed frame: the result plus what the report compares it with. <see cref="Own"/> is the own position
+    /// after the camera feedback; <see cref="OwnRaw"/> and <see cref="OwnSnapped"/> are the world tracker's before it
+    /// (dot and tag, before and after snapping onto a foothold), <see cref="OwnRefined"/> the registered camera plus
+    /// the tag's soles (null without a registration or a tag).
+    /// </summary>
+    public sealed record Row(int MapId, EntityFrame Result, long? Exp, PointD? Own, bool OwnTag, PointD? OwnRaw = null, PointD? OwnSnapped = null,
+        PointD? OwnRefined = null, WorldSource Source = WorldSource.None);
 
     public List<Row> Rows { get; } = [];
     public EntityDetector? Detector => _detector;
+    public EntityTracker Tracker => _tracker;
+    /// <summary>Every detector that ran, one per map with a background.</summary>
+    public IEnumerable<EntityDetector> Detectors => _detectors.Values.OfType<EntityDetector>();
+    public IReadOnlyDictionary<int, MapMobSet> MobSets => _mobSets;
+    /// <summary>The foothold index of every map a detector ran on.</summary>
+    public Dictionary<int, FootholdIndex> Footholds { get; } = [];
+    public MobLibrary? MobLibrary => _mobLibrary;
+    public DropMatcher? Drops => _drops;
     public List<string> SheetPaths { get; } = [];
 
-    public void Update(Frame frame, FrameGeometry geometry, WorldState? place, WorldTracker? world, NameTagHit? tag, CaptureRect? panel, StatusReading status, string? ownName, string stamp)
+    /// <summary>
+    /// Runs the detector on a frame; returns the world state refined by the registered camera (or the one given).
+    /// <paramref name="exact"/> says the source delivers pixel-exact frames: the map's background then comes from the
+    /// cache's exact subdirectory (<see cref="BackgroundMosaic.DirFor"/>), and unless the frames come from a lossy video
+    /// (<paramref name="lossy"/>) sprites are matched pixel for pixel.
+    /// </summary>
+    public WorldState? Update(Frame frame, FrameGeometry geometry, WorldState? place, WorldTracker? world, NameTagHit? tag, CaptureRect? panel, StatusReading status, string? ownName, string stamp,
+        bool exact = false, bool lossy = false)
     {
-        if (!geometry.IsNative || place is not { MapId: { } mapId, Map: { } map } || world?.Index is not { } index) return;
-        if (_mapId != mapId)
+        if (!geometry.IsNative || place is not { MapId: { } mapId, Map: { } map } || world?.Index is not { } index) return place;
+        if (_key != (mapId, exact))
         {
-            _mapId = mapId;
-            _detector?.Tracker.Flush();
-            var mosaic = BackgroundMosaic.Load(_backgrounds, mapId);
-            _detector = mosaic is null ? null : new EntityDetector(mosaic, _layout);
-            Console.WriteLine(mosaic is null ? $"entities: no background for map {mapId} in {_backgrounds} (build it with --build-background)" : $"entities: background {mapId} loaded ({mosaic.Width}x{mosaic.Height}, {mosaic.Frames} frames)");
+            if (_key?.MapId != mapId) _tracker.Flush();
+            _key = (mapId, exact);
+            if (!_detectors.TryGetValue((mapId, exact), out _detector))
+            {
+                var dir = BackgroundMosaic.DirFor(_backgrounds, exact);
+                var mosaic = BackgroundMosaic.Load(dir, mapId);
+                MapMobSet? mobs = null;
+                if (_mobLibrary is not null && !_mobSets.TryGetValue(mapId, out mobs))
+                {
+                    mobs = _mobSets[mapId] = MapMobSet.Build(map, index, _mobLibrary);
+                    Console.WriteLine($"entities: map {mapId} mob templates: {(mobs.Entries.Count == 0 ? "none" : string.Join(", ", mobs.Entries.Select(e => $"{e.Species.Name} x{e.Spawns} ({e.Species.Mobility.ToString().ToLowerInvariant()}, {e.Species.Frames.Count} frames, floors {string.Join("/", e.Floors)})")))}{(mobs.Missing.Count > 0 ? $"; no data for {string.Join(", ", mobs.Missing)}" : "")}");
+                }
+                _detector = mosaic is null ? null : new EntityDetector(mosaic, _layout, _tracker, mobs, _drops) { SpriteDiagnostics = _diagnostics };
+                _detectors[(mapId, exact)] = _detector;
+                Console.WriteLine(mosaic is null ? $"entities: no {(exact ? "exact " : "")}background for map {mapId} in {dir} (build it with --build-background)"
+                    : $"entities: {(exact ? "exact " : "")}background {mapId} loaded from {dir} ({mosaic.Width}x{mosaic.Height}, {mosaic.Frames} frames)");
+            }
+            _tracker.MapId = mapId;
         }
-        if (_detector is null) return;
-        _detector.Tracker.Names.OwnName ??= ownName;
+        if (_detector is null) return place;
+        Footholds[mapId] = index;
+        _tracker.Names.OwnName ??= ownName;
         var time = _times.TimeOf(frame);
-        var ctx = new DetectionContext(frame.Sequence, time, map, index, place.Camera, place.Source == WorldSource.DotAndTag, tag?.Tag, place.Position, panel);
+        var ctx = new DetectionContext(frame.Sequence, time, map, index, place.Camera, place.Source == WorldSource.DotAndTag, tag?.Tag, place.Position, panel, exact, lossy);
         _detector.DebugDir = _debugDir is not null && _debugFrames.Contains(frame.Sequence) ? _debugDir : null;
         var result = _detector.Detect(frame.Pixels, frame.Width, ctx);
-        Rows.Add(new Row(result, status.ExpValue?.Total, place.Position, tag is not null));
+        // Camera feedback: the registered camera is exact, so the own position follows from it and the tag.
+        var refined = place;
+        PointD? ownRefined = null;
+        if (result.Camera is { } cam)
+        {
+            var tagFeet = tag is { } t ? new PointD(t.Feet.X, t.Feet.Y) : (PointD?)null;
+            refined = world.Refine(new PointD(cam.X, cam.Y), tagFeet);
+            if (tagFeet is not null) ownRefined = refined.Position;
+        }
+        Rows.Add(new Row(mapId, result, status.ExpValue?.Total, refined.Position, tag is not null, place.RawPosition, place.Position, ownRefined, place.Source));
         if (_detector.DebugDir is not null) Console.WriteLine($"{stamp}  debug frame {frame.Sequence}: {result.Note} reg {result.Registration?.Score:0.000} cam {result.Camera} {result.Milliseconds:0.0} ms");
         if (_sheetDir is not null && _sheetPicks.Contains(frame.Sequence) && _tiles.Count < SheetFrames)
             _tiles.Add((frame.Sequence, time, _detector.Annotate(frame.Pixels, frame.Width, result, foreground: false, half: true)));
 
-        var summary = Summary(result, place.Position);
+        var summary = Summary(result, refined.Position);
         if (summary != _lastSummary)
         {
             Console.WriteLine($"{stamp}  entities {summary}");
             _lastSummary = summary;
         }
+        return refined;
     }
 
     /// <summary>Counts by kind and the nearest mob with its tag and distance from the own character.</summary>
@@ -89,8 +149,10 @@ public sealed class EntityWatch
         var counts = string.Join(" ", new[] { EntityKind.Mob, EntityKind.Player, EntityKind.Pet, EntityKind.Drop, EntityKind.Effect, EntityKind.Unknown }
             .Select(k => $"{k.ToString().ToLowerInvariant()} {r.Count(k)}"));
         var nearest = own is { } o ? r.Entities.Where(e => e.Kind == EntityKind.Mob).OrderBy(e => e.World.DistanceTo(o)).FirstOrDefault() : null;
-        var mob = nearest is null ? "" : $"  nearest mob #{nearest.TrackId}{(nearest.Name is null ? "" : $" '{(nearest.Level is { } lv ? lv > 0 ? $"Lv. {lv} " : "Lv. ? " : "")}{nearest.Name}'")} at {nearest.World.DistanceTo(own!.Value):0} units";
-        return counts + mob;
+        var mob = nearest is null ? "" : $"  nearest mob #{nearest.TrackId}{(nearest.Name is null ? "" : $" '{(nearest.Level is { } lv ? lv > 0 ? $"Lv. {lv} " : "Lv. ? " : "")}{nearest.Name}'")}{(nearest.Identity is { } id ? $" [{id}]" : "")} at {nearest.World.DistanceTo(own!.Value):0} units";
+        var species = r.Entities.Where(e => e.Kind == EntityKind.Mob && e.Identity is not null).GroupBy(e => e.Identity!.Name).OrderByDescending(g => g.Count()).Select(g => $"{g.Key} {g.Count()}");
+        var ids = string.Join(", ", species);
+        return counts + (ids.Length > 0 ? $"  ({ids})" : "") + mob;
     }
 
     /// <summary>Composes the collected tiles into contact sheets, six frames each, with a legend.</summary>
@@ -114,7 +176,7 @@ public sealed class EntityWatch
                 canvas.Text(x + 14, 5, name, 0xFFFFFFFF, 1, null);
                 x += 14 + Canvas.TextWidth(name) + 12;
             }
-            canvas.Text(x, 5, "cyan: tag box  white: own character (masked)", 0xFFFFFFFF, 1, null);
+            canvas.Text(x, 5, "cyan: tag box  white: own character (masked)  label: #track name anim/frame L|R (~ carried by the track, ? unverified)", 0xFFFFFFFF, 1, null);
             for (var i = 0; i < tiles.Count; i++)
             {
                 var (frame, time, tile) = tiles[i];
