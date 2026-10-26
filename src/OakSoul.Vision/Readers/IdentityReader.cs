@@ -34,6 +34,13 @@ public sealed class IdentityReader
 
     public IdentityReading? Current { get; private set; }
 
+    /// <summary>
+    /// The name the operator says the character has. A name line that reads it, ignoring case or with one character
+    /// misread (<see cref="NameTagLocator.SameName"/>), is reported as this name; any other name is reported as read,
+    /// so a different character logged in shows. Null reports every name as read.
+    /// </summary>
+    public string? ExpectedName { get; init; }
+
     /// <summary>Returns true when either part was re-read this frame.</summary>
     public bool Update(FrameGeometry geometry, ReadOnlySpan<byte> frame)
     {
@@ -52,6 +59,7 @@ public sealed class IdentityReader
         {
             job = JobNames.Snap(jn[0].Text.Trim());
             name = jn.Count > 1 ? jn[1].Text.Trim() : "";
+            if (ExpectedName is { } expected && (string.Equals(name, expected, StringComparison.OrdinalIgnoreCase) || NameTagLocator.SameName(name, expected))) name = expected;
             confidence = Math.Min(confidence, jn.Min(x => x.Confidence));
         }
         Current = new IdentityReading(level, job, name, confidence);

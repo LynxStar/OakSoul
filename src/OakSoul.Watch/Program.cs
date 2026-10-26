@@ -9,6 +9,7 @@ using OakSoul.World;
 // OakSoul.Watch: run the HUD readers on a live window or a recording and print values as they change.
 //   --list | --window-id N | --pid N --title "T" | --app "Name" --title "T"      live capture
 //   --recording DIR [--keyframes] [--speed X]                                      replay a recorder session
+//   --name NAME (default LynxHope): the character's name, given by the operator; the status bar is only checked against it
 //   --crop-top N (28 for a windowed client)   --fps N (default 30)   --seconds S (default 0 = until the end or Ctrl-C)
 //   --scale N: live capture at N times the point size, decimated to the game's own pixels (default: the window's backing scale)
 //   --maps DIR (default data/maps): map metadata for world positions   --world-report: print the world-model validation at the end
@@ -23,6 +24,7 @@ uint? windowId = null; int? pid = null; string? app = null, title = null, record
 int cropTop = 0, fps = 30; double seconds = 0, speed = 1; var list = false; var keyframes = false; var worldReport = false;
 var buildBackground = false; var entities = false; var entityReport = false;
 int? captureScale = null;
+var ownName = "LynxHope";
 for (var i = 0; i < args.Length; i++)
 {
     string Next() => i + 1 < args.Length ? args[++i] : throw new ArgumentException($"{args[i]} needs a value");
@@ -48,11 +50,14 @@ for (var i = 0; i < args.Length; i++)
         case "--entity-sheet": sheetDir = Next(); entities = true; break;
         case "--entity-report": entityReport = true; entities = true; break;
         case "--scale": captureScale = int.Parse(Next()); break;
+        case "--name": ownName = Next(); break;
         default: Console.Error.WriteLine($"unknown option {args[i]}"); return 2;
     }
 }
 
 if (captureScale is < 1 or > 4) { Console.Error.WriteLine("error: --scale must be between 1 and 4"); return 2; }
+if (ownName.Trim().Length < 3) { Console.Error.WriteLine("error: --name must be at least 3 characters"); return 2; }
+ownName = ownName.Trim();
 
 ScreenCapture.Initialize();
 IFrameSource source;
@@ -89,6 +94,7 @@ var scale = captureScale ?? Math.Max(1, (int)Math.Round(window.Scale));
 source = new CaptureFrameSource(CaptureStream.Start(window.Id, 0, 0, fps, 8, crop, scale), $"{window}{(crop is null ? "" : $"  crop {crop}")}  scale {scale}, {CaptureStream.ColorSpace}");
 }
 Console.WriteLine($"source   {source.Description}");
+Console.WriteLine($"name     {ownName}");
 
 var layout = HudLayout.Native1366x768;
 // Keyframe replay is one frame per second, so a stability gate of one frame; live and video keep three.
@@ -97,12 +103,13 @@ var tracker = new MapNameTracker(stableFrames);
 using var cancellation = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cancellation.Cancel(); };
 using var frameSource = source;
-var identity = new IdentityReader(layout, stableFrames);
+var identity = new IdentityReader(layout, stableFrames) { ExpectedName = ownName };
 var quickslot = new QuickslotReader(layout);
 var buffReader = new BuffReader(layout);
 buffsPath ??= Path.Combine(Directory.GetCurrentDirectory(), "recordings", "known-buffs.json");
 if (File.Exists(buffsPath)) Console.WriteLine($"buffs    {buffReader.Load(buffsPath)} known icons from {buffsPath}");
-NameTagLocator? tagLocator = null;
+var tagLocator = new NameTagLocator(ownName);
+var nameWarned = false;
 CaptureRect? lastUnlearned = null;
 mapsPath ??= Path.Combine(Directory.GetCurrentDirectory(), "data", "maps");
 MapCatalog? catalog = File.Exists(Path.Combine(mapsPath, "index.json")) ? new MapCatalog(mapsPath) : null;
@@ -143,8 +150,13 @@ var consumer = Task.Run(async () =>
             var minimap = MinimapReader.Read(geometry, frame.Pixels);
             if (minimap.Valid) tracker.Update(geometry, frame.Pixels, minimap);
             identity.Update(geometry, frame.Pixels);
+            // The operator gives the name; the status bar is only checked against it, and a mismatch is warned about once.
+            if (!nameWarned && identity.Current?.Name is { Length: > 0 } statusName && !string.Equals(statusName, ownName, StringComparison.OrdinalIgnoreCase))
+            {
+                nameWarned = true;
+                Console.WriteLine($"warning: status bar reads '{statusName}', expected '{ownName}'");
+            }
             // The own name tag is learned once, from a frame where OCR sees the name by itself, then tracked by pixels.
-            if (tagLocator is null && identity.Current?.Name is { Length: > 2 } ownName) tagLocator = new NameTagLocator(ownName);
             if (tagLocator is { Ready: false }) { if (tagLocator.TryLearn(geometry, frame.Pixels)) Console.WriteLine($"tag      learned '{tagLocator.Name}' template {tagLocator.TemplateWidth}x{tagLocator.TemplateHeight} at {tagLocator.LearnedAt!.Value.X},{tagLocator.LearnedAt.Value.Y}"); }
             var tag = tagLocator is { Ready: true } ? tagLocator.Locate(geometry, frame.Pixels) : null;
             if (tagLocator is { Ready: false, Unlearned: { } unlearned } && unlearned != lastUnlearned)
@@ -172,7 +184,7 @@ var consumer = Task.Run(async () =>
             if (buildBackground && geometry.IsNative && place is { Source: WorldSource.DotAndTag, Camera: { } voteCamera, MapId: { } mapId, Map: { } mapData } && tag is { } ownTag)
                 buildFrames[frame.Sequence] = new BackgroundBuild.FrameInfo(mapData, voteCamera, world!.CameraModel!.IsClamped(voteCamera).X && place.Confidence >= 0.9,
                     minimap.Valid ? minimap.Panel : ScreenMask.DefaultMinimapPanel, ownTag.Tag);
-            entityWatch?.Update(frame, geometry, place, world, tag, minimap.Valid ? minimap.Panel : null, status, identity.Current?.Name, Stamp(frame));
+            entityWatch?.Update(frame, geometry, place, world, tag, minimap.Valid ? minimap.Panel : null, status, ownName, Stamp(frame));
             var state = new State(identity.Current?.Level, identity.Current?.Job, identity.Current?.Name, status.HpValue, status.MpValue, status.ExpValue,
                 tracker.Current is { } n ? $"{n.Region} / {n.Map}" : null,
                 minimap.SelfInMap is { } s ? ((int)Math.Round(s.X), (int)Math.Round(s.Y)) : null,
