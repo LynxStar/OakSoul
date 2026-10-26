@@ -103,10 +103,13 @@ var buffReader = new BuffReader(layout);
 buffsPath ??= Path.Combine(Directory.GetCurrentDirectory(), "recordings", "known-buffs.json");
 if (File.Exists(buffsPath)) Console.WriteLine($"buffs    {buffReader.Load(buffsPath)} known icons from {buffsPath}");
 NameTagLocator? tagLocator = null;
+CaptureRect? lastUnlearned = null;
 mapsPath ??= Path.Combine(Directory.GetCurrentDirectory(), "data", "maps");
 MapCatalog? catalog = File.Exists(Path.Combine(mapsPath, "index.json")) ? new MapCatalog(mapsPath) : null;
 Console.WriteLine(catalog is null ? $"maps     none at {mapsPath} (run OakSoul.MapExport --out data/maps); world positions off" : $"maps     {catalog.Count} maps from {mapsPath}");
 var world = catalog is null ? null : new WorldTracker(catalog);
+// On exact frames a map name the catalog does not know is read again from the unsoftened name block.
+if (catalog is not null) tracker.IsKnownName = (street, map) => catalog.FindCandidates(street, map).Exact;
 var report = worldReport && world is not null ? new WorldReport() : null;
 backgroundsPath ??= Path.Combine(Directory.GetCurrentDirectory(), "data", "backgrounds");
 if (buildBackground && (recording is null || world is null)) { Console.Error.WriteLine("error: --build-background needs --recording and map metadata"); return 2; }
@@ -142,8 +145,13 @@ var consumer = Task.Run(async () =>
             identity.Update(geometry, frame.Pixels);
             // The own name tag is learned once, from a frame where OCR sees the name by itself, then tracked by pixels.
             if (tagLocator is null && identity.Current?.Name is { Length: > 2 } ownName) tagLocator = new NameTagLocator(ownName);
-            if (tagLocator is { Ready: false }) { if (tagLocator.TryLearn(geometry, frame.Pixels)) Console.WriteLine($"tag      learned '{tagLocator.Name}' template {tagLocator.TemplateWidth}x{tagLocator.TemplateHeight}"); }
+            if (tagLocator is { Ready: false }) { if (tagLocator.TryLearn(geometry, frame.Pixels)) Console.WriteLine($"tag      learned '{tagLocator.Name}' template {tagLocator.TemplateWidth}x{tagLocator.TemplateHeight} at {tagLocator.LearnedAt!.Value.X},{tagLocator.LearnedAt.Value.Y}"); }
             var tag = tagLocator is { Ready: true } ? tagLocator.Locate(geometry, frame.Pixels) : null;
+            if (tagLocator is { Ready: false, Unlearned: { } unlearned } && unlearned != lastUnlearned)
+            {
+                lastUnlearned = unlearned;
+                Console.WriteLine($"tag      forgot the template from {unlearned.X},{unlearned.Y}: it never matched again");
+            }
             var cells = quickslot.Read(geometry, frame.Pixels);
             foreach (var idx in quickslot.CountChanges(cells)) Console.WriteLine($"{Stamp(frame)}  quickslot {cells[idx].Key} count changed");
             var buffs = buffReader.Read(geometry, frame.Pixels);
@@ -156,7 +164,7 @@ var consumer = Task.Run(async () =>
                     minimap.SelfInMap is { } self ? new PointD(self.X, self.Y) : null,
                     tag is { } hit ? new PointD(hit.Feet.X, hit.Feet.Y) : null,
                     minimap.Dots.Where(d => d.Kind == MinimapDotKind.Portal).Select(d => new MinimapMarker(new PointD(d.X - minimap.MapArea.X, d.Y - minimap.MapArea.Y), d.Pixels)).ToList(),
-                    minimap.Collapsed, frame.Pts);
+                    minimap.Collapsed, frame.Pts, NameWidensPanel: tracker.NameWidensPanel);
                 place = world.Update(observation);
                 report?.Add(frame.Sequence, observation, place);
             }

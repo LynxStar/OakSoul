@@ -118,6 +118,40 @@ public sealed class MapCatalog
         return scored.Where(e => e.Score == best).Select(e => e.Key).Order().ToList();
     }
 
+    /// <summary>
+    /// Every map a HUD reading may name, and whether the names matched exactly (the ids are then those of
+    /// <see cref="FindIds"/>). A reading that matches nothing exactly is a misread, and the single closest name can be the
+    /// wrong map: Ant Tunnel IV's name block read "Ant TunnelM" on exact frames, whose closest name is Ant Tunnel I. So
+    /// then every map within an edit distance of two counts (street and map together, as in FindIds), and so does every
+    /// map whose name before its last word starts the reading, with at most four characters after it, where the last word
+    /// is mangled (all "Ant Tunnel *" for "Ant TunnelM", every "East Rocky Mountain *" for "East Rocky Mountain !"); its
+    /// street must be within the same distance. The caller must tell such candidates apart, for example by the minimap.
+    /// </summary>
+    public (IReadOnlyList<int> Ids, bool Exact) FindCandidates(string? street, string? map)
+    {
+        if (string.IsNullOrWhiteSpace(map)) return ([], false);
+        var s = Normalize(street);
+        var m = Normalize(map);
+        var exact = _index.Where(e => Normalize(e.Value.Map) == m && (s.Length == 0 || Normalize(e.Value.Street) == s)).Select(e => e.Key).Order().ToList();
+        if (exact.Count > 0) return (exact, true);
+        var near = new List<int>();
+        foreach (var (id, names) in _index)
+        {
+            var streetEdits = s.Length == 0 ? 0 : Levenshtein(Normalize(names.Street), s);
+            if (streetEdits > MaxNameEdits) continue;
+            var name = Normalize(names.Map);
+            var lastWord = name.LastIndexOf(' ');
+            var stem = lastWord > 0 ? name[..lastWord] : "";
+            if (Levenshtein(name, m) + streetEdits <= MaxNameEdits
+                || stem.Length >= 4 && m.StartsWith(stem, StringComparison.Ordinal) && m.Length - stem.Length <= 4)
+                near.Add(id);
+        }
+        return (near.Order().ToList(), false);
+    }
+
+    /// <summary>Edits allowed between a misread name and a catalog name, street and map together.</summary>
+    public const int MaxNameEdits = 2;
+
     public MapData? Find(string? street, string? map) => FindIds(street, map) is [var id] ? Load(id) : null;
 
     public (string Street, string Map)? Names(int id) => _index.TryGetValue(id, out var n) ? n : null;

@@ -171,6 +171,26 @@ public sealed class MinimapTransform
         return Math.Max(gapX, gapY);
     }
 
+    /// <summary>The visible height of a map taller than the panel allows: 112 rows on every such map seen (see class remarks).</summary>
+    public const int WindowHeight = 112;
+
+    /// <summary>
+    /// How well a map explains a detected area when its name was misread and several maps are candidates. Stricter than
+    /// <see cref="SizeMismatch"/>: an image wider than the area counts its whole gap, and so does a narrower one unless
+    /// <paramref name="narrowerAllowed"/> (the panel may have been widened for the name, which centres the image); a taller
+    /// image fits only when the area shows the full <see cref="WindowHeight"/>, and a shorter one never. Ant Tunnel IV's
+    /// 219x172 image explains fx-anttunnel-open's 219x112 visible area with 0; Ant Tunnel I, II and III (202x153, 180x150,
+    /// 225x147) are 17, 39 and 6 pixels off there, where the name is far too short to have widened the panel.
+    /// </summary>
+    public static double StrictSizeMismatch(MapData map, PixelRect mapArea, bool narrowerAllowed = false)
+    {
+        var (pw, ph) = PredictedImageSize(map);
+        var (vw, vh) = VisibleSize(mapArea);
+        var gapX = pw < vw && narrowerAllowed ? 0 : Math.Abs(pw - vw);
+        var gapY = ph > vh && Math.Abs(vh - WindowHeight) <= FitTolerance ? 0 : Math.Abs(ph - vh);
+        return Math.Max(gapX, gapY);
+    }
+
     public static MinimapTransform Create(MapData map, PixelRect mapArea, MinimapModel model = MinimapModel.FixedScale)
     {
         var (vw, vh) = VisibleSize(mapArea);

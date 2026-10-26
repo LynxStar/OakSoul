@@ -15,7 +15,12 @@ public sealed record MinimapDot(double X, double Y, int Pixels, MinimapDotKind K
 /// player's own dot, and every other marker. <see cref="SelfInMap"/> is the own dot relative to the map image,
 /// which is what later converts to world coordinates through the server's minimap metadata.
 /// </summary>
-public sealed record MinimapReading(CaptureRect Panel, CaptureRect MapArea, MinimapDot? Self, IReadOnlyList<MinimapDot> Dots, bool Valid, bool Collapsed = false)
+/// <remarks>
+/// <see cref="NameRight"/>, on a collapsed bar whose buttons were found, is the column where the buttons start (the minus
+/// button's left outline), so the "Region : Map" text lies left of it.
+/// </remarks>
+public sealed record MinimapReading(CaptureRect Panel, CaptureRect MapArea, MinimapDot? Self, IReadOnlyList<MinimapDot> Dots, bool Valid, bool Collapsed = false,
+    int? NameRight = null)
 {
     public (double X, double Y)? SelfInMap => Self is { } s ? (s.X - MapArea.X, s.Y - MapArea.Y) : null;
     public int Players => Dots.Count(d => d.Kind == MinimapDotKind.Player);
@@ -45,6 +50,21 @@ public static class MinimapReader
     private const int MinDotPixels = 6, MaxDotPixels = 160;
     private const int CollapsedBarHeight = 20;
 
+    /// <summary>
+    /// Rows of the collapsed bar where the WORLD button is plain orange: its caption crosses <see cref="TitleBarRow"/>
+    /// there, which splits the orange run (fx-anttunnel: caption rows 7 to 12 of the button's 5 to 14).
+    /// </summary>
+    private static readonly int[] CollapsedButtonRows = [6, 13, 7];
+
+    /// <summary>
+    /// From the minus button's left outline to the WORLD button's right outline: 62 columns on the collapsed bar of
+    /// fx-anttunnel (149 to 211) and of fx-maps (218 to 280) and in the expanded title bar of fx-anttunnel-open (162 to 224).
+    /// </summary>
+    private const int ButtonsWidth = 62;
+
+    /// <summary>The collapsed bar's last column is four past the WORLD button's outline (215 for 211 on fx-anttunnel, 284 for 280 on fx-maps).</summary>
+    private const int CollapsedOutlineToEdge = 4;
+
     public static MinimapReading Read(FrameGeometry geometry, ReadOnlySpan<byte> frame)
     {
         var search = new HudRegion(0, "minimap.search", RegionKind.Fixed, SearchArea, "");
@@ -61,22 +81,8 @@ public static class MinimapReader
         // itself (x 152..185 orange, 186 black, 187 white on Deep Valley I); the point-size capture's blur leaves the
         // first column after the run still three quarters orange and puts the darkest column one further. Both give
         // the outline, and the edge (x 191 there, the last panel column before the world) is five columns on.
-        var right = -1;
-        var runStart = -1;
-        for (var x = PanelLeft + 40; x < w - 6 && right < 0; x++)
-        {
-            var orange = IsOrange(px, w, x, TitleBarRow);
-            if (orange && runStart < 0) runStart = x;
-            if (!orange && runStart >= 0)
-            {
-                var length = x - runStart;
-                var outline = Luma(px, w, x + 1, TitleBarRow) < 130 && Luma(px, w, x + 3, TitleBarRow) > 140 ? x + 1
-                    : Luma(px, w, x, TitleBarRow) < 130 && Luma(px, w, x + 2, TitleBarRow) > 140 ? x : -1;
-                if (length is >= 24 and <= 44 && outline >= 0)
-                    right = outline + OutlineToEdge;
-                runStart = -1;
-            }
-        }
+        var worldOutline = FindWorldOutline(px, w, TitleBarRow);
+        var right = worldOutline < 0 ? -1 : worldOutline + OutlineToEdge;
         if (right < 0)
             for (var x = PanelLeft + 4; x < w; x++)
                 if (Luma(px, w, x, TopBorderRow) < 70) { right = x - 1; break; }
@@ -93,8 +99,20 @@ public static class MinimapReader
         if (right < PanelLeft + 60) return Invalid();
 
         // Collapsed: only the title bar remains, so where the name block's blue background should be there is world.
+        // On the collapsed bar the WORLD caption crosses the title bar row, so the scan above mostly fell back to the top
+        // border, whose first dark pixel is the minus button's outline: the bar then read as ending where its buttons
+        // start (149 of 215 columns on fx-anttunnel). The button is found again on rows above and below its caption,
+        // which gives the bar's true end and where the name text must stop.
         if (!IsNameBlockBlue(px, w, PanelLeft + 100, PanelTop + 38) && !IsNameBlockBlue(px, w, PanelLeft + 60, PanelTop + 44))
+        {
+            // Only for the bar itself: with the name block hidden but the map shown (fx-maps around 1:02) the title bar holds
+            // "MINI MAP" over the map, and the left border runs on down past the bar.
+            var outline = bottom > PanelTop + CollapsedBarHeight + 2 ? -1 : CollapsedButtonRows.Select(row => FindWorldOutline(px, w, row)).FirstOrDefault(x => x >= 0, -1);
+            if (outline - ButtonsWidth > PanelLeft + 20)
+                return new MinimapReading(new CaptureRect(PanelLeft, PanelTop, outline + CollapsedOutlineToEdge - PanelLeft + 1, CollapsedBarHeight), default, null, [], true,
+                    Collapsed: true, NameRight: outline - ButtonsWidth);
             return new MinimapReading(new CaptureRect(PanelLeft, PanelTop, right - PanelLeft + 1, CollapsedBarHeight), default, null, [], true, Collapsed: true);
+        }
 
         // Bottom edge: the panel ends with a blue-grey bar, a light line and a dark shadow line, all across its
         // width. Map art under the panel, sky or cliff, never has that three-row signature.
@@ -130,6 +148,29 @@ public static class MinimapReader
     }
 
     private static MinimapReading Invalid() => new(default, default, null, [], false);
+
+    /// <summary>
+    /// The WORLD button's dark right outline on this row, or -1: a run of 24 to 44 orange columns, then the outline, then
+    /// light border (see <see cref="Read"/>).
+    /// </summary>
+    private static int FindWorldOutline(byte[] px, int w, int row)
+    {
+        var runStart = -1;
+        for (var x = PanelLeft + 40; x < w - 6; x++)
+        {
+            var orange = IsOrange(px, w, x, row);
+            if (orange && runStart < 0) runStart = x;
+            if (!orange && runStart >= 0)
+            {
+                var length = x - runStart;
+                var outline = Luma(px, w, x + 1, row) < 130 && Luma(px, w, x + 3, row) > 140 ? x + 1
+                    : Luma(px, w, x, row) < 130 && Luma(px, w, x + 2, row) > 140 ? x : -1;
+                if (length is >= 24 and <= 44 && outline >= 0) return outline;
+                runStart = -1;
+            }
+        }
+        return -1;
+    }
 
     /// <summary>The lowest row that is a light line over a dark shadow line, under a blue-grey bar, across the panel.</summary>
     private static int FindBottom(byte[] px, int w, int right, int fallback)
@@ -251,50 +292,130 @@ public sealed class MapNameTracker
     private CaptureRect _panel;
 
     private bool _collapsed;
+    private int? _nameRight;
 
     public MapNameTracker(int stableFrames = 3)
     {
         // Expanded: a fixed-size block at a fixed offset inside the panel, so the hash ignores width wobble, but never
         // wider than the panel: on a narrow panel (141 wide on Rocky Road I and II) a 160-wide block reached past the
         // right edge into the world, whose scrolling kept the hash from settling, so Rocky Road II was never read.
-        // Collapsed: the bar text "Region : Map" left of the buttons.
-        // The collapsed bar's width is not reliably known, so its text is read from a generous fixed span and the
-        // button captions are stripped afterwards.
+        // Collapsed: the bar text "Region : Map" left of the buttons. Where the reader found the buttons, the text is read
+        // up to them; otherwise from a generous fixed span, which also takes in the button captions and the world beyond
+        // the bar (whose scrolling delays the read), and the WORLD caption is stripped afterwards.
         _tracker = new TextRegionTracker(() => _collapsed
-            ? new CaptureRect(_panel.X + 4, _panel.Y + 2, Math.Min(330, MinimapReader.SearchArea.Width - _panel.X - 4), 18)
+            ? new CaptureRect(_panel.X + 4, _panel.Y + 2, _nameRight is { } r && r - 2 > _panel.X + 24 ? r - 2 - (_panel.X + 4) : Math.Min(330, MinimapReader.SearchArea.Width - _panel.X - 4), 18)
             : new CaptureRect(_panel.X + 46, _panel.Y + 18, Math.Min(160, _panel.Width - 50), 44), upscale: 3) { StableFrames = stableFrames };
     }
 
     public (string Region, string Map, double Confidence)? Current { get; private set; }
 
+    /// <summary>
+    /// Whether the catalog knows a street and map name exactly. When set, a pixel-exact frame whose softened name block
+    /// (see <see cref="OcrInput"/>) reads as an unknown name is read again unsoftened, and that reading is kept if it is
+    /// known: softened, Ant Tunnel IV's name block on fx-anttunnel-open reads "Ant TunnelM" at the 3x upscale used here
+    /// on every keyframe, unsoftened "Ant Tunnel IV"; Deep Valley I on fx-exact reads right softened and is never re-read.
+    /// The softened reading stays when neither is known, for the fuzzy lookup to work on.
+    /// </summary>
+    public Func<string, string, bool>? IsKnownName { get; set; }
+
+    /// <summary>True when the last read was taken from the unsoftened crop (see <see cref="IsKnownName"/>).</summary>
+    public bool LastReadUnsoftened { get; private set; }
+
+    /// <summary>
+    /// The panel widens for a long name, so a map image narrower than the panel is centred in it. From the OCR boxes of
+    /// the expanded name block, the right end of the name text lies 5 or 6 pixels inside the panel's right edge on every
+    /// panel widened for its name on fx-maps (The Tree That Grew I, East Domain of Perion, East Rocky Mountain I, The
+    /// Forest North of Ellinia, The Field Up North of Ellinia), 8 to 11 on Rocky Road (image and name about as wide), and
+    /// 53 or more where the image sets the width (Deep Valley I, Perion, Ellinia, Perion Street Corner, Ant Tunnel IV).
+    /// </summary>
+    public const int NameWidensPanelMargin = 24;
+
+    /// <summary>
+    /// After a read of the expanded panel, whether the name text reaches within <see cref="NameWidensPanelMargin"/> of
+    /// the panel's right edge, so that the panel may be as wide as it is for its name rather than its map; null when the
+    /// minimap was collapsed or nothing was read. Used to tell apart the maps a misread name may be.
+    /// </summary>
+    public bool? NameWidensPanel { get; private set; }
+
     /// <summary>Returns true when the names were re-read this frame.</summary>
     public bool Update(FrameGeometry geometry, ReadOnlySpan<byte> frame, CaptureRect panel) => Update(geometry, frame, panel, collapsed: false);
 
-    public bool Update(FrameGeometry geometry, ReadOnlySpan<byte> frame, MinimapReading minimap) => Update(geometry, frame, minimap.Panel, minimap.Collapsed);
+    public bool Update(FrameGeometry geometry, ReadOnlySpan<byte> frame, MinimapReading minimap) => Update(geometry, frame, minimap.Panel, minimap.Collapsed, minimap.NameRight);
 
-    public bool Update(FrameGeometry geometry, ReadOnlySpan<byte> frame, CaptureRect panel, bool collapsed)
+    public bool Update(FrameGeometry geometry, ReadOnlySpan<byte> frame, CaptureRect panel, bool collapsed, int? nameRight = null)
     {
         _panel = panel;
         _collapsed = collapsed;
+        _nameRight = collapsed ? nameRight : null;
         if (!_tracker.Update(geometry, frame)) return false;
-        var lines = _tracker.Lines!.Where(Plausible).ToList();
+        var lines = _tracker.Lines!;
+        Current = Parse(lines, collapsed);
+        LastReadUnsoftened = false;
+        if (IsKnownName is { } known && _tracker.LastReadExact && !(Current is { } read && known(read.Region, read.Map))
+            && _tracker.ReadUnsoftened(geometry, frame) is var rawLines && Parse(rawLines, collapsed) is { } raw && known(raw.Region, raw.Map))
+        {
+            Current = raw;
+            lines = rawLines;
+            LastReadUnsoftened = true;
+        }
+        var plausible = lines.Where(Plausible).ToList();
+        // The block starts 46 columns into the panel; OCR boxes are in frame pixels of the block.
+        NameWidensPanel = collapsed || plausible.Count == 0 ? null
+            : panel.Width - (46 + plausible.Max(l => l.X + l.Width) / geometry.Scale) <= NameWidensPanelMargin;
+        return true;
+    }
+
+    private static (string Region, string Map, double Confidence)? Parse(IReadOnlyList<TextLine> all, bool collapsed)
+    {
+        var lines = all.Where(Plausible).ToList();
+        if (lines.Count == 0) return null;
         if (collapsed)
         {
-            var text = string.Join(" ", lines.Select(l => l.Text.Trim()));
-            text = System.Text.RegularExpressions.Regex.Replace(text, @"\s*\bWORLD\b.*$", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            var text = StripWorldCaption(string.Join(" ", lines.Select(l => l.Text.Trim())));
             var colon = text.IndexOf(':');
-            Current = lines.Count == 0 ? null
-                : colon < 0 ? ("", Normalize(text), lines.Min(l => l.Confidence))
+            return colon < 0 ? ("", Normalize(text), lines.Min(l => l.Confidence))
                 : (Normalize(text[..colon]), Normalize(text[(colon + 1)..]), lines.Min(l => l.Confidence));
-            return true;
         }
-        Current = lines.Count switch
+        return lines.Count == 1 ? ("", Normalize(lines[0].Text), lines[0].Confidence)
+            : (Normalize(lines[0].Text), Normalize(lines[1].Text), Math.Min(lines[0].Confidence, lines[1].Confidence));
+    }
+
+    /// <summary>
+    /// Removes the WORLD button's caption from the end of collapsed-bar text read past the buttons. OCR does not always
+    /// read it whole: on fx-anttunnel's exact frames, softened, it came back as "WORLD", "WORLO", "WORLE", "WORLI" and
+    /// "WORL". So the text is cut at the first word, after the first, that is a prefix of WORLD of three or more letters
+    /// or one letter off it, with everything after it; and such a caption glued to the map's numeral ("IVWORL") is cut
+    /// back to the numeral.
+    /// </summary>
+    public static string StripWorldCaption(string text)
+    {
+        var words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        for (var i = 1; i < words.Length; i++)
         {
-            0 => null,
-            1 => ("", Normalize(lines[0].Text), lines[0].Confidence),
-            _ => (Normalize(lines[0].Text), Normalize(lines[1].Text), Math.Min(lines[0].Confidence, lines[1].Confidence)),
-        };
-        return true;
+            if (LooksLikeWorld(words[i])) return string.Join(' ', words[..i]);
+            var glued = System.Text.RegularExpressions.Regex.Match(words[i], @"^([IVX]+)(W\w{2,4})$");
+            if (glued.Success && LooksLikeWorld(glued.Groups[2].Value)) return string.Join(' ', words[..i].Append(glued.Groups[1].Value));
+        }
+        return text.Trim();
+    }
+
+    private static bool LooksLikeWorld(string word)
+    {
+        var w = word.ToUpperInvariant();
+        if (w.Length < 3 || w.Length > 6 || !w.All(char.IsLetterOrDigit)) return false;
+        if (w.Length < 5 && "WORLD".StartsWith(w, StringComparison.Ordinal)) return true;
+        // One substitution, insertion or deletion away from WORLD.
+        int i = 0, j = 0, edits = 0;
+        const string target = "WORLD";
+        while (i < w.Length && j < target.Length)
+        {
+            if (w[i] == target[j]) { i++; j++; continue; }
+            if (++edits > 1) return false;
+            if (w.Length > target.Length) i++;
+            else if (w.Length < target.Length) j++;
+            else { i++; j++; }
+        }
+        return edits + (w.Length - i) + (target.Length - j) <= 1 && w[0] == 'W';
     }
 
     /// <summary>A line worth keeping: confident, at least two letters, and not the panel's own "mini map" caption.</summary>

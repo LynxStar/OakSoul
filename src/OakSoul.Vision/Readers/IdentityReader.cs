@@ -24,8 +24,11 @@ public sealed class IdentityReader
         // read them (6x and 10x read "E", "1 3" or nothing), and on the decimated fx-2x frames 8x read "3D" too; the white
         // digits on their orange tiles were the trouble. Drawn as black ink on white paper, the badge reads "31" at 6x, 8x
         // and 10x on every keyframe of fx-combat, fx-maps (bar its 9 black transition frames), fx-exact and fx-2x, so the
-        // badge is binarized first (after the softening of exact frames, which reads the same).
-        _level = new TextRegionTracker(layout["status.level"].Rect, upscale: 8) { StableFrames = stableFrames, Prepare = (px, w, h) => OcrInput.InkOnPaper(px, w, h) };
+        // badge is binarized first. An exact frame's badge is binarized as it is, not softened first: softened, LV. 32 on
+        // fx-anttunnel and fx-anttunnel-open read "3 2" at 8x on every keyframe (and "32" at 6x and 10x); as it is, "32" at
+        // 6x, 8x and 10x, and 31 still reads at all three on fx-exact and fx-2x.
+        _level = new TextRegionTracker(layout["status.level"].Rect, upscale: 8)
+            { StableFrames = stableFrames, SoftenExactFrames = false, Prepare = (px, w, h) => OcrInput.InkOnPaper(px, w, h) };
         _jobName = new TextRegionTracker(layout["status.class_name"].Rect, upscale: 8) { StableFrames = stableFrames };
     }
 
@@ -41,12 +44,7 @@ public sealed class IdentityReader
         var confidence = 1.0;
         if (_level.Lines is { Count: > 0 } l)
         {
-            // Lines come back as "LV." and the number, or on a scaled frame as one line "LV. 31"; prefer a line
-            // that is all digits, else the digits after the label.
-            var numberLine = l.FirstOrDefault(x => x.Text.Trim().Length > 0 && x.Text.Trim().All(char.IsDigit))
-                ?? l.FirstOrDefault(x => x.Text.Contains("LV", StringComparison.OrdinalIgnoreCase) && x.Text.Any(char.IsDigit));
-            var digits = numberLine is null ? "" : new string(numberLine.Text.SkipWhile(c => !char.IsDigit(c)).TakeWhile(char.IsDigit).ToArray());
-            if (int.TryParse(digits, out var v) && v is > 0 and < 300) level = v;
+            level = ParseLevel(l);
             confidence = Math.Min(confidence, l.Min(x => x.Confidence));
         }
         string job = "", name = "";
@@ -58,5 +56,25 @@ public sealed class IdentityReader
         }
         Current = new IdentityReading(level, job, name, confidence);
         return true;
+    }
+
+    /// <summary>
+    /// The level from the badge's OCR lines. They come back as "LV." and the number, on a scaled frame as one line
+    /// "LV. 31", and with one digit per tile also as "3 2" or as two lines "3" and "2"; so the digits of the lines right of
+    /// the label that hold only digits and spaces are joined left to right, else (or when that is no level) the first such
+    /// line alone, else the digits after the label. A level is one to three digits from 1 to 299.
+    /// </summary>
+    public static int? ParseLevel(IReadOnlyList<TextLine> lines)
+    {
+        static int? Level(string digits) => digits.Length is >= 1 and <= 3 && int.TryParse(digits, out var v) && v is > 0 and < 300 ? v : null;
+        static string Digits(string text) => new(text.Where(char.IsDigit).ToArray());
+        var label = lines.FirstOrDefault(x => x.Text.Contains("LV", StringComparison.OrdinalIgnoreCase));
+        var numberLines = lines.Where(x => x.Text.Any(char.IsDigit) && x.Text.All(c => char.IsDigit(c) || c == ' ')
+            && (label is null || x.X > label.X + label.Width / 2)).OrderBy(x => x.X).ToList();
+        if (numberLines.Count > 0)
+            return Level(string.Concat(numberLines.Select(x => Digits(x.Text)))) ?? Level(Digits(numberLines[0].Text));
+        if (label is null || !label.Text.Any(char.IsDigit)) return null;
+        var after = label.Text[(label.Text.IndexOf("LV", StringComparison.OrdinalIgnoreCase) + 2)..];
+        return Level(Digits(new string(after.SkipWhile(c => !char.IsDigit(c)).TakeWhile(c => char.IsDigit(c) || c == ' ').ToArray())));
     }
 }

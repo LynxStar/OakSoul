@@ -5,8 +5,10 @@ namespace OakSoul.World;
 /// to the area), the portal markers (relative to the area), the name tag's Feet point, and the frame time in seconds.
 /// Any of them may be missing.
 /// </summary>
+/// <param name="NameWidensPanel">Whether the minimap panel may be as wide as it is for its name text rather than its map
+/// (see MapNameTracker.NameWidensPanel); null when unknown. Only used to tell apart the maps a misread name may be.</param>
 public sealed record WorldObservation(string? Street, string? MapName, PixelRect? MapArea, PointD? SelfInMap, PointD? TagFeet,
-    IReadOnlyList<MinimapMarker>? PortalMarkers = null, bool MinimapCollapsed = false, double? Time = null);
+    IReadOnlyList<MinimapMarker>? PortalMarkers = null, bool MinimapCollapsed = false, double? Time = null, bool? NameWidensPanel = null);
 
 /// <summary>Which inputs produced a <see cref="WorldState"/>.</summary>
 public enum WorldSource
@@ -246,6 +248,21 @@ public sealed class WorldTracker
     private WorldState Unknown(MinimapFix? fix, string? note) =>
         WorldState.Empty with { MapId = _map!.MapId, Map = _map, Dot = fix, Transform = _transform, Note = note };
 
+    /// <summary>
+    /// The one candidate whose predicted minimap image explains the area within <see cref="MinimapTransform.FitTolerance"/>
+    /// by <see cref="MinimapTransform.StrictSizeMismatch"/> and better than every other; null without an area, when none
+    /// fits, or when two fit equally well (East Rocky Mountain I and IV share a size). An image narrower than the area
+    /// fits only when the panel may have been widened for the name.
+    /// </summary>
+    private int? ChooseBySize(IReadOnlyList<int> ids, PixelRect? mapArea, bool narrowerAllowed)
+    {
+        if (mapArea is not { Width: > 0, Height: > 0 } area) return null;
+        var fits = ids.Select(i => (Id: i, Map: _catalog.Load(i))).Where(e => e.Map is not null)
+            .Select(e => (e.Id, Gap: MinimapTransform.StrictSizeMismatch(e.Map!, area, narrowerAllowed)))
+            .Where(e => e.Gap <= MinimapTransform.FitTolerance).OrderBy(e => e.Gap).ToList();
+        return fits.Count == 0 || fits.Count > 1 && fits[1].Gap == fits[0].Gap ? null : fits[0].Id;
+    }
+
     /// <summary>False while the map area's size disagrees with the one seen when the map was named (see class remarks).</summary>
     private bool AreaTrusted(WorldObservation obs)
     {
@@ -267,22 +284,42 @@ public sealed class WorldTracker
         return false;
     }
 
+    /// <summary>
+    /// Names that matched no map exactly, with the maps they may be (see <see cref="MapCatalog.FindCandidates"/>), while
+    /// none of those fits the minimap: re-tried every frame, since the panel may only settle after the names were read.
+    /// </summary>
+    private IReadOnlyList<int>? _nearCandidates;
+
     private void ResolveMap(WorldObservation obs)
     {
         if (string.IsNullOrWhiteSpace(obs.MapName)) return;
         var names = (obs.Street ?? "", obs.MapName);
-        if (_names == names) return;
+        var fresh = _names != names;
+        if (!fresh && _nearCandidates is null) return;
         _names = names;
-        var ids = _catalog.FindIds(names.Item1, names.Item2);
-        int? id = ids.Count switch
+        int? id;
+        if (fresh)
         {
-            0 => null,
-            1 => ids[0],
-            _ => obs.MapArea is { Width: > 0 } area
-                ? ids.Select(i => (Id: i, Map: _catalog.Load(i))).Where(e => e.Map is not null)
-                    .OrderBy(e => MinimapTransform.SizeMismatch(e.Map!, area)).Select(e => (int?)e.Id).FirstOrDefault()
-                : ids[0],
-        };
+            var (ids, exact) = _catalog.FindCandidates(names.Item1, names.Item2);
+            _nearCandidates = exact || ids.Count == 0 ? null : ids;
+            id = !exact ? null : ids.Count switch
+            {
+                1 => ids[0],
+                _ => obs.MapArea is { Width: > 0 } area
+                    ? ids.Select(i => (Id: i, Map: _catalog.Load(i))).Where(e => e.Map is not null)
+                        .OrderBy(e => MinimapTransform.SizeMismatch(e.Map!, area)).Select(e => (int?)e.Id).FirstOrDefault()
+                    : ids[0],
+            };
+        }
+        else id = null;
+        // A misread name is never taken on its closest match alone: the candidate must be the one map whose size explains
+        // the minimap, so with the minimap collapsed or no candidate fitting, the map stays unknown and is tried again.
+        if (_nearCandidates is { } near)
+        {
+            id = ChooseBySize(near, obs.MinimapCollapsed ? null : obs.MapArea, obs.NameWidensPanel != false);
+            if (id is not null) _nearCandidates = null;
+            else if (!fresh) return;
+        }
         // The names were just read, so the panel on screen now belongs to them.
         _establishedArea = obs.MapArea is { Width: > 0 } a ? a : null;
         _pendingArea = null;
