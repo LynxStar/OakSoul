@@ -20,9 +20,12 @@ public sealed class IdentityReader
 
     public IdentityReader(HudLayout layout, int stableFrames = 3)
     {
-        // Vision needs the "LV." label as context and a large upscale to read the small badge digits; measured on
-        // the real client, 8x reads both lines at full confidence where 3x to 6x read nothing or one digit.
-        _level = new TextRegionTracker(layout["status.level"].Rect, upscale: 8) { StableFrames = stableFrames };
+        // Vision needs the "LV." label as context and a large upscale to read the small badge digits. As captured, only 8x
+        // read them (6x and 10x read "E", "1 3" or nothing), and on the decimated fx-2x frames 8x read "3D" too; the white
+        // digits on their orange tiles were the trouble. Drawn as black ink on white paper, the badge reads "31" at 6x, 8x
+        // and 10x on every keyframe of fx-combat, fx-maps (bar its 9 black transition frames), fx-exact and fx-2x, so the
+        // badge is binarized first (after the softening of exact frames, which reads the same).
+        _level = new TextRegionTracker(layout["status.level"].Rect, upscale: 8) { StableFrames = stableFrames, Prepare = (px, w, h) => OcrInput.InkOnPaper(px, w, h) };
         _jobName = new TextRegionTracker(layout["status.class_name"].Rect, upscale: 8) { StableFrames = stableFrames };
     }
 

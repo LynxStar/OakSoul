@@ -10,6 +10,7 @@ using OakSoul.World;
 //   --list | --window-id N | --pid N --title "T" | --app "Name" --title "T"      live capture
 //   --recording DIR [--keyframes] [--speed X]                                      replay a recorder session
 //   --crop-top N (28 for a windowed client)   --fps N (default 30)   --seconds S (default 0 = until the end or Ctrl-C)
+//   --scale N: live capture at N times the point size, decimated to the game's own pixels (default: the window's backing scale)
 //   --maps DIR (default data/maps): map metadata for world positions   --world-report: print the world-model validation at the end
 //   --build-background: (recordings only) build each visited map's background mosaic into --backgrounds DIR (default data/backgrounds)
 //   --entities: detect mobs, players, pets, drops and effects against the cached mosaic and print a line per change
@@ -21,6 +22,7 @@ using OakSoul.Capture.Replay;
 uint? windowId = null; int? pid = null; string? app = null, title = null, recording = null, buffsPath = null, mapsPath = null, backgroundsPath = null, sheetDir = null;
 int cropTop = 0, fps = 30; double seconds = 0, speed = 1; var list = false; var keyframes = false; var worldReport = false;
 var buildBackground = false; var entities = false; var entityReport = false;
+int? captureScale = null;
 for (var i = 0; i < args.Length; i++)
 {
     string Next() => i + 1 < args.Length ? args[++i] : throw new ArgumentException($"{args[i]} needs a value");
@@ -45,9 +47,12 @@ for (var i = 0; i < args.Length; i++)
         case "--entities": entities = true; break;
         case "--entity-sheet": sheetDir = Next(); entities = true; break;
         case "--entity-report": entityReport = true; entities = true; break;
+        case "--scale": captureScale = int.Parse(Next()); break;
         default: Console.Error.WriteLine($"unknown option {args[i]}"); return 2;
     }
 }
+
+if (captureScale is < 1 or > 4) { Console.Error.WriteLine("error: --scale must be between 1 and 4"); return 2; }
 
 ScreenCapture.Initialize();
 IFrameSource source;
@@ -78,7 +83,10 @@ if (matches.Count != 1)
 var window = matches[0];
 if (window.Width <= 0 || window.Height <= 0) { Console.Error.WriteLine("error: window reports a zero-size frame."); return 1; }
 CaptureRect? crop = cropTop > 0 ? new CaptureRect(0, cropTop, (int)window.Width, (int)window.Height - cropTop) : null;
-source = new CaptureFrameSource(CaptureStream.Start(window.Id, 0, 0, fps, 8, crop), $"{window}{(crop is null ? "" : $"  crop {crop}")}");
+// Exact capture, as the recorder does: request the region at the display's backing scale, where every game pixel is a
+// uniform block, and decimate each frame back to point size, so the readers see the game's own pixels in sRGB.
+var scale = captureScale ?? Math.Max(1, (int)Math.Round(window.Scale));
+source = new CaptureFrameSource(CaptureStream.Start(window.Id, 0, 0, fps, 8, crop, scale), $"{window}{(crop is null ? "" : $"  crop {crop}")}  scale {scale}, {CaptureStream.ColorSpace}");
 }
 Console.WriteLine($"source   {source.Description}");
 

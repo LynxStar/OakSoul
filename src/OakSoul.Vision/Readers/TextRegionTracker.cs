@@ -5,7 +5,8 @@ namespace OakSoul.Vision.Readers;
 /// <summary>
 /// Runs Vision OCR on a fixed region only when its pixels change and then hold still for a few frames, so
 /// text that changes rarely (names, titles, levels) costs a hash per frame and one OCR call per change.
-/// The region is taken at the frame's own resolution, since downsampling a scaled frame only hurts OCR.
+/// The region is taken at the frame's own resolution, since downsampling a scaled frame only hurts OCR, and softened
+/// when the frame is pixel-exact (see <see cref="OcrInput"/>).
 /// </summary>
 public sealed class TextRegionTracker
 {
@@ -19,6 +20,12 @@ public sealed class TextRegionTracker
 
     /// <summary>Lines from the last read, top to bottom, or null before the first read.</summary>
     public IReadOnlyList<TextLine>? Lines { get; private set; }
+
+    /// <summary>
+    /// Optional reader-specific preparation of the crop (BGRA, width, height) before OCR, applied after
+    /// <see cref="OcrInput.ForOcr"/> has softened a pixel-exact frame, so it always sees the blurred look it was tuned on.
+    /// </summary>
+    public Func<byte[], int, int, byte[]>? Prepare { get; init; }
 
     public TextRegionTracker(CaptureRect region, int upscale = 3) : this(() => region, upscale) { }
 
@@ -43,6 +50,8 @@ public sealed class TextRegionTracker
         _lastHash = hash;
         var block = geometry.ToFrame(native);
         var px = new HudRegion(0, "text.ocr", RegionKind.Fixed, block, "").Extract(frame, geometry.FrameWidth, geometry.FrameHeight);
+        px = OcrInput.ForOcr(geometry, frame, px, block.Width, block.Height);
+        if (Prepare is not null) px = Prepare(px, block.Width, block.Height);
         Lines = TextRecognizer.Recognize(px, block.Width, block.Height, _upscale);
         return true;
     }

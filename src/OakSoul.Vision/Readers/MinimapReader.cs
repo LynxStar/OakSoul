@@ -40,7 +40,7 @@ public static class MinimapReader
     private const int TopBorderRow = 4;         // the light border line above the title bar: no buttons cross it
     private const int LeftBorderColumn = 2;     // x of the panel's left border, light or blue all the way down
     private const int TitleBarRow = 9;          // a row through the title bar buttons; the WORLD button is orange
-    private const int WorldButtonToEdge = 7;    // from the WORLD button's last orange column to the panel's right edge
+    private const int OutlineToEdge = 5;        // from the WORLD button's dark right outline to the panel's right edge
     private const int MapInsetLeft = 6, MapInsetRight = 6, MapInsetTop = 68, MapInsetBottom = 11;
     private const int MinDotPixels = 6, MaxDotPixels = 160;
     private const int CollapsedBarHeight = 20;
@@ -57,7 +57,10 @@ public static class MinimapReader
         // Right edge: anchored on the orange WORLD button at the end of the title bar, which no background can
         // imitate; fall back to the first dark pixel on the top border line.
         // The button is a run of roughly 30 orange columns, then a dark edge pixel, then the light border. Cave
-        // walls can be the same orange, but not with that structure.
+        // walls can be the same orange, but not with that structure. On an exact frame the run ends in the outline
+        // itself (x 152..185 orange, 186 black, 187 white on Deep Valley I); the point-size capture's blur leaves the
+        // first column after the run still three quarters orange and puts the darkest column one further. Both give
+        // the outline, and the edge (x 191 there, the last panel column before the world) is five columns on.
         var right = -1;
         var runStart = -1;
         for (var x = PanelLeft + 40; x < w - 6 && right < 0; x++)
@@ -67,8 +70,10 @@ public static class MinimapReader
             if (!orange && runStart >= 0)
             {
                 var length = x - runStart;
-                if (length is >= 24 and <= 44 && Luma(px, w, x + 1, TitleBarRow) < 130 && Luma(px, w, x + 3, TitleBarRow) > 140)
-                    right = x - 1 + WorldButtonToEdge;
+                var outline = Luma(px, w, x + 1, TitleBarRow) < 130 && Luma(px, w, x + 3, TitleBarRow) > 140 ? x + 1
+                    : Luma(px, w, x, TitleBarRow) < 130 && Luma(px, w, x + 2, TitleBarRow) > 140 ? x : -1;
+                if (length is >= 24 and <= 44 && outline >= 0)
+                    right = outline + OutlineToEdge;
                 runStart = -1;
             }
         }
@@ -117,7 +122,7 @@ public static class MinimapReader
     {
         var block = geometry.ToFrame(NameBlock(panel));
         var region = new HudRegion(0, "minimap.name_block", RegionKind.Fixed, block, "");
-        var px = region.Extract(frame, geometry.FrameWidth, geometry.FrameHeight);
+        var px = OcrInput.ForOcr(geometry, frame, region.Extract(frame, geometry.FrameWidth, geometry.FrameHeight), block.Width, block.Height);
         var lines = TextRecognizer.Recognize(px, block.Width, block.Height, upscale: 3);
         if (lines.Count == 0) return null;
         if (lines.Count == 1) return ("", lines[0].Text.Trim(), lines[0].Confidence);
@@ -136,7 +141,9 @@ public static class MinimapReader
             for (var x = x0; x <= x1; x++)
             {
                 var here = Luma(px, w, x, y);
-                if (here > 180) light++;
+                // The light line is white. On an exact frame the bar's lowest light-blue row sits directly on the dark
+                // blue line under it and would pass for it three rows too high; blur softened that drop too much to pass.
+                if (here > 180 && !IsNameBlockBlue(px, w, x, y)) light++;
                 // The shadow line is alpha-blended, so over a bright sky it is grey, not black: test the drop, not the level.
                 if (here - Luma(px, w, x, y + 1) > 60) dark++;
                 if (IsBorderBlue(px, w, x, y - 3) || IsNameBlockBlue(px, w, x, y - 3)) bar++;
@@ -295,8 +302,9 @@ public sealed class MapNameTracker
         line.Confidence >= 0.5 && line.Text.Count(char.IsLetter) >= 2 && !line.Text.Contains("mini map", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Map names end in roman numerals, which OCR confuses with lower-case L, the digit one and T ("Rocky Road IIl",
-    /// "Rocky Road IT"). A trailing token made only of I, V, X, l, 1, | and T is rewritten as a numeral.
+    /// Map names end in roman numerals, which OCR confuses with lower-case L, the digit one, the exclamation mark and T
+    /// ("Rocky Road IIl", "Rocky Road IT", "Deep Valley !" on exact frames). A trailing token made only of I, V, X, l, 1,
+    /// |, ! and T is rewritten as a numeral.
     /// </summary>
     public static string Normalize(string text)
     {
@@ -304,7 +312,7 @@ public sealed class MapNameTracker
         var space = trimmed.LastIndexOf(' ');
         if (space < 0) return trimmed;
         var last = trimmed[(space + 1)..];
-        if (last.Length == 0 || !last.All(c => "IVXl1|T".Contains(c)) || !last.Any(c => "IVXl1|".Contains(c))) return trimmed;
-        return trimmed[..(space + 1)] + last.Replace('l', 'I').Replace('1', 'I').Replace('|', 'I').Replace('T', 'I');
+        if (last.Length == 0 || !last.All(c => "IVXl1|!T".Contains(c)) || !last.Any(c => "IVXl1|!".Contains(c))) return trimmed;
+        return trimmed[..(space + 1)] + last.Replace('l', 'I').Replace('1', 'I').Replace('|', 'I').Replace('!', 'I').Replace('T', 'I');
     }
 }
