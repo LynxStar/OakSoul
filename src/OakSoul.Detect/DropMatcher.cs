@@ -15,9 +15,8 @@ public sealed record DropMatch(string ItemId, string Category, int IconFrame, in
 /// Identifies drops lying on the ground by their <c>iconRaw</c> sprites, which the client draws 1:1: the meso bags'
 /// spinning frames (<c>item/special/0900.img/0900000N/iconRaw/K</c>) and every item icon exported by
 /// <c>OakSoul.SpriteExport --items</c> (equipment is not exported, so equipment drops stay unidentified). Because the
-/// icon is drawn unscaled, the box must match the icon's extent to a few pixels and the score is strict. On an exact
-/// frame the icon's opaque pixels are compared with the screen pixel for pixel, as for mobs (<see cref="SpriteMatcher"/>,
-/// without the freeze); on a blurred one by 3x3 means.
+/// icon is drawn unscaled, the box must match the icon's extent to a few pixels, and the icon's opaque pixels are
+/// compared with the screen pixel for pixel, as for mobs (<see cref="SpriteMatcher"/>, without the freeze).
 /// </summary>
 public sealed class DropMatcher
 {
@@ -31,28 +30,16 @@ public sealed class DropMatcher
     public const int SearchX = 2, SearchY = 3;
 
     /// <summary>
-    /// Fraction of the icon's interior samples that must agree on a blurred frame (as for mobs, 3x3 means within
-    /// <see cref="SpriteMatcher.PixelTolerance"/>). Stricter than for mobs: an icon is small, static and never tinted,
-    /// and many icons share a size, so only a near-complete agreement names one.
+    /// Fraction of an icon's visible opaque pixels that must equal the screen, for any icon. Stricter than for mobs: an
+    /// icon is small, static and never tinted, and many icons share a size, so only a near-complete agreement names one.
+    /// On fx-exact the one drop lying on the ground (item 04000004) matched at 1.00 on all four keyframes it was tried
+    /// on, while no other small candidate on a surface of either short exact fixture reached 0.20 against any of the
+    /// 1022 icons.
     /// </summary>
-    public const double Threshold = 0.9;
+    public const double Threshold = 0.8;
 
-    /// <summary>
-    /// The meso coins' threshold on a blurred frame. Small flat coins survive the point-size capture's blur better than
-    /// mobs (bronze coins matched at 1.00 on fx-combat), but gold coins scored 0.83 to 0.88 and a bronze coin beside a
-    /// snail 0.83, all five confirmed by eye, while the best non-coin small candidate on a surface reached 0.78 (against
-    /// an item icon). There are only 15 coin frames, so a lower bar costs little in chance matches.
-    /// </summary>
-    public const double MesoThreshold = 0.8;
-
-    /// <summary>
-    /// Fraction of an icon's visible opaque pixels that must equal the screen on an exact frame, for any icon. On
-    /// fx-exact the one drop lying on the ground (item 04000004) matched at 1.00 on all four keyframes it was tried on,
-    /// while no other small candidate on a surface of either exact fixture reached 0.20 against any of the 1022 icons.
-    /// </summary>
-    public const double ExactThreshold = 0.8;
-
-    private static double ThresholdFor(string id, bool exact) => exact ? ExactThreshold : id.StartsWith("0900000", StringComparison.Ordinal) ? MesoThreshold : Threshold;
+    /// <summary>Icons with fewer opaque pixels than this are not loaded: too little to name an item (three of the exported icons).</summary>
+    public const int MinIconPixels = 100;
 
     private readonly List<(string Id, string Category, MobSpecies Holder, SpriteFrame Frame)> _icons = [];
     private readonly SpriteMatcher _matcher = new() { AllowFreeze = false };
@@ -86,7 +73,7 @@ public sealed class DropMatcher
             if (!File.Exists(file)) continue;
             var (bgra, w, h) = Png.ReadBgra(file);
             var frame = SpriteFrame.Create("iconRaw", frameIndex, -1, bgra, w, h, w / 2, h, 0);
-            if (frame.SampleX.Length < 20) continue;
+            if (frame.PixelX.Length < MinIconPixels) continue;
             var holder = new MobSpecies { Id = 0, Name = id };
             matcher._icons.Add((id, category, holder, frame));
         }
@@ -100,9 +87,8 @@ public sealed class DropMatcher
     public List<(long Frame, CaptureRect Box, double Score, string ItemId)> Scores { get; } = [];
 
     /// <summary>The best score of any icon on a candidate, ignoring the threshold (report only).</summary>
-    public void Diagnose(long sequence, ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, CaptureRect box, bool exact = false)
+    public void Diagnose(long sequence, ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, CaptureRect box)
     {
-        _matcher.Exact = exact;
         if (box.Width > MaxIcon + SizeSlack || box.Height > MaxIcon + SizeSlack) return;
         var best = (Score: 0.0, Id: "");
         var prepared = false;
@@ -116,9 +102,8 @@ public sealed class DropMatcher
     }
 
     /// <summary>The icon a small candidate box shows, or null. Meso bags are tried first (the common drop).</summary>
-    public DropMatch? Match(ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, CaptureRect box, bool exact = false)
+    public DropMatch? Match(ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, CaptureRect box)
     {
-        _matcher.Exact = exact;
         if (box.Width > MaxIcon + SizeSlack || box.Height > MaxIcon + SizeSlack) return null;
         DropMatch? best = null;
         var prepared = false;
@@ -126,8 +111,7 @@ public sealed class DropMatcher
         {
             if (Math.Abs(f.ExtentWidth - box.Width) > SizeSlack || Math.Abs(f.ExtentHeight - box.Height) > SizeSlack) continue;
             if (!prepared) { _matcher.Prepare(frame, frameWidth, mask, box, null); prepared = true; }
-            var needed = ThresholdFor(id, exact);
-            if (_matcher.Best(box, null, holder, f, needed, SearchX, SearchY) is not { } m || m.Score < needed) continue;
+            if (_matcher.Best(box, null, holder, f, Threshold, SearchX, SearchY) is not { } m || m.Score < Threshold) continue;
             if (best is null || m.Score > best.Score) best = new DropMatch(id, category, f.Index, m.Left, m.Top, m.Matches, m.Compared);
             if (best.Score >= 0.99) break;
         }

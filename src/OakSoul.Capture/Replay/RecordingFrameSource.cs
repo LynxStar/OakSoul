@@ -5,9 +5,10 @@ using System.Text.Json;
 namespace OakSoul.Capture.Replay;
 
 /// <summary>
-/// Plays a recorder session folder back as frames: either its video (every frame, lossy) or its PNG keyframes
-/// (sparse, pixel-exact). Frames are decoded by ffmpeg into BGRA and optionally cropped at the top, exactly as
-/// the recorder's --crop-top would have done at capture time.
+/// Plays a recorder session folder back as frames: either its video (every frame; exact only when it was encoded
+/// losslessly, see <see cref="LosslessVideo"/>) or its PNG keyframes (sparse, always the captured pixels). Frames are
+/// decoded by ffmpeg into BGRA and optionally cropped at the top, exactly as the recorder's --crop-top would have done
+/// at capture time.
 /// </summary>
 public sealed class RecordingFrameSource : IFrameSource
 {
@@ -23,6 +24,16 @@ public sealed class RecordingFrameSource : IFrameSource
     public string Description { get; }
     public bool NeedsMainLoop => false;
 
+    /// <summary>
+    /// Whether the session's video holds the captured pixels: its <c>session.json</c> says <c>"lossless": true</c>
+    /// (written by the recorder since this field exists), or, for older sessions, its <c>encoderArgs</c> are a lossless
+    /// encoder (<see cref="VideoEncoding.IsLossless"/>, e.g. the lossless preset <c>-c:v libx264rgb -preset veryfast -qp 0</c>).
+    /// </summary>
+    public bool LosslessVideo { get; }
+
+    /// <summary>Keyframes are lossless PNGs; the video is lossless when <see cref="LosslessVideo"/>.</summary>
+    public bool Lossless => _keyframes || LosslessVideo;
+
     /// <param name="speed">1 plays at the recorded rate, 2 twice as fast, 0 as fast as frames decode.</param>
     public RecordingFrameSource(string sessionDir, bool keyframes = false, int cropTop = 0, double speed = 1)
     {
@@ -35,7 +46,10 @@ public sealed class RecordingFrameSource : IFrameSource
         Width = root.GetProperty("width").GetInt32();
         Height = root.GetProperty("height").GetInt32() - cropTop;
         Fps = keyframes ? 1 : root.GetProperty("fps").GetInt32();
-        Description = $"{(keyframes ? "keyframes" : "video")} of {sessionDir}{(cropTop > 0 ? $", top {cropTop} rows cropped" : "")}";
+        LosslessVideo = root.TryGetProperty("lossless", out var lossless) && lossless.ValueKind is JsonValueKind.True or JsonValueKind.False
+            ? lossless.GetBoolean()
+            : VideoEncoding.IsLossless(root.TryGetProperty("encoderArgs", out var args) && args.ValueKind == JsonValueKind.String ? args.GetString() : null);
+        Description = $"{(keyframes ? "keyframes" : LosslessVideo ? "lossless video" : "lossy video")} of {sessionDir}{(cropTop > 0 ? $", top {cropTop} rows cropped" : "")}";
     }
 
     public async IAsyncEnumerable<Frame> Frames([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellation = default)

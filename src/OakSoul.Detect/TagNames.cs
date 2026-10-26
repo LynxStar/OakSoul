@@ -72,6 +72,17 @@ public sealed class TagNames
     public bool IsPet(string? name) => name is not null && PetName is not null && Distance(Normalize(name), Normalize(PetName)) <= 1;
 
     /// <summary>
+    /// Whether a tag read is the pet's or the own character's tag: that name alone, without a level badge (a mob's tag
+    /// drawn across the pet's, "Fire BMara", still names the mob). Such a tag never labels a mob or a drop.
+    /// </summary>
+    public bool IsCharacterTag(string? text)
+    {
+        var (level, name) = TagDetector.Parse(text);
+        if (level is not null || name is null) return false;
+        return IsPet(name) || (OwnName is { Length: >= 3 } own && Distance(Normalize(name), Normalize(own)) <= 1);
+    }
+
+    /// <summary>
     /// A read matches a known name when their edit distance is at most a fifth of the known name's length (one or two
     /// misread letters; "Dark Stump" is three edits and 25% from "Dark Axe Stump", and a different mob), or when
     /// the read is a prefix or suffix of at least <see cref="MinPrefix"/> letters ("Dark Axe Stu" for "Dark Axe Stump",

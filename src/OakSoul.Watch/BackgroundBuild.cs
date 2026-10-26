@@ -8,16 +8,15 @@ namespace OakSoul.Watch;
 /// Builds the background mosaic of every map a replayed session visited, offline, from the frames whose camera the
 /// world tracker measured (dot and own tag). Four replays: vote with each frame registered against the votes so far,
 /// count agreement, then once more registered against that first mosaic's reliable pixels, and count again. The
-/// second round fixes frames the incremental registration got wrong early on, when the votes so far were thin.
-/// Mosaics of pixel-exact sessions go to the cache's <see cref="BackgroundMosaic.ExactDirectory"/> subdirectory
-/// (the caller passes <see cref="BackgroundMosaic.DirFor"/>), so they never overwrite the blurred recordings' ones.
+/// second round fixes frames the incremental registration got wrong early on, when the votes so far were thin. Only
+/// pixel-exact sessions are built (the caller checks), since the detector compares exact frames with the mosaic.
 /// </summary>
 public static class BackgroundBuild
 {
     /// <summary>One usable frame: its map, the tracker's camera, whether that camera is exact, and what to mask.</summary>
     public sealed record FrameInfo(MapData Map, PointD Camera, bool Exact, CaptureRect Panel, CaptureRect Tag);
 
-    /// <param name="keyframes">For a mosaic voted from an exact session's video: the session's lossless keyframes with the
+    /// <param name="keyframes">For a mosaic voted from a session's video: the session's lossless keyframes with the
     /// video sequence each one copies (<see cref="KeyframesOf"/>); their pixels replace the video's where they agree
     /// (<see cref="MosaicBuilder.ExactRefine"/>).</param>
     public static async Task Run(TextWriter o, Func<IFrameSource> replay, IReadOnlyDictionary<long, FrameInfo> frames, ScreenMask mask, string dir,

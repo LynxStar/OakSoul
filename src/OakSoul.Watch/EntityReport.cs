@@ -31,6 +31,7 @@ public static class EntityReport
         o.WriteLine();
         o.WriteLine("== entity report ==");
         o.WriteLine($"  frames {rows.Count} on {rows.Select(r => r.MapId).Distinct().Count()} map(s) with a background, detected on {done.Count}; skipped: {string.Join(", ", rows.Where(r => r.Result.Camera is null).GroupBy(r => r.Result.Note?.Split(' ')[0] ?? "?").Select(g => $"{g.Key} {g.Count()}"))}");
+        o.WriteLine($"  frames not given to the detector (not the game's own pixels): {(watch.Skipped.Count == 0 ? "none" : string.Join("; ", watch.Skipped.Select(s => $"{s.Value} {s.Key}")))}");
         if (done.Count == 0) return;
         var kinds = Enum.GetValues<EntityKind>();
 
@@ -78,20 +79,27 @@ public static class EntityReport
         foreach (var g in done.GroupBy(r => r.MapId))
         {
             if (!watch.MobSets.TryGetValue(g.Key, out var set)) continue;
+            var det = detectors.FirstOrDefault(d => d.Mosaic.MapId == g.Key);
             var ents = g.SelectMany(r => r.Result.Entities).Where(e => e.Kind == EntityKind.Mob).ToList();
-            o.WriteLine($"  map {g.Key}: {g.Count()} frames; mob detections by species (matched in frame / with identity) and spawns:");
+            o.WriteLine($"  map {g.Key}: {g.Count()} frames; mob detections by species (matched in frame / with identity), spawns in the client's life list (and more proven at once in one frame), the most in one frame:");
             foreach (var e in set.Entries)
             {
                 var now = ents.Count(x => x.Sprite?.Species.Id == e.Species.Id);
                 var carried = ents.Count(x => x.Identity?.MobId == e.Species.Id);
+                var cap = det?.CapOf(e.Species.Id) ?? e.Spawns;
+                var proof = det is not null && det.SeenAtOnce.TryGetValue(e.Species.Id, out var p) && p.Count > e.Spawns ? $" ({p.Count} proven on frame {p.Frame})" : "";
                 var perFrame = g.Select(r => r.Result.Entities.Count(x => x.Kind == EntityKind.Mob && x.Identity?.MobId == e.Species.Id)).ToList();
                 var max = perFrame.Count == 0 ? 0 : perFrame.Max();
-                var over = perFrame.Count(n => n > e.Spawns);
-                var overFrames = g.Where(r => r.Result.Entities.Count(x => x.Kind == EntityKind.Mob && x.Identity?.MobId == e.Species.Id) > e.Spawns).Select(r => r.Result.Frame).Take(6).ToList();
-                o.WriteLine($"    {e.Species.Name,-16} {now,5} / {carried,5}   spawns {e.Spawns,2}  most in one frame {max,2}{(over > 0 ? $"  OVER SPAWNS on {over} frames ({string.Join(", ", overFrames)}...)" : "")}");
+                var over = perFrame.Count(n => n > cap);
+                var overFrames = g.Where(r => r.Result.Entities.Count(x => x.Kind == EntityKind.Mob && x.Identity?.MobId == e.Species.Id) > cap).Select(r => r.Result.Frame).Take(6).ToList();
+                var beyondList = perFrame.Count(n => n > e.Spawns);
+                o.WriteLine($"    {e.Species.Name,-16} {now,5} / {carried,5}   spawns {e.Spawns,2}{proof}  most in one frame {max,2}{(beyondList > 0 && over == 0 ? $", more than the life list on {beyondList} frames" : "")}" +
+                            $"{(over > 0 ? $"  OVER THE CAP on {over} frames ({string.Join(", ", overFrames)}...)" : "")}");
             }
             var unverified = ents.Count(x => x.Identity is null);
             o.WriteLine($"    {"(no identity)",-16} {unverified,5}");
+            var bases = ents.Where(x => x.Sprite is not null).GroupBy(x => x.Sprite!.Value.Basis).OrderBy(b => b.Key).Select(b => $"{b.Key.ToString().ToLowerInvariant()} {b.Count()}");
+            o.WriteLine($"    species of the matched detections rests on: {string.Join(", ", bases)} (shape: no recolour shares the frame; pixels: settled on the pixels where recolours differ; track, spawns: too few telling pixels)");
         }
 
         // Score distributions from the diagnostics: every candidate scored against every species of its map.
@@ -102,7 +110,7 @@ public static class EntityReport
         if (Environment.GetEnvironmentVariable("OAKSOUL_SPRITE_CSV") is { } csv)
             File.WriteAllLines(csv, diags.SelectMany(d => d.BestBySpecies.Values.Select(b =>
                 $"{d.Frame},{d.Kind},{d.Box.X},{d.Box.Y},{d.Box.Width},{d.Box.Height},{(d.TagText ?? "").Replace(',', ' ')},{(d.Accepted is { } a ? $"{a.Species.Id}" : "")}," +
-                $"{b.Species.Id},{b.Frame.Key},{b.Left},{b.Top},{b.Feet.X},{b.Feet.Y},{b.Matches},{b.Compared},{b.Tint},{b.Fogged}")));
+                $"{b.Species.Id},{b.Frame.Key},{b.Left},{b.Top},{b.Feet.X},{b.Feet.Y},{b.Matches},{b.Compared},{b.Tint},{b.Fogged},{b.Fog}")));
         var accepted = diags.Where(d => d.Accepted is not null).ToList();
         var acceptedScores = accepted.Select(d => d.Accepted!.Value.Score).ToList();
         var wrongForAccepted = accepted.Select(d => d.BestBySpecies.Where(b => b.Key != d.Accepted!.Value.Species.Id).Select(b => b.Value.Score).DefaultIfEmpty(0).Max()).ToList();
@@ -110,11 +118,7 @@ public static class EntityReport
         var tagTrue = labelled.Select(d => d.BestBySpecies[d.TagSpecies!.Value].Score).ToList();
         var tagWrong = labelled.Select(d => d.BestBySpecies.Where(b => b.Key != d.TagSpecies).Select(b => b.Value.Score).DefaultIfEmpty(0).Max()).ToList();
         var unmatched = diags.Where(d => d.Accepted is null).Select(d => d.BestBySpecies.Values.Select(b => b.Score).DefaultIfEmpty(0).Max()).ToList();
-        var strict = diags.Any(d => d.BestBySpecies.Values.Any(b => b.Strict));
-        var threshold = strict ? SpriteMatcher.ExactThreshold : SpriteMatcher.DefaultThreshold;
-        o.WriteLine(strict
-            ? $"  sprite scores, strict (share of a frame's visible opaque pixels equal to the screen pixel, within {SpriteMatcher.StrictTolerance} per channel, as drawn, frozen or through steam; threshold {threshold:0.00}), {diags.Count} candidates scored against every species of their map:"
-            : $"  sprite scores (fraction of a frame's interior samples, as 3x3 means, agreeing with the screen's 3x3 means within {detectors[0].Matcher.Tolerance} levels summed over B, G, R; threshold {threshold:0.00}), {diags.Count} candidates scored against every species of their map:");
+        o.WriteLine($"  sprite scores (share of a frame's visible opaque pixels equal to the screen pixel, as drawn, frozen or through steam; threshold {SpriteMatcher.Threshold:0.00}), {diags.Count} candidates scored against every species of their map:");
         o.WriteLine($"    {"",-34} {"n",5}  {"p5",5} {"p10",5} {"p50",5} {"p90",5} {"p95",5} {"max",5}");
         void Line(string label, List<double> v) =>
             o.WriteLine($"    {label,-34} {v.Count,5}  {Pct(v, 5),5:0.00} {Pct(v, 10),5:0.00} {Pct(v, 50),5:0.00} {Pct(v, 90),5:0.00} {Pct(v, 95),5:0.00} {(v.Count == 0 ? 0 : v.Max()),5:0.00}");
@@ -136,32 +140,29 @@ public static class EntityReport
         Hist("unmatched best", unmatched);
         Hist("pet/player/effect best", negatives);
         var margin = accepted.Select((d, i) => acceptedScores[i] - wrongForAccepted[i]).ToList();
-        o.WriteLine($"    matches dropped by the spawn cap: {detectors.Sum(d => d.SpawnCapped)}; accepted with a rival species in the contest: {accepted.Count(d => d.Accepted!.Value.Rival is not null)}," +
+        o.WriteLine($"    matches dropped by the spawn cap: {detectors.Sum(d => d.SpawnCapped)}, carried identities held to it: {watch.Tracker.CappedIdentities}; accepted with a rival species in the contest: {accepted.Count(d => d.Accepted!.Value.Rival is not null)}," +
                     $" won by less than 0.05: {accepted.Count(d => d.Accepted!.Value.Rival is not null && d.Accepted.Value.Score - d.Accepted.Value.RivalScore < 0.05)}");
         o.WriteLine($"    margin accepted minus best other species: p5 {Pct(margin, 5):0.00}, median {Pct(margin, 50):0.00}; accepted below their best other species: {margin.Count(m => m < 0)}");
         var tagAgree = labelled.Count(d => d.Accepted is { } a && a.Species.Id == d.TagSpecies);
         var tagDisagree = labelled.Count(d => d.Accepted is { } a && a.Species.Id != d.TagSpecies);
         o.WriteLine($"    tag-labelled candidates: {labelled.Count}; accepted as the tag's species {tagAgree}, as another species {tagDisagree}, unmatched {labelled.Count - tagAgree - tagDisagree}");
         // What a different threshold would have done.
-        foreach (var t in strict ? new[] { 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6 } : new[] { 0.3, 0.4, 0.5, 0.6, 0.7, 0.8 })
+        foreach (var t in new[] { 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6 })
             o.WriteLine($"    at threshold {t:0.0#}: tag-labelled true {Frac(tagTrue.Count(s => s >= t), tagTrue.Count)} pass, best other species {Frac(tagWrong.Count(s => s >= t), tagWrong.Count)} pass;" +
                         $" unmatched candidates reaching it {unmatched.Count(s => s >= t)}; pet/player/effect candidates reaching it {Frac(negatives.Count(s => s >= t), negatives.Count)}");
         o.WriteLine($"    accepted by animation: {string.Join(", ", accepted.GroupBy(d => d.Accepted!.Value.Frame.Anim).OrderByDescending(g => g.Count()).Select(g => $"{g.Key} {g.Count()}"))}");
-        if (strict)
+        var acc = accepted.Select(d => d.Accepted!.Value).ToList();
+        o.WriteLine($"    accepted by colour state: frozen {acc.Count(m => m.Tint == SpriteTint.Frozen)} of {acc.Count}; with steam explaining some pixels {acc.Count(m => m.Fogged > 0)}" +
+                    $" (over 10% of the agreeing pixels {acc.Count(m => m.Fogged > 0.1 * m.Matches)}); exact on every visible opaque pixel {acc.Count(m => m.Matches == m.Compared)}");
+        // The gap: the best any pet, player or effect candidate reached against the weakest tag-labelled mob of its own species.
+        foreach (var d in diags.Where(d => d.Kind is EntityKind.Pet or EntityKind.Player or EntityKind.Effect && d.BestBySpecies.Count > 0)
+                     .OrderByDescending(d => d.BestBySpecies.Values.Max(b => b.Score)).Take(6))
         {
-            var acc = accepted.Select(d => d.Accepted!.Value).ToList();
-            o.WriteLine($"    accepted by colour state: frozen {acc.Count(m => m.Tint == SpriteTint.Frozen)} of {acc.Count}; with steam explaining some pixels {acc.Count(m => m.Fogged > 0)}" +
-                        $" (over 10% of the agreeing pixels {acc.Count(m => m.Fogged > 0.1 * m.Matches)}); exact on every visible opaque pixel {acc.Count(m => m.Matches == m.Compared)}");
-            // The gap: the best any pet, player or effect candidate reached against the weakest tag-labelled mob of its own species.
-            foreach (var d in diags.Where(d => d.Kind is EntityKind.Pet or EntityKind.Player or EntityKind.Effect && d.BestBySpecies.Count > 0)
-                         .OrderByDescending(d => d.BestBySpecies.Values.Max(b => b.Score)).Take(6))
-            {
-                var b = d.BestBySpecies.Values.MaxBy(x => x.Score);
-                o.WriteLine($"      {d.Kind,-6} frame {d.Frame} box {d.Box.Width}x{d.Box.Height}+{d.Box.X}+{d.Box.Y}{(d.TagText is { } tt ? $" tag '{tt}'" : "")}: best {b}{(d.Accepted is { } a ? $"; accepted {a}" : "")}");
-            }
-            o.WriteLine($"    gap: pet/player/effect candidates at most {(negatives.Count == 0 ? 0 : negatives.Max()):0.000}; tag-labelled mobs, own species, at least {(tagTrue.Count == 0 ? 0 : tagTrue.Min()):0.000} (p5 {Pct(tagTrue, 5):0.000});" +
-                        $" accepted matches at least {(acceptedScores.Count == 0 ? 0 : acceptedScores.Min()):0.000}");
+            var b = d.BestBySpecies.Values.MaxBy(x => x.Score);
+            o.WriteLine($"      {d.Kind,-6} frame {d.Frame} box {d.Box.Width}x{d.Box.Height}+{d.Box.X}+{d.Box.Y}{(d.TagText is { } tt ? $" tag '{tt}'" : "")}: best {b}{(d.Accepted is { } a ? $"; accepted {a}" : "")}");
         }
+        o.WriteLine($"    gap: pet/player/effect candidates at most {(negatives.Count == 0 ? 0 : negatives.Max()):0.000}; tag-labelled mobs, own species, at least {(tagTrue.Count == 0 ? 0 : tagTrue.Min()):0.000} (p5 {Pct(tagTrue, 5):0.000});" +
+                    $" accepted matches at least {(acceptedScores.Count == 0 ? 0 : acceptedScores.Min()):0.000}");
     }
 
     private static string Cause(DetectedEntity e) =>
@@ -320,7 +321,7 @@ public static class EntityReport
         {
             var sc = dm.Scores.Select(x => x.Score).ToList();
             o.WriteLine($"    small candidates on a surface tried as drops: {sc.Count}; best icon score p50 {Pct(sc, 50):0.00} p90 {Pct(sc, 90):0.00} p99 {Pct(sc, 99):0.00} max {sc.Max():0.00};" +
-                        $" histogram (tenths) {string.Join(" ", Histogram(sc))}; threshold {(watch.Detectors.Any(d => d.Matcher.Exact) ? $"{DropMatcher.ExactThreshold:0.00} (strict)" : $"{DropMatcher.Threshold:0.00} (meso {DropMatcher.MesoThreshold:0.00})")}");
+                        $" histogram (tenths) {string.Join(" ", Histogram(sc))}; threshold {DropMatcher.Threshold:0.00}");
             foreach (var x in dm.Scores.OrderByDescending(x => x.Score).Take(8))
                 o.WriteLine($"      {x.Score:0.00} {x.ItemId} frame {x.Frame} box {x.Box.Width}x{x.Box.Height}+{x.Box.X}+{x.Box.Y}");
         }
@@ -336,7 +337,9 @@ public static class EntityReport
         o.WriteLine($"  distinct tag texts ({detectors.Sum(d => d.Tags.OcrCalls)} OCR calls, {detectors.Sum(d => d.Tags.OcrMilliseconds):0} ms total), with the sprite identity of the same detection:");
         foreach (var g in done.SelectMany(r => r.Result.Entities).Where(e => e.Tag is not null).GroupBy(e => (e.Kind, e.Tag, Species: e.Identity?.Name)).OrderByDescending(g => g.Count()).Take(30))
             o.WriteLine($"    {g.Key.Kind,-7} '{g.Key.Tag}' x{g.Count()}{(g.Key.Species is { } s ? $"  [{s}]" : "")}");
-        o.WriteLine($"  mob names learned: {string.Join(", ", watch.Tracker.Names.MobNames)}; pet {watch.Tracker.Names.PetName ?? "none"}");
+        o.WriteLine($"  mob names learned: {string.Join(", ", watch.Tracker.Names.MobNames)}; pet {watch.Tracker.Names.PetName ?? "none"}; the pet's tag taken off a verified mob or drop {detectors.Sum(d => d.CharacterTagsMoved)} times");
+        var petTagged = done.SelectMany(r => r.Result.Entities).Where(e => watch.Tracker.Names.IsCharacterTag(e.Tag)).ToList();
+        o.WriteLine($"    detections under the pet's or the own tag by kind: {(petTagged.Count == 0 ? "none" : string.Join(", ", petTagged.GroupBy(e => e.Kind).OrderByDescending(x => x.Count()).Select(x => $"{x.Key.ToString().ToLowerInvariant()} {x.Count()}")))}");
     }
 
     /// <summary>The own position against footholds before (dot and tag) and after the registered camera is fed back.</summary>

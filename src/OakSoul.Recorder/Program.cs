@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Diagnostics;
 using System.Text.Json;
 using OakSoul.Capture;
@@ -79,6 +80,10 @@ Console.WriteLine(options.Seconds > 0 ? $"stopping after {options.Seconds:0.#} s
 
 using var cancellation = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cancellation.Cancel(); };
+// SIGINT is ignored by a process started as a background job of a non-interactive shell (so Ctrl-C handling never
+// fires there), and SIGTERM would otherwise end the process without the clean stop; both now request it.
+using var sigint = PosixSignalRegistration.Create(PosixSignal.SIGINT, c => { c.Cancel = true; cancellation.Cancel(); });
+using var sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, c => { c.Cancel = true; cancellation.Cancel(); });
 
 var startedUtc = DateTime.UtcNow;
 var video = new FfmpegVideoSink(videoPath, options.Fps, encoderArgs, Path.Combine(sessionDir, "ffmpeg.log"));
@@ -156,6 +161,7 @@ var summary = new
     crop = crop?.ToString(),
     fps = options.Fps,
     encoderArgs,
+    lossless = VideoEncoding.IsLossless(encoderArgs),
     video = Path.GetFileName(videoPath),
     startedUtc,
     endedUtc = DateTime.UtcNow,

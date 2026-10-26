@@ -211,14 +211,14 @@ public sealed partial class TagDetector
 
     /// <summary>
     /// Gives each box its text: from the cache when the fingerprint (or a near-identical one) was read before,
-    /// otherwise by OCR of the box and a little margin, upscaled. With <paramref name="exact"/> (a pixel-exact frame) the
-    /// crop is binarized first, light text as black ink on white paper (<see cref="OcrInput.InkOnPaper"/>, as the level
-    /// badge is read), not softened as the status bar and map name are: on fx-exact's five crops of the pet's tag Vision
-    /// read Mara on 2 as captured (lara and a cut-off Ma on the others), on none softened (empty or "BJBI"), and on 3
-    /// binarized, and the mob tag "Lv. 17 Axe Stump" as captured "Lw, 17", softened "Lw, 17", binarized "Lv. 17"; on
-    /// fx-anttunnel-open's player and pet tags (Slivan, Black Kitty) all three read alike.
+    /// otherwise by OCR of the box and a little margin, upscaled. The crop of the pixel-exact frame is binarized first,
+    /// light text as black ink on white paper (<see cref="OcrInput.InkOnPaper"/>, as the level badge is read), not
+    /// softened as the status bar and map name are: on fx-exact's five crops of the pet's tag Vision read Mara on 2 as
+    /// captured (lara and a cut-off Ma on the others), on none softened (empty or "BJBI"), and on 3 binarized, and the
+    /// mob tag "Lv. 17 Axe Stump" as captured "Lw, 17", softened "Lw, 17", binarized "Lv. 17"; on fx-anttunnel-open's
+    /// player and pet tags (Slivan, Black Kitty) all three read alike.
     /// </summary>
-    public void Read(List<TagBox> boxes, ReadOnlySpan<byte> frame, int frameWidth, CaptureRect viewport, bool ocr = true, bool exact = false)
+    public void Read(List<TagBox> boxes, ReadOnlySpan<byte> frame, int frameWidth, CaptureRect viewport, bool ocr = true)
     {
         foreach (var b in boxes)
         {
@@ -240,7 +240,7 @@ public sealed partial class TagDetector
                 continue;
             }
             if (!ocr) continue;
-            var text = Ocr(frame, frameWidth, viewport, b, exact);
+            var text = Ocr(frame, frameWidth, viewport, b);
             var (level, name) = Parse(text);
             b.Text = text; b.Level = level; b.Name = name;
             bits ??= Bits(frame, frameWidth, viewport, b);
@@ -267,7 +267,7 @@ public sealed partial class TagDetector
         return best;
     }
 
-    private string? Ocr(ReadOnlySpan<byte> frame, int frameWidth, CaptureRect viewport, TagBox b, bool exact)
+    private string? Ocr(ReadOnlySpan<byte> frame, int frameWidth, CaptureRect viewport, TagBox b)
     {
         var sw = Stopwatch.StartNew();
         // Only the box and a small margin: a wider crop picked up the pet's tag and sprite parts as stray letters.
@@ -277,7 +277,7 @@ public sealed partial class TagDetector
         var crop = new byte[w * h * 4];
         for (var y = 0; y < h; y++) frame.Slice(((y0 + y) * frameWidth + x0) * 4, w * 4).CopyTo(crop.AsSpan(y * w * 4));
         if (DumpDir is { } dump) { Directory.CreateDirectory(dump); Png.WriteBgra(Path.Combine(dump, $"tag{OcrCalls:000}_{x0}_{y0}.png"), crop, w, h); }
-        var lines = TextRecognizer.Recognize(exact ? OcrInput.InkOnPaper(crop, w, h) : crop, w, h, upscale: 4);
+        var lines = TextRecognizer.Recognize(OcrInput.InkOnPaper(crop, w, h), w, h, upscale: 4);
         OcrCalls++;
         OcrMilliseconds += sw.Elapsed.TotalMilliseconds;
         // Fragments of other tags and sprite edges come back as two- and three-letter junk ("eJe", "PJP", "M");

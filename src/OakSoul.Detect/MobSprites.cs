@@ -12,25 +12,19 @@ public enum MobMobility { Floor, Jump, Fly, Static }
 /// the box <see cref="X0"/>..<see cref="Y1"/> (inclusive, image pixels) is the extent of the visible pixels.
 /// <para>
 /// The client draws these pixels 1:1 at integer positions, so on a pixel-exact frame every fully opaque pixel of the
-/// frame shows on screen as stored, wherever nothing covers it (<see cref="PixelX"/> and the rest: the strict samples).
-/// The recordings captured at point size (fx-combat, fx-maps) blurred and colour-shifted those pixels; for them the
-/// samples are 3x3 means of interior pixels (all nine opaque), compared with 3x3 means of the screen
-/// (<see cref="SampleX"/> and the rest: the tolerant samples).
+/// frame shows on screen as stored, wherever nothing covers it (<see cref="PixelX"/> and the rest).
 /// </para>
 /// </summary>
 public sealed class SpriteFrame
 {
-    /// <summary>Alpha at or above which a pixel counts as visible (for the extent) and as opaque (for the tolerant samples).</summary>
-    public const int VisibleAlpha = 128, OpaqueAlpha = 250;
+    /// <summary>Alpha at or above which a pixel counts as visible (for the extent).</summary>
+    public const int VisibleAlpha = 128;
 
     /// <summary>
-    /// Alpha of a pixel the strict path compares: fully opaque only. Any lower alpha is blended with whatever lies
-    /// behind the sprite (the exported frames are opaque at 255 inside and anti-aliased at the edge).
+    /// Alpha of a pixel the matcher compares: fully opaque only. Any lower alpha is blended with whatever lies behind the
+    /// sprite (the exported frames are opaque at 255 inside and anti-aliased at the edge).
     /// </summary>
     public const byte SolidAlpha = 255;
-
-    /// <summary>At most this many tolerant samples per frame: a spread subset, enough for a stable fraction and cheap to score.</summary>
-    public const int MaxSamples = 400;
 
     public required string Anim { get; init; }
     public required int Index { get; init; }
@@ -49,20 +43,9 @@ public sealed class SpriteFrame
     public int ExtentHeight => Y1 - Y0 + 1;
 
     /// <summary>
-    /// Tolerant samples: interior pixels (the 3x3 neighbourhood all opaque, so the mean draws on no background) at
-    /// <see cref="SampleX"/>, <see cref="SampleY"/>, with the 3x3 mean of the art around each (<see cref="MeanB"/>,
-    /// <see cref="MeanG"/>, <see cref="MeanR"/>). Ordered so that any prefix is spread over the whole sprite (a stride
-    /// coprime with the count), which lets a score stop early.
-    /// </summary>
-    public int[] SampleX { get; init; } = [];
-    public int[] SampleY { get; init; } = [];
-    public int[] MeanB { get; init; } = [];
-    public int[] MeanG { get; init; } = [];
-    public int[] MeanR { get; init; } = [];
-
-    /// <summary>
-    /// Strict samples: every fully opaque pixel (<see cref="SolidAlpha"/>) with its colour as stored, in the same
-    /// spread order. On a pixel-exact frame these are the pixels the screen must show where the mob is not covered.
+    /// Every fully opaque pixel (<see cref="SolidAlpha"/>) with its colour as stored, ordered so that any prefix is spread
+    /// over the whole sprite (a stride coprime with the count), which lets a score stop early. On a pixel-exact frame
+    /// these are the pixels the screen must show where the mob is not covered.
     /// </summary>
     public int[] PixelX { get; init; } = [];
     public int[] PixelY { get; init; } = [];
@@ -70,11 +53,11 @@ public sealed class SpriteFrame
     public int[] PixelG { get; init; } = [];
     public int[] PixelR { get; init; } = [];
 
-    /// <summary>The strict samples packed as b | g &lt;&lt; 8 | r &lt;&lt; 16, as drawn and frozen (see <see cref="SpriteTint.Frozen"/>), for the coarse pass.</summary>
+    /// <summary>The opaque pixels packed as b | g &lt;&lt; 8 | r &lt;&lt; 16, as drawn and frozen (see <see cref="SpriteTint.Frozen"/>), for the coarse pass.</summary>
     public int[] PixelPacked { get; init; } = [];
     public int[] PixelFrozen { get; init; } = [];
 
-    /// <summary>Whether a strict sample can be tested through steam at all (coloured and not too light, see <see cref="SpriteMatcher.FogMinChroma"/>).</summary>
+    /// <summary>Whether an opaque pixel can be tested through steam at all (coloured and not too light, see <see cref="SpriteMatcher.FogMinChroma"/>).</summary>
     public bool[] PixelFoggable { get; init; } = [];
 
     /// <summary>The frame's straight-alpha BGRA pixels (for drawing and coverage; matching uses the samples).</summary>
@@ -107,32 +90,6 @@ public sealed class SpriteFrame
                 x0 = Math.Min(x0, x); x1 = Math.Max(x1, x); y0 = Math.Min(y0, y); y1 = Math.Max(y1, y);
             }
         if (x1 < 0) { x0 = y0 = 0; x1 = y1 = -1; }
-        var interior = new List<(int X, int Y)>();
-        for (var y = 1; y < height - 1; y++)
-            for (var x = 1; x < width - 1; x++)
-            {
-                var ok = true;
-                for (var dy = -1; dy <= 1 && ok; dy++)
-                    for (var dx = -1; dx <= 1; dx++)
-                        if (px[((y + dy) * width + x + dx) * 4 + 3] < OpaqueAlpha) { ok = false; break; }
-                if (ok) interior.Add((x, y));
-            }
-        var spread = Spread(interior, MaxSamples);
-        int m = spread.Count;
-        var sx = new int[m]; var sy = new int[m]; var mb = new int[m]; var mg = new int[m]; var mr = new int[m];
-        for (var i = 0; i < m; i++)
-        {
-            var (x, y) = spread[i];
-            sx[i] = x; sy[i] = y;
-            int b = 0, g = 0, r = 0;
-            for (var dy = -1; dy <= 1; dy++)
-                for (var dx = -1; dx <= 1; dx++)
-                {
-                    var o = ((y + dy) * width + x + dx) * 4;
-                    b += px[o]; g += px[o + 1]; r += px[o + 2];
-                }
-            mb[i] = (b + 4) / 9; mg[i] = (g + 4) / 9; mr[i] = (r + 4) / 9;
-        }
         var all = Spread(solid, solid.Count);
         var n = all.Count;
         var qx = new int[n]; var qy = new int[n]; var qb = new int[n]; var qg = new int[n]; var qr = new int[n];
@@ -149,7 +106,7 @@ public sealed class SpriteFrame
         return new SpriteFrame
         {
             Anim = anim, Index = index, Facing = facing, Width = width, Height = height, OriginX = originX, OriginY = originY, DelayMs = delayMs,
-            X0 = x0, Y0 = y0, X1 = x1, Y1 = y1, SampleX = sx, SampleY = sy, MeanB = mb, MeanG = mg, MeanR = mr,
+            X0 = x0, Y0 = y0, X1 = x1, Y1 = y1,
             PixelX = qx, PixelY = qy, PixelB = qb, PixelG = qg, PixelR = qr, PixelPacked = packed, PixelFrozen = frozen, PixelFoggable = foggable, Bgra = px,
         };
     }

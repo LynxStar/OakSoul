@@ -11,6 +11,12 @@ public interface IFrameSource : IDisposable
     IAsyncEnumerable<Frame> Frames(CancellationToken cancellation = default);
     /// <summary>True when the host must service the main run loop while frames flow (live capture only).</summary>
     bool NeedsMainLoop { get; }
+
+    /// <summary>
+    /// True when frames arrive as captured, without lossy compression: a live capture, a recording's keyframes, or a
+    /// recording's video encoded losslessly (<see cref="VideoEncoding.IsLossless"/>).
+    /// </summary>
+    bool Lossless { get; }
 }
 
 /// <summary>Live frames from a <see cref="CaptureStream"/>.</summary>
@@ -26,6 +32,7 @@ public sealed class CaptureFrameSource : IFrameSource
 
     public string Description { get; }
     public bool NeedsMainLoop => true;
+    public bool Lossless => true;
     public CaptureStream Stream => _stream;
 
     public IAsyncEnumerable<Frame> Frames(CancellationToken cancellation = default) => _stream.Frames.ReadAllAsync(cancellation);

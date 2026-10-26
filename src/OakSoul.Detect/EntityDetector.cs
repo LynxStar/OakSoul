@@ -11,20 +11,12 @@ namespace OakSoul.Detect;
 /// <param name="OwnTag">The own name tag, when the locator found it.</param>
 /// <param name="OwnWorld">The own character's world position (soles), for masking it when the tag is hidden.</param>
 /// <param name="MinimapPanel">The minimap panel as read, masked out of the world.</param>
-/// <param name="Exact">The source delivers the game's own pixels (<c>OcrInput.IsPixelExact</c>), not the point-size
-/// capture's blurred copy: tag crops are binarized for OCR (see <see cref="TagDetector.Read"/>), and unless <paramref name="Lossy"/>
-/// sprites and drop icons are compared pixel for pixel (see <see cref="SpriteMatcher"/>).</param>
-/// <param name="Lossy">The frame was decoded from a lossy video (a recording replayed without --keyframes): sprites are then
-/// compared by 3x3 means with a tolerance even when the recording is exact.</param>
 public sealed record DetectionContext(long Frame, double Time, MapData Map, FootholdIndex Footholds, PointD? Camera, bool CameraMeasured,
-    CaptureRect? OwnTag, PointD? OwnWorld, CaptureRect? MinimapPanel, bool Exact = false, bool Lossy = false)
-{
-    /// <summary>Sprites are compared pixel for pixel: an exact frame not decoded from a lossy video.</summary>
-    public bool Strict => Exact && !Lossy;
-}
+    CaptureRect? OwnTag, PointD? OwnWorld, CaptureRect? MinimapPanel);
 
 /// <summary>
-/// Detects and tracks entities in native frames of one map against its cached <see cref="BackgroundMosaic"/>:
+/// Detects and tracks entities in pixel-exact native frames of one map (the game's own pixels: exact capture, live, from
+/// keyframes or from a lossless video; the caller skips any other frame) against its cached <see cref="BackgroundMosaic"/>:
 /// refines the camera by registration, extracts foreground, finds name tags (OCR'd once per distinct tag), turns
 /// blobs and tags into candidates with a world position and foothold, then classifies and tracks them.
 /// </summary>
@@ -232,7 +224,6 @@ public sealed class EntityDetector
         LastOwnBox = own;
 
         var tReg = sw.Elapsed.TotalMilliseconds;
-        _matcher.Exact = ctx.Strict;
         _matcher.Background = (_mosaic, camX, camY);
         if (_drops is not null) _drops.Background = (_mosaic, camX, camY);
         _fg.Difference(frame, frameWidth, _mask, _mosaic, camX, camY);
@@ -252,7 +243,7 @@ public sealed class EntityDetector
         blobs.RemoveAll(bars.Contains);
 
         var ocrBefore = _tags.OcrMilliseconds;
-        _tags.Read(tags, frame, frameWidth, vp, Ocr, exact: ctx.Exact);
+        _tags.Read(tags, frame, frameWidth, vp, Ocr);
         var ocrMs = _tags.OcrMilliseconds - ocrBefore;
 
         // With the camera registered to the pixel, the own tag gives the own position exactly (the dot only to +-8).
@@ -312,15 +303,18 @@ public sealed class EntityDetector
         }
 
         var tCand = sw.Elapsed.TotalMilliseconds - ocrMs;
+        // A tag alone that is the pet's marks the pet (hidden, or over background the mosaic cannot vouch for): no sprite is tried.
         if (_mobs is not null)
             for (var i = 0; i < candidates.Count; i++)
-                if (Identify(candidates[i], frame, frameWidth, ctx, camX, camY) is { } rest) candidates.Add(rest);
-        if (_mobs is not null) CapBySpawns(candidates);
+                if (!(candidates[i].Pixels == 0 && _tracker.Names.IsCharacterTag(candidates[i].Tag?.Text))
+                    && Identify(candidates[i], frame, frameWidth, ctx, camX, camY) is { } rest) candidates.Add(rest);
+        if (_mobs is not null) CapBySpawns(candidates, ctx.Frame);
         var tSprites = sw.Elapsed.TotalMilliseconds - ocrMs;
         if (_drops is not null)
             foreach (var c in candidates)
                 if (c.Sprite is null && c.Pixels > 0 && !c.TouchesOwn && c.SurfaceDistance is { } sd && Math.Abs(sd) <= DropSurfaceUnits)
-                    c.Drop = _drops.Match(frame, frameWidth, _mask, c.Box, ctx.Strict);
+                    c.Drop = _drops.Match(frame, frameWidth, _mask, c.Box);
+        MoveCharacterTags(candidates, ctx, camX, camY, ownWorld);
         var tDrops = sw.Elapsed.TotalMilliseconds - ocrMs;
         // Diagnostics are timed apart and left out of the frame's cost.
         var diagMs = 0.0;
@@ -331,11 +325,12 @@ public sealed class EntityDetector
             if (_drops is not null)
                 foreach (var c in candidates)
                     if (c.Sprite is null && c.Pixels > 0 && !c.TouchesOwn && c.SurfaceDistance is { } sd2 && Math.Abs(sd2) <= DropSurfaceUnits)
-                        _drops.Diagnose(ctx.Frame, frame, frameWidth, _mask, c.Box, ctx.Strict);
+                        _drops.Diagnose(ctx.Frame, frame, frameWidth, _mask, c.Box);
             diagMs = sw.Elapsed.TotalMilliseconds - d0;
             DiagnosticMs += diagMs;
         }
 
+        _tracker.SpeciesCap = _mobs is null ? null : CapOf;
         var entities = _tracker.Update(candidates, ctx.Frame, ctx.Time);
         if (SpriteDiagnostics)
             for (var i = Diagnostics.Count - 1; i >= 0 && Diagnostics[i].Frame == ctx.Frame; i--)
@@ -453,40 +448,86 @@ public sealed class EntityDetector
     }
 
     /// <summary>
-    /// The first frame to pass names a shape, not yet a species: recolours (Stump and Dark Stump) share every frame's
-    /// shape, and a Dark Stump passes as a Dark Axe Stump whose thin axe has few interior samples. So once a frame
-    /// passes, every other species of the plan is scored too (recolours at the same placement, the rest over the
-    /// window, each needing at least the first score less <see cref="ContestSlack"/>), and the winner is the best
+    /// The first frame to pass names a shape, not yet a species: recolours (Axe Stump and Dark Axe Stump, the snails)
+    /// share every frame's geometry, and a Dark Stump's body is a Dark Axe Stump's without the axe. So once a frame
+    /// passes, every other species of the plan is scored too (recolours at the same placement, the rest over the window,
+    /// each needing at least the first score less <see cref="ContestSlack"/>). Recolours are settled among themselves
+    /// on the pixels that tell them apart (<see cref="Settle"/>); the remaining species compete on the best
     /// <see cref="SpriteMatch.Score"/> times the share of the blob's foreground the frame covers (a Dark Stump frame
-    /// leaves the Dark Axe Stump's axe uncovered). The species the track already has gets <see cref="RecolourMargin"/>,
-    /// and rarer species pay <see cref="SpawnPrior"/>.
+    /// leaves the Dark Axe Stump's axe uncovered), the species the track already has getting <see cref="RecolourMargin"/>
+    /// and rarer species paying <see cref="SpawnPrior"/>.
     /// </summary>
     private SpriteMatch Contest(Candidate c, SpriteMatch first, List<MapMobSet.Entry> order, SpriteMatch? last, PointD? feetOnly)
     {
-        var entries = new List<(SpriteMatch M, double Score)>();
-        var maxSpawns = Math.Max(1, _mobs!.Entries.Max(e => e.Spawns));
-        double Value(SpriteMatch x) => x.Score * Coverage(c, x) + (last?.Species.Id == x.Species.Id ? RecolourMargin : 0)
-            - SpawnPrior * Math.Log((double)maxSpawns / Math.Max(1, _mobs.ById(x.Species.Id)?.Spawns ?? 1));
-        entries.Add((first, Value(first)));
+        var found = new List<SpriteMatch> { first };
         var recolours = _mobs!.Recolours(first.Species);
         foreach (var other in recolours)
             if (other.Frames.FirstOrDefault(f => f.Key == first.Frame.Key) is { } of && _matcher.At(other, of, first.Left, first.Top) is { } om)
-                entries.Add((om, Value(om)));
-        var needed = Math.Max(_matcher.Threshold - ContestSlack, first.Score - ContestSlack);
+                found.Add(om);
+        var needed = Math.Max(SpriteMatcher.Threshold - ContestSlack, first.Score - ContestSlack);
         foreach (var e in order)
         {
             if (e.Species.Id == first.Species.Id || recolours.Contains(e.Species)) continue;
             SpriteMatch? best = null;
             foreach (var f in e.Species.Frames)
             {
-                if (feetOnly is null && !_matcher.Fits(f, c.Box.Width, c.Box.Height)) continue;
+                if (feetOnly is null && !SpriteMatcher.Fits(f, c.Box.Width, c.Box.Height)) continue;
                 if (_matcher.Best(c.Box, feetOnly, e.Species, f, needed) is { } x && x.Score >= needed && (best is null || x.Score > best.Value.Score)) best = x;
             }
-            if (best is { } b) entries.Add((b, Value(b)));
+            if (best is { } b) found.Add(b);
         }
-        entries.Sort((a, b) => b.Score.CompareTo(a.Score));
-        var winner = entries[0].M;
-        return entries.Count > 1 ? winner with { Rival = entries[1].M.Species, RivalScore = entries[1].M.Score } : winner;
+        var maxSpawns = Math.Max(1, _mobs.Entries.Max(e => e.Spawns));
+        double Value(SpriteMatch x) => x.Score * Coverage(c, x) + (last?.Species.Id == x.Species.Id ? RecolourMargin : 0)
+            - SpawnPrior * Math.Log((double)maxSpawns / Math.Max(1, _mobs.ById(x.Species.Id)?.Spawns ?? 1));
+        // One entry per recolour group, settled on its telling pixels; then the groups by value.
+        var groups = new List<List<SpriteMatch>>();
+        foreach (var m in found)
+        {
+            var g = groups.FirstOrDefault(g => g.Any(x => _mobs.Recolours(x.Species).Contains(m.Species)));
+            if (g is null) groups.Add([m]); else g.Add(m);
+        }
+        var winner = groups.Select(g => g.Count == 1 ? g[0] : Settle(g, last)).MaxBy(Value);
+        var rival = found.Where(x => x.Species.Id != winner.Species.Id).Select(x => (SpriteMatch?)x).MaxBy(x => Value(x!.Value));
+        return rival is { } r ? winner with { Rival = r.Species, RivalScore = r.Score } : winner;
+    }
+
+    /// <summary>
+    /// Telling pixels a recolour needs to win: visible pixels where the two frames differ that only it explains, at
+    /// least this many and at least <see cref="SettleRatio"/> times as many as the other. On fx-combat-exact the settled
+    /// Axe Stump and Dark Axe Stump contests were decided by hundreds (0 against 1894 on a whole Axe Stump); the few
+    /// close ones (714 against 429) were two stumps of either kind run into one blob.
+    /// </summary>
+    public const int MinTellingPixels = 8;
+    public const int SettleRatio = 2;
+
+    /// <summary>
+    /// Settles a group of recolours (two or more species scored on one candidate whose frames share their geometry) on
+    /// the pixels where their frames differ, at the placement of the best-scoring member (<see cref="SpriteMatcher.Distinguish"/>):
+    /// pixels they share, such as the greys Axe Stump and Dark Axe Stump have in common, cannot tell them apart. When
+    /// too few telling pixels are visible (steam, a tag, another sprite over the colours), the track's species is kept,
+    /// else the one with more spawns.
+    /// </summary>
+    private SpriteMatch Settle(List<SpriteMatch> group, SpriteMatch? last)
+    {
+        var champion = group.MaxBy(m => m.Score);
+        var basis = SpeciesBasis.Pixels;
+        foreach (var m in group)
+        {
+            if (m.Species.Id == champion.Species.Id) continue;
+            var frame = m.Species.Frames.FirstOrDefault(f => f.Key == champion.Frame.Key);
+            var (onlyChampion, onlyOther, _) = frame is null ? (0, 0, 0) : _matcher.Distinguish(champion.Frame, frame, champion.Left, champion.Top, champion.Tint);
+            bool Wins(int a, int b) => a >= MinTellingPixels && a >= SettleRatio * b;
+            SpriteMatch? challenger = frame is null ? m : _matcher.At(m.Species, frame, champion.Left, champion.Top);
+            if (Wins(onlyChampion, onlyOther)) continue;
+            if (Wins(onlyOther, onlyChampion)) { if (challenger is { } ch) champion = ch; continue; }
+            // Undecided: the track's species, else the commoner one.
+            var byTrack = last?.Species.Id == champion.Species.Id || last?.Species.Id == m.Species.Id;
+            var keep = byTrack ? last?.Species.Id == champion.Species.Id
+                : (_mobs!.ById(champion.Species.Id)?.Spawns ?? 0) >= (_mobs.ById(m.Species.Id)?.Spawns ?? 0);
+            if (!keep && challenger is { } c2) champion = c2;
+            basis = basis == SpeciesBasis.Spawns || !byTrack ? SpeciesBasis.Spawns : SpeciesBasis.Track;
+        }
+        return champion with { Basis = basis };
     }
 
     /// <summary>
@@ -525,15 +566,42 @@ public sealed class EntityDetector
     }
 
     /// <summary>
-    /// The spawn list caps how many mobs of a species one frame can show: matches beyond a species' spawn count (the
-    /// weakest first) lose their sprite, and stay mobs only by what their track knew.
+    /// A match proves its species is on screen when its species rests on its own pixels (<see cref="SpeciesBasis.Shape"/>
+    /// or <see cref="SpeciesBasis.Pixels"/>) and at least this share of its visible pixels agree.
     /// </summary>
-    private void CapBySpawns(List<Candidate> candidates)
+    public const double ProofScore = 0.5;
+
+    /// <summary>
+    /// How many mobs of a species one frame may show: its spawn count in the client's life list, or more once a single
+    /// frame proved more (<see cref="ProofScore"/>). The server need not spawn what the client's data lists: on
+    /// fx-combat-exact Deep Valley I showed two Axe Stumps (one spawn listed) on 22 keyframes, each settled on hundreds
+    /// of telling pixels, both whole and exact on keyframe 49 (503 of 503 and 505 of 505 pixels; Dark Axe Stump 0.35 and
+    /// 0.39 at the same placements), and three stumps at once on the walkway where the client lists one Axe Stump and
+    /// one Dark Axe Stump.
+    /// </summary>
+    public int CapOf(int speciesId) => Math.Max(_mobs?.ById(speciesId)?.Spawns ?? 0, _seenAtOnce.GetValueOrDefault(speciesId).Count);
+
+    /// <summary>The most mobs of a species one frame proved, and the first frame that did, per species id.</summary>
+    public IReadOnlyDictionary<int, (int Count, long Frame)> SeenAtOnce => _seenAtOnce;
+    private readonly Dictionary<int, (int Count, long Frame)> _seenAtOnce = [];
+
+    private static bool Proves(SpriteMatch m) => m.Basis is SpeciesBasis.Shape or SpeciesBasis.Pixels && m.Score >= ProofScore;
+
+    /// <summary>
+    /// The cap on a species per frame (<see cref="CapOf"/>): matches beyond it lose their sprite (unproven ones first, then
+    /// the weakest) and stay mobs only by what their track knew; the tracker holds carried identities to the same cap.
+    /// </summary>
+    private void CapBySpawns(List<Candidate> candidates, long frame)
     {
         foreach (var g in candidates.Where(c => c.Sprite is not null).GroupBy(c => c.Sprite!.Value.Species.Id))
         {
-            var spawns = _mobs!.ById(g.Key)?.Spawns ?? 0;
-            foreach (var extra in g.OrderByDescending(c => c.Sprite!.Value.Score).Skip(spawns)) { extra.Sprite = null; SpawnCapped++; }
+            var proven = g.Count(c => Proves(c.Sprite!.Value));
+            if (proven > _seenAtOnce.GetValueOrDefault(g.Key).Count) _seenAtOnce[g.Key] = (proven, frame);
+            foreach (var extra in g.OrderByDescending(c => Proves(c.Sprite!.Value)).ThenByDescending(c => c.Sprite!.Value.Score).Skip(CapOf(g.Key)))
+            {
+                extra.Sprite = null;
+                SpawnCapped++;
+            }
         }
     }
 
@@ -558,21 +626,27 @@ public sealed class EntityDetector
         foreach (var e in _mobs!.Entries)
             foreach (var f in e.Species.Frames)
             {
-                if (!_matcher.Fits(f, c.Box.Width, c.Box.Height)) continue;
+                if (!SpriteMatcher.Fits(f, c.Box.Width, c.Box.Height)) continue;
                 if (_matcher.Best(c.Box, null, e.Species, f, 0) is { } m && (!best.TryGetValue(e.Species.Id, out var b) || m.Score > b.Score))
                     best[e.Species.Id] = m;
             }
         Diagnostics.Add(new SpriteDiagnostic(ctx.Frame, c.Box, c.Tag is not null, tagSpecies, c.Sprite, best, c.Floor, c.BoxSurfaceDistance) { Source = c });
         if (Environment.GetEnvironmentVariable("OAKSOUL_SPRITE_DUMP") is { } dumpDir && best.Count > 0
-            && (tagSpecies is not null || c.Sprite is not null || (Environment.GetEnvironmentVariable("OAKSOUL_SPRITE_DUMP_UNMATCHED") is not null && c.Pixels >= 600 && c.SurfaceDistance is { } usd && Math.Abs(usd) <= 6)))
+            && (tagSpecies is not null || c.Sprite is not null || (Environment.GetEnvironmentVariable("OAKSOUL_SPRITE_DUMP_UNMATCHED") is not null && c.Pixels >= 600 && c.SurfaceDistance is { } usd && Math.Abs(usd) <= 6)
+                || DumpFrames.Contains(ctx.Frame)))
             DumpMatch(dumpDir, frame, frameWidth, ctx.Frame, c, tagSpecies is { } ts && best.TryGetValue(ts, out var tm) ? tm : c.Sprite ?? best.Values.MaxBy(b => b.Score));
     }
 
+    /// <summary>Debug: <c>OAKSOUL_SPRITE_DUMP_FRAMES=342,47</c> (with <c>OAKSOUL_SPRITE_DUMP</c>) dumps every candidate of those frames.</summary>
+    private static readonly HashSet<long> DumpFrames = (Environment.GetEnvironmentVariable("OAKSOUL_SPRITE_DUMP_FRAMES") ?? "")
+        .Split(',', StringSplitOptions.RemoveEmptyEntries).Select(long.Parse).ToHashSet();
+
     /// <summary>
     /// Debug (<c>OAKSOUL_SPRITE_DUMP=dir</c>, report runs only): the candidate's surroundings, the best frame placed over
-    /// it, and their raw per-pixel difference (green within the tolerance, red beyond, blue the frame's soft edge), side
-    /// by side at 3x, for every tagged or matched candidate (and, with <c>OAKSOUL_SPRITE_DUMP_UNMATCHED</c>, every large
-    /// unmatched one on a foothold).
+    /// it, and their raw per-pixel difference (green where equal, as drawn or frozen; yellow where it fits through steam;
+    /// red where not, the brighter the larger; blue the frame's soft edge), side by side at 3x, for every tagged or
+    /// matched candidate (and, with <c>OAKSOUL_SPRITE_DUMP_UNMATCHED</c>, every large unmatched one on a foothold; with
+    /// <c>OAKSOUL_SPRITE_DUMP_FRAMES</c>, every candidate of those frames).
     /// </summary>
     private static void DumpMatch(string dir, ReadOnlySpan<byte> frame, int frameWidth, long seq, Candidate c, SpriteMatch m)
     {
@@ -600,7 +674,11 @@ public sealed class EntityDetector
                     {
                         tpx = 0xFF000000u | (uint)(m.Frame.Bgra[to + 2] << 16 | m.Frame.Bgra[to + 1] << 8 | m.Frame.Bgra[to]);
                         var d = Math.Abs(frame[o] - m.Frame.Bgra[to]) + Math.Abs(frame[o + 1] - m.Frame.Bgra[to + 1]) + Math.Abs(frame[o + 2] - m.Frame.Bgra[to + 2]);
-                        dpx = a < (m.Strict ? SpriteFrame.SolidAlpha : SpriteFrame.OpaqueAlpha) ? 0xFF0000FFu : d <= (m.Strict ? 3 * SpriteMatcher.StrictTolerance : SpriteMatcher.PixelTolerance) ? 0xFF00C000u : 0xFF000000u | (uint)Math.Min(255, d) << 16;
+                        int tb = m.Frame.Bgra[to], tg = m.Frame.Bgra[to + 1], tr = m.Frame.Bgra[to + 2];
+                        if (m.Tint == SpriteTint.Frozen) { tb = (tb * SpriteMatcher.FrozenB + 127) / 255; tg = (tg * SpriteMatcher.FrozenG + 127) / 255; tr = (tr * SpriteMatcher.FrozenR + 127) / 255; }
+                        var steam = SpriteMatcher.Fog(frame[o], frame[o + 1], frame[o + 2], tb, tg, tr) > 0;
+                        dpx = a < SpriteFrame.SolidAlpha ? 0xFF0000FFu : frame[o] == tb && frame[o + 1] == tg && frame[o + 2] == tr ? 0xFF00C000u
+                            : steam ? 0xFFE0E000u : 0xFF000000u | (uint)Math.Min(255, d) << 16;
                     }
                 }
                 for (var yy = 0; yy < z; yy++)
@@ -618,6 +696,55 @@ public sealed class EntityDetector
     private Registration Fine(ReadOnlySpan<byte> frame, int frameWidth, int[] samples, int gx, int gy, int rx, int ry) =>
         CameraRegistration.Register(frame, frameWidth, _mask, samples, _mosaic.Pixels, _mosaic.Usable, _mosaic.OriginX, _mosaic.OriginY,
             _mosaic.Width, _mosaic.Height, gx, gy, rx, ry);
+
+    /// <summary>
+    /// The pet's tag (or the own) is drawn under the pet, so it never labels a mob a sprite verified or a drop an icon
+    /// identified, though the geometric association gives it to whatever blob stands closest above it: on fx-combat-exact
+    /// a mob beside the pet on 5 detections and a meso coin beside it on 8. Such a tag is taken off and given to another
+    /// blob standing on it that nothing verified (that blob is the pet), or else stands alone as the pet; the mob or drop
+    /// keeps its own feet (the sprite's origin, or its box). The tracker does the rest: a candidate under the pet's tag
+    /// is the pet and never continues a mob's track (44 more detections had taken a mob's identity that way).
+    /// </summary>
+    private void MoveCharacterTags(List<Candidate> candidates, DetectionContext ctx, int camX, int camY, PointD? ownWorld)
+    {
+        var vp = _mask.Viewport;
+        var moved = new List<(Candidate From, TagBox Tag)>();
+        foreach (var c in candidates)
+            if (c.Tag is { } t && (c.Sprite is not null || c.Drop is not null) && _tracker.Names.IsCharacterTag(t.Text)) moved.Add((c, t));
+        foreach (var (from, t) in moved)
+        {
+            from.Tag = null;
+            if (from.Sprite is null) Place(from, new PointD(from.Box.X + (from.Box.Width - 1) / 2.0, from.Box.Y + from.Box.Height), ctx, camX, camY);
+            Candidate? holder = null;
+            var bestCost = double.MaxValue;
+            foreach (var o in candidates)
+            {
+                if (o.Tag is not null || o.Pixels == 0 || o.Sprite is not null || o.Drop is not null) continue;
+                var gapRows = t.Y0 + vp.Y - (o.Box.Y + o.Box.Height - 1);
+                var cx = o.Box.X + (o.Box.Width - 1) / 2.0 - vp.X;
+                if (gapRows < -4 || gapRows > TagAboveRows || Math.Abs(t.CentreX - cx) > t.Width / 2.0 + TagSlackX) continue;
+                var cost = Math.Abs(t.CentreX - cx) + Math.Abs(gapRows - 2);
+                if (cost < bestCost) { bestCost = cost; holder = o; }
+            }
+            var feet = new PointD(t.CentreX + vp.X, t.Y0 - 2 + vp.Y);
+            if (holder is not null) { holder.Tag = t; Place(holder, feet, ctx, camX, camY); }
+            else candidates.Add(MakeCandidate(ctx, camX, camY, new CaptureRect((int)feet.X - 20, (int)feet.Y - 45, 40, 45), feet, 0, t, false, false, null, ownWorld));
+            CharacterTagsMoved++;
+        }
+    }
+
+    /// <summary>Character tags taken off a verified mob or an identified drop since construction (see <see cref="MoveCharacterTags"/>).</summary>
+    public int CharacterTagsMoved { get; private set; }
+
+    /// <summary>Moves a candidate's feet to a screen point and updates its world position and foothold.</summary>
+    private static void Place(Candidate c, PointD feet, DetectionContext ctx, int camX, int camY)
+    {
+        c.Feet = feet;
+        c.World = new PointD(camX + feet.X, camY + feet.Y);
+        var nearest = ctx.Footholds.Nearest(c.World, 40);
+        c.SurfaceDistance = nearest?.Distance;
+        c.Foothold = nearest is { } n && Math.Abs(n.Distance) <= EntityTracker.OnFootholdUnits ? nearest : null;
+    }
 
     private static Candidate MakeCandidate(DetectionContext ctx, int camX, int camY, CaptureRect box, PointD feet, int pixels, TagBox? tag,
         bool hpBar, bool touchesOwn, byte[]? thumb, PointD? ownWorld)

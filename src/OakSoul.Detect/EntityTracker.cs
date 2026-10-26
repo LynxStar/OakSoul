@@ -22,7 +22,7 @@ public sealed class Candidate
     /// <summary>The drop sprite that identified the candidate, if one did.</summary>
     public DropMatch? Drop { get; set; }
     public int Pixels { get; set; }
-    public TagBox? Tag { get; init; }
+    public TagBox? Tag { get; set; }
     public bool HpBar { get; set; }
     public bool TouchesOwn { get; init; }
     /// <summary>8x8 thumbnail of the blob's foreground luma, for telling a static drop from an animating mob.</summary>
@@ -101,6 +101,16 @@ public sealed class EntityTracker
     /// <see cref="IdentifiedSightings"/> times) never takes a candidate of another species.
     /// </summary>
     public const double IdentityPenalty = 60, IdentityBonus = 40;
+
+    /// <summary>
+    /// How many mobs of a species (by id) one frame may show (the detector's <see cref="EntityDetector.CapOf"/>), or
+    /// null. Identities carried by tracks beyond it (fewest verified sightings first) are left out of that frame's
+    /// output, so the frame never shows more of a species than the cap.
+    /// </summary>
+    public Func<int, int>? SpeciesCap { get; set; }
+
+    /// <summary>Carried identities left out by <see cref="SpeciesCap"/> since construction.</summary>
+    public int CappedIdentities { get; private set; }
 
     private readonly List<Track> _tracks = [];
     private int _nextId = 1;
@@ -191,6 +201,7 @@ public sealed class EntityTracker
     {
         // Greedy assignment by distance to each track's predicted position.
         var pairs = new List<(double Cost, int T, int C)>();
+        var characterTag = candidates.Select(c => Names.IsCharacterTag(c.Tag?.Text)).ToArray();
         for (var t = 0; t < _tracks.Count; t++)
         {
             var tr = _tracks[t];
@@ -205,6 +216,10 @@ public sealed class EntityTracker
                 var cand = candidates[c];
                 // Past the normal memory only the same species, verified by its sprite, takes an identified track up again.
                 if (dt > MaxMissedSeconds && !(cand.Sprite is { } again && again.Species.Id == tr.MobId)) continue;
+                // The pet's tag never continues a mob's or a drop's track (on fx-combat-exact the pet's blob took up a mob's track
+                // and its identity on 44 detections), and a verified mob or drop never continues the pet's.
+                if (characterTag[c] && (tr.MobId is not null || tr.Drop is not null || tr.Level is not null || Names.MatchMob(tr.Name) is not null)) continue;
+                if ((cand.Sprite is not null || cand.Drop is not null) && Names.IsPet(tr.Name)) continue;
                 var name = CanonicalName(cand.Tag?.Text);
                 if (name is not null && tr.Name is not null && !string.Equals(name, tr.Name, StringComparison.OrdinalIgnoreCase)) continue;
                 var d = predicted.DistanceTo(cand.World);
@@ -259,6 +274,14 @@ public sealed class EntityTracker
                 cand.SurfaceDistance, cand.Tag?.Text, tr.Level, tr.Name ?? tr.MobName,
                 tr.Age, tr.FirstFrame, tr.FirstTime, Velocity(tr), cand.Pixels, cand.HpBar, identity, cand.Sprite, cand.Drop, cand.BoxSurfaceDistance));
         }
+        // The frame shows no more of a species than its cap: carried identities beyond it, least verified first, are left out.
+        if (SpeciesCap is { } cap)
+            foreach (var g in result.Select((e, i) => (E: e, I: i)).Where(p => p.E.Identity is not null).GroupBy(p => p.E.Identity!.MobId))
+                foreach (var (e, i) in g.OrderByDescending(p => p.E.Identity!.Verified).ThenByDescending(p => p.E.Identity!.Sightings).Skip(cap(g.Key)))
+                {
+                    result[i] = e with { Identity = null };
+                    CappedIdentities++;
+                }
         // Forget tracks not seen for a while.
         for (var t = _tracks.Count - 1; t >= 0; t--)
         {
@@ -380,6 +403,8 @@ public sealed class EntityTracker
 
     private (EntityKind Kind, double Confidence) Classify(Track tr, Candidate c)
     {
+        // The pet's tag (moved off any verified mob or drop by the detector) marks the pet.
+        if (Names.IsCharacterTag(c.Tag?.Text)) return Names.IsPet(TagDetector.Parse(c.Tag!.Text).Name) ? (EntityKind.Pet, 0.95) : (EntityKind.Player, 0.9);
         // A sprite of a mob that spawns here, matched now or before, is decisive; so is a drop's icon.
         if (c.Sprite is not null) return (EntityKind.Mob, 0.97);
         if (c.Drop is not null) return (EntityKind.Drop, 0.95);

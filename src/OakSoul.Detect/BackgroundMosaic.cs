@@ -8,6 +8,7 @@ namespace OakSoul.Detect;
 /// disagreed. Pixel (0, 0) is world (<see cref="OriginX"/>, <see cref="OriginY"/>), the top-left of the map's vr box,
 /// which is everything the camera can show. Cached as <c>&lt;mapId&gt;.png</c> (RGBA, alpha 0 where never seen),
 /// <c>&lt;mapId&gt;.mask.png</c> (greyscale disagreement, see <see cref="Disagreement"/>) and <c>&lt;mapId&gt;.json</c>.
+/// Built from pixel-exact sessions only, since the detector compares exact frames with it.
 /// </summary>
 public sealed class BackgroundMosaic
 {
@@ -87,17 +88,6 @@ public sealed class BackgroundMosaic
     }
 
     public static string PathFor(string dir, int mapId, string suffix) => Path.Combine(dir, $"{mapId}{suffix}");
-
-    /// <summary>
-    /// Subdirectory of the cache for mosaics built from pixel-exact frames. The cache is keyed by exactness: a mosaic
-    /// learned from the blurred, colour-shifted point-size recordings (fx-combat, fx-maps) differs from the game's own
-    /// pixels at every edge and in every hue, so it does not register exact frames cleanly, and an exact mosaic does
-    /// not fit blurred frames either. Blurred mosaics stay at the top of the cache directory, as before.
-    /// </summary>
-    public const string ExactDirectory = "exact";
-
-    /// <summary>The directory holding the mosaics for frames of this kind under the cache directory <paramref name="dir"/>.</summary>
-    public static string DirFor(string dir, bool exact) => exact ? Path.Combine(dir, ExactDirectory) : dir;
 
     public void Save(string dir)
     {

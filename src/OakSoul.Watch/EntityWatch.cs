@@ -7,9 +7,9 @@ using OakSoul.World;
 namespace OakSoul.Watch;
 
 /// <summary>
-/// The watcher's entity stage: loads the cached background of the current map, runs the detector on every native
-/// frame, prints a summary line whenever it changes, collects annotated frames for the contact sheets and keeps
-/// what the entity report needs.
+/// The watcher's entity stage: loads the cached background of the current map, runs the detector on every pixel-exact
+/// native frame (and counts the frames it skips, by reason), prints a summary line whenever it changes, collects
+/// annotated frames for the contact sheets and keeps what the entity report needs.
 /// </summary>
 public sealed class EntityWatch
 {
@@ -22,14 +22,14 @@ public sealed class EntityWatch
     private readonly DropMatcher? _drops;
     private readonly bool _diagnostics;
     private readonly EntityTracker _tracker = new();
-    private readonly Dictionary<(int MapId, bool Exact), EntityDetector?> _detectors = [];
+    private readonly Dictionary<int, EntityDetector?> _detectors = [];
     private readonly Dictionary<int, MapMobSet> _mobSets = [];
     private readonly SessionTimes _times;
     private readonly string? _sheetDir;
     private readonly HashSet<long> _sheetPicks = [];
     private readonly List<(long Frame, double Time, Canvas Tile)> _tiles = [];
     private EntityDetector? _detector;
-    private (int MapId, bool Exact)? _key;
+    private int? _mapId;
     private readonly HashSet<long> _debugFrames;
     private readonly string? _debugDir;
     private string? _lastSummary;
@@ -81,24 +81,32 @@ public sealed class EntityWatch
     public DropMatcher? Drops => _drops;
     public List<string> SheetPaths { get; } = [];
 
+    /// <summary>Frames not given to the detector because they are not the game's own pixels, by reason.</summary>
+    public Dictionary<string, int> Skipped { get; } = [];
+
     /// <summary>
-    /// Runs the detector on a frame; returns the world state refined by the registered camera (or the one given).
-    /// <paramref name="exact"/> says the source delivers pixel-exact frames: the map's background then comes from the
-    /// cache's exact subdirectory (<see cref="BackgroundMosaic.DirFor"/>), and unless the frames come from a lossy video
-    /// (<paramref name="lossy"/>) sprites are matched pixel for pixel.
+    /// Runs the detector on a frame; returns the world state refined by the registered camera (or the one given). The
+    /// detector compares sprites pixel for pixel, so a frame that is not the game's own pixels is skipped, with
+    /// <paramref name="notExact"/> the reason (a scaled client, a lossy video, a point-size capture): counted in
+    /// <see cref="Skipped"/> and printed the first time.
     /// </summary>
     public WorldState? Update(Frame frame, FrameGeometry geometry, WorldState? place, WorldTracker? world, NameTagHit? tag, CaptureRect? panel, StatusReading status, string? ownName, string stamp,
-        bool exact = false, bool lossy = false)
+        string? notExact = null)
     {
-        if (!geometry.IsNative || place is not { MapId: { } mapId, Map: { } map } || world?.Index is not { } index) return place;
-        if (_key != (mapId, exact))
+        if (notExact is not null)
         {
-            if (_key?.MapId != mapId) _tracker.Flush();
-            _key = (mapId, exact);
-            if (!_detectors.TryGetValue((mapId, exact), out _detector))
+            var n = Skipped[notExact] = Skipped.GetValueOrDefault(notExact) + 1;
+            if (n == 1) Console.WriteLine($"{stamp}  entities skip frames: {notExact}");
+            return place;
+        }
+        if (!geometry.IsNative || place is not { MapId: { } mapId, Map: { } map } || world?.Index is not { } index) return place;
+        if (_mapId != mapId)
+        {
+            _tracker.Flush();
+            _mapId = mapId;
+            if (!_detectors.TryGetValue(mapId, out _detector))
             {
-                var dir = BackgroundMosaic.DirFor(_backgrounds, exact);
-                var mosaic = BackgroundMosaic.Load(dir, mapId);
+                var mosaic = BackgroundMosaic.Load(_backgrounds, mapId);
                 MapMobSet? mobs = null;
                 if (_mobLibrary is not null && !_mobSets.TryGetValue(mapId, out mobs))
                 {
@@ -106,9 +114,9 @@ public sealed class EntityWatch
                     Console.WriteLine($"entities: map {mapId} mob templates: {(mobs.Entries.Count == 0 ? "none" : string.Join(", ", mobs.Entries.Select(e => $"{e.Species.Name} x{e.Spawns} ({e.Species.Mobility.ToString().ToLowerInvariant()}, {e.Species.Frames.Count} frames, floors {string.Join("/", e.Floors)})")))}{(mobs.Missing.Count > 0 ? $"; no data for {string.Join(", ", mobs.Missing)}" : "")}");
                 }
                 _detector = mosaic is null ? null : new EntityDetector(mosaic, _layout, _tracker, mobs, _drops) { SpriteDiagnostics = _diagnostics };
-                _detectors[(mapId, exact)] = _detector;
-                Console.WriteLine(mosaic is null ? $"entities: no {(exact ? "exact " : "")}background for map {mapId} in {dir} (build it with --build-background)"
-                    : $"entities: {(exact ? "exact " : "")}background {mapId} loaded from {dir} ({mosaic.Width}x{mosaic.Height}, {mosaic.Frames} frames)");
+                _detectors[mapId] = _detector;
+                Console.WriteLine(mosaic is null ? $"entities: no background for map {mapId} in {_backgrounds} (build it with --build-background)"
+                    : $"entities: background {mapId} loaded from {_backgrounds} ({mosaic.Width}x{mosaic.Height}, {mosaic.Frames} frames)");
             }
             _tracker.MapId = mapId;
         }
@@ -116,7 +124,7 @@ public sealed class EntityWatch
         Footholds[mapId] = index;
         _tracker.Names.OwnName ??= ownName;
         var time = _times.TimeOf(frame);
-        var ctx = new DetectionContext(frame.Sequence, time, map, index, place.Camera, place.Source == WorldSource.DotAndTag, tag?.Tag, place.Position, panel, exact, lossy);
+        var ctx = new DetectionContext(frame.Sequence, time, map, index, place.Camera, place.Source == WorldSource.DotAndTag, tag?.Tag, place.Position, panel);
         _detector.DebugDir = _debugDir is not null && _debugFrames.Contains(frame.Sequence) ? _debugDir : null;
         var result = _detector.Detect(frame.Pixels, frame.Width, ctx);
         // Camera feedback: the registered camera is exact, so the own position follows from it and the tag.
@@ -141,6 +149,10 @@ public sealed class EntityWatch
         }
         return refined;
     }
+
+    /// <summary>The skipped frames by reason, as one line.</summary>
+    public string SkipSummary() => Skipped.Count == 0 ? "entities: no frame skipped (every frame was the game's own pixels)"
+        : $"entities: skipped {Skipped.Values.Sum()} frames that are not the game's own pixels: {string.Join("; ", Skipped.Select(s => $"{s.Value} {s.Key}"))}";
 
     /// <summary>Counts by kind and the nearest mob with its tag and distance from the own character.</summary>
     private static string Summary(EntityFrame r, PointD? own)
