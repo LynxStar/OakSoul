@@ -18,7 +18,7 @@ internal static unsafe partial class NativeMethods
 
     [LibraryImport(Lib, EntryPoint = "oaksoul_start_capture")]
     internal static partial long StartCapture(
-        uint windowId, int width, int height, int fps,
+        uint windowId, int width, int height, int scale, int fps,
         int cropX, int cropY, int cropWidth, int cropHeight,
         delegate* unmanaged[Cdecl]<nint, byte*, int, int, int, double, int, void> callback,
         nint context, out nint error);

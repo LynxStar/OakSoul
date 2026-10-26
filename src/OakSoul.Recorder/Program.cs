@@ -15,7 +15,7 @@ ScreenCapture.Initialize();
 if (options.List)
 {
     foreach (var w in ScreenCapture.ListWindows().OrderBy(w => w.App).ThenBy(w => w.Title))
-        Console.WriteLine($"{w.Id,7}  pid={w.Pid,-6} {w.Width,5:0}x{w.Height,-5:0} {(w.OnScreen ? "on " : "off")}  {w.App}: {w.Title}");
+        Console.WriteLine($"{w.Id,7}  pid={w.Pid,-6} {w.Width,5:0}x{w.Height,-5:0} @{w.Scale:0.##}x {(w.OnScreen ? "on " : "off")}  {w.App}: {w.Title}");
     return 0;
 }
 
@@ -58,8 +58,11 @@ if (crop is { } r && (r.X + r.Width > window.Width || r.Y + r.Height > window.He
     Console.Error.WriteLine($"error: crop {r} does not fit inside the {window.Width:0}x{window.Height:0} window.");
     return 1;
 }
-var requestedWidth = options.Width ?? crop?.Width ?? (int)window.Width;
-var requestedHeight = options.Height ?? crop?.Height ?? (int)window.Height;
+// Exact capture: request the region at the display's backing scale, where every game pixel is a uniform block,
+// and decimate each frame back to point size. --scale 1 lets ScreenCaptureKit scale down itself, which blurs.
+var scale = options.Scale ?? (options.Width is null ? Math.Max(1, (int)Math.Round(window.Scale)) : 1);
+var captureWidth = options.Width ?? (crop?.Width ?? (int)window.Width) * scale;
+var captureHeight = options.Height ?? (crop?.Height ?? (int)window.Height) * scale;
 var (encoderArgs, extension) = options.ResolveEncoder();
 
 var sessionName = options.SessionName ?? $"{DateTime.Now:yyyyMMdd-HHmmss}-{Sanitize(window.Title)}";
@@ -68,7 +71,9 @@ Directory.CreateDirectory(sessionDir);
 var videoPath = Path.Combine(sessionDir, $"video.{extension}");
 
 Console.WriteLine($"window   {window}");
-Console.WriteLine($"capture  {requestedWidth}x{requestedHeight} @ {options.Fps} fps{(crop is null ? "" : $", crop {crop}")}, encoder: {encoderArgs}");
+Console.WriteLine($"capture  {captureWidth}x{captureHeight} @ {options.Fps} fps" +
+                  (scale > 1 ? $", scale {scale} -> frames {captureWidth / scale}x{captureHeight / scale}" : "") +
+                  $", {CaptureStream.ColorSpace}{(crop is null ? "" : $", crop {crop}")}, encoder: {encoderArgs}");
 Console.WriteLine($"session  {sessionDir}");
 Console.WriteLine(options.Seconds > 0 ? $"stopping after {options.Seconds:0.#} s" : "press Ctrl-C to stop");
 
@@ -82,7 +87,7 @@ using var metadata = new MetadataWriter(Path.Combine(sessionDir, "frames.jsonl")
 CaptureStream stream;
 try
 {
-    stream = CaptureStream.Start(window.Id, requestedWidth, requestedHeight, options.Fps, options.Queue, crop);
+    stream = CaptureStream.Start(window.Id, captureWidth, captureHeight, options.Fps, options.Queue, crop, scale);
 }
 catch (InvalidOperationException ex)
 {
@@ -127,7 +132,7 @@ while (!cancellation.IsCancellationRequested && !stream.Failed && !consumer.IsCo
     {
         Console.WriteLine($"t={stopwatch.Elapsed.TotalSeconds,6:0.0}s  delivered={stream.DeliveredFrames}  " +
                           $"fps={stream.DeliveredFrames / stopwatch.Elapsed.TotalSeconds:0.0}  idle={stream.IdleFrames}  " +
-                          $"dropped={stream.DroppedFrames}  keyframes={keyframes.Written}");
+                          $"dropped={stream.DroppedFrames}  keyframes={keyframes.Written}  copy={stream.FrameCopyMilliseconds:0.00}ms");
         nextReport += TimeSpan.FromSeconds(5);
     }
 }
@@ -144,6 +149,10 @@ var summary = new
     window,
     width = video.Width,
     height = video.Height,
+    captureWidth,
+    captureHeight,
+    scale,
+    colorSpace = CaptureStream.ColorSpace,
     crop = crop?.ToString(),
     fps = options.Fps,
     encoderArgs,
@@ -155,6 +164,7 @@ var summary = new
     consumedFrames,
     droppedFrames = stream.DroppedFrames,
     idleFrames = stream.IdleFrames,
+    frameCopyMs = stream.FrameCopyMilliseconds,
     filledVideoFrames = video.FilledFrames,
     skippedVideoFrames = video.SkippedFrames,
     cutSeconds = video.CutSeconds,
@@ -167,7 +177,7 @@ var summary = new
 File.WriteAllText(Path.Combine(sessionDir, "session.json"), JsonSerializer.Serialize(summary, new JsonSerializerOptions(MetadataWriter.JsonOptions) { WriteIndented = true }));
 
 Console.WriteLine($"done: {consumedFrames} frames in {elapsed:0.0}s ({consumedFrames / Math.Max(elapsed, 0.001):0.0} fps), " +
-                  $"dropped={stream.DroppedFrames}, idle={stream.IdleFrames}, filled={video.FilledFrames}, skipped={video.SkippedFrames}, cut={video.CutSeconds:0.0}s, keyframes={keyframes.Written}, " +
+                  $"dropped={stream.DroppedFrames}, idle={stream.IdleFrames}, copy={stream.FrameCopyMilliseconds:0.00}ms, filled={video.FilledFrames}, skipped={video.SkippedFrames}, cut={video.CutSeconds:0.0}s, keyframes={keyframes.Written}, " +
                   $"video={videoBytes / 1e6:0.0} MB -> {videoBytes / Math.Max(elapsed, 0.001) * 3600 / 1e9:0.00} GB/hour");
 if (stream.Failed) Console.Error.WriteLine("warning: ScreenCaptureKit stopped the stream on its own (window closed?)");
 if (consumerError is not null)

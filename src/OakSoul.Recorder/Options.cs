@@ -20,6 +20,8 @@ public sealed class Options
     public string? Extension { get; private set; }
     public int? Width { get; private set; }
     public int? Height { get; private set; }
+    /// <summary>Null means auto: the backing scale of the window's display (unless --width/--height are given).</summary>
+    public int? Scale { get; private set; }
     public int Queue { get; private set; } = 30;
     public CaptureRect? Crop { get; private set; }
     public int CropTop { get; private set; }
@@ -70,6 +72,7 @@ public sealed class Options
                     case "--ext": o.Extension = Next(i++); break;
                     case "--width": o.Width = int.Parse(Next(i++)); break;
                     case "--height": o.Height = int.Parse(Next(i++)); break;
+                    case "--scale": o.Scale = int.Parse(Next(i++)); break;
                     case "--queue": o.Queue = int.Parse(Next(i++)); break;
                     case "--crop": o.Crop = ParseRect(Next(i++)); break;
                     case "--crop-top": o.CropTop = int.Parse(Next(i++)); break;
@@ -115,6 +118,9 @@ public sealed class Options
         if (Queue <= 0) return "--queue must be at least 1";
         if (Width is <= 0 || Height is <= 0) return "--width and --height must be positive";
         if ((Width is null) != (Height is null)) return "--width and --height must be given together";
+        if (Scale is < 1 or > 4) return "--scale must be between 1 and 4";
+        if (Width is not null && Scale is > 1)
+            return "--width/--height set the raw capture size and cannot be combined with --scale above 1";
         if (FfmpegArgs is null && !EncoderPresets.ContainsKey(Encoder))
             return $"unknown encoder preset '{Encoder}'; known: {string.Join(", ", EncoderPresets.Keys)}";
         return null;
@@ -136,7 +142,11 @@ public sealed class Options
               --keyframe-every S         seconds between lossless PNG keyframes (default 2, 0 = none)
               --encoder P                x264 (default, readers stay exact), x264-420, hevc, h264vt, lossless
               --ffmpeg-args "..."        raw encoder arguments instead of a preset (use with --ext)
-              --width N --height N       capture size in pixels (default: window size in points = 1x)
+              --scale N                  capture at N times the point size and keep the bottom-right pixel of every
+                                         NxN block, so frames are the game's own pixels at point size (default:
+                                         the backing scale of the window's display, 2 on Retina; 1 = capture at
+                                         point size, which ScreenCaptureKit blurs on a Retina display)
+              --width N --height N       raw capture size in pixels, no decimation; excludes --scale above 1
               --queue N                  frames buffered between capture and encoder (default 30)
               --crop X,Y,W,H             capture only this region of the window, in points from its top-left
               --crop-top N               drop N points from the top, e.g. 28 for a standard macOS title bar

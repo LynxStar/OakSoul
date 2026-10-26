@@ -1,6 +1,9 @@
 namespace OakSoul.Capture;
 
-/// <summary>One shareable window as reported by ScreenCaptureKit. Sizes are in points (logical pixels).</summary>
+/// <summary>
+/// One shareable window as reported by ScreenCaptureKit. Sizes are in points (logical pixels); <see cref="Scale"/>
+/// is the backing scale factor (pixels per point) of the display the window is on, 2 on Retina, 1 if unknown.
+/// </summary>
 public sealed record WindowInfo(
     uint Id,
     int Pid,
@@ -11,7 +14,8 @@ public sealed record WindowInfo(
     double Width,
     double Height,
     bool OnScreen,
-    int Layer)
+    int Layer,
+    double Scale = 1)
 {
-    public override string ToString() => $"{Id} pid={Pid} {Width:0}x{Height:0} {(OnScreen ? "on-screen" : "off-screen")} {App}: {Title}";
+    public override string ToString() => $"{Id} pid={Pid} {Width:0}x{Height:0} @{Scale:0.##}x {(OnScreen ? "on-screen" : "off-screen")} {App}: {Title}";
 }

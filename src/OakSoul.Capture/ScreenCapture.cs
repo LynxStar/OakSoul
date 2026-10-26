@@ -37,7 +37,8 @@ public static class ScreenCapture
                 Width: w.GetProperty("width").GetDouble(),
                 Height: w.GetProperty("height").GetDouble(),
                 OnScreen: w.GetProperty("onScreen").GetBoolean(),
-                Layer: w.GetProperty("layer").GetInt32()));
+                Layer: w.GetProperty("layer").GetInt32(),
+                Scale: w.TryGetProperty("scale", out var scale) ? scale.GetDouble() : 1));
         }
         return windows;
     }

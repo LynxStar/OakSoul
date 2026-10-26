@@ -53,15 +53,28 @@ Window selection is exact. There is no fuzzy matching, and if zero or several wi
 --out DIR                  root for session folders (default recordings)
 --name NAME                session folder name (default timestamp + window title)
 --keyframe-every S         seconds between lossless PNG keyframes (default 2, 0 = none)
---encoder P                hevc (default), h264vt, x264, x264-420, lossless
+--encoder P                x264 (default, readers stay exact), x264-420, hevc, h264vt, lossless
 --ffmpeg-args "..."        raw encoder arguments instead of a preset (use with --ext)
---width N --height N       capture size in pixels (default: window size in points = 1x)
+--scale N                  capture at N times the point size and keep the bottom-right pixel of every
+                           NxN block, so frames are the game's own pixels at point size (default:
+                           the backing scale of the window's display, 2 on Retina; 1 = capture at
+                           point size, which ScreenCaptureKit blurs on a Retina display)
+--width N --height N       raw capture size in pixels, no decimation; excludes --scale above 1
 --queue N                  frames buffered between capture and encoder (default 30)
 --crop X,Y,W,H             capture only this region of the window, in points from its top-left
 --crop-top N               drop N points from the top, e.g. 28 for a standard macOS title bar
 ```
 
 A windowed CrossOver client carries a standard 28 point macOS title bar, so `--crop-top 28` yields frames of exactly the game's native size (1366x768 for a 1366x796 window). The crop is applied by ScreenCaptureKit before scaling, and `session.json` records it.
+
+On a Retina display the compositor shows the game's 1x render as 2x2 blocks. By default the recorder asks ScreenCaptureKit for the region at that backing scale (2732x1536 for the crop above) and keeps the bottom-right pixel of every block as each frame arrives, so frames are still 1366x768 but hold the game's own pixels; colours come in sRGB rather than the display's Display P3. `--scale 1` captures at point size instead, which ScreenCaptureKit produces by blurring the 2x image, so use it only on a non-Retina display. The recordings made before this (`fx-combat`, `fx-maps`) are blurred and colour-shifted; [docs/capture-notes.md](docs/capture-notes.md) has the measurements.
+
+Exact capture of a windowed client, and the old point-size capture:
+
+```
+dotnet run --project src/OakSoul.Recorder -- --pid 1234 --title "MapleStory" --crop-top 28
+dotnet run --project src/OakSoul.Recorder -- --pid 1234 --title "MapleStory" --crop-top 28 --scale 1
+```
 
 ## Encoder presets
 
@@ -73,7 +86,7 @@ A windowed CrossOver client carries a standard 28 point macOS title bar, so `--c
 | `x264-420` | `-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p` | mp4 |
 | `lossless` | `-c:v libx264rgb -preset veryfast -qp 0` | mkv |
 
-With `--ffmpeg-args` the container defaults to mkv unless `--ext` is given. The default is `x264` because recordings double as test fixtures: re-encoding the pixel-exact keyframes with each preset and running the readers on the decoded frames, `x264` at CRF 18 read all eleven frames exactly (glyph distance 2) while the hardware `hevc` preset at q65 read HP on five, MP on six and EXP on none, so use `hevc` only for long archival recordings where exact reads do not matter. Sizes are in [docs/capture-notes.md](docs/capture-notes.md).
+With `--ffmpeg-args` the container defaults to mkv unless `--ext` is given. The default is `x264` because recordings double as test fixtures: re-encoding the lossless keyframes with each preset and running the readers on the decoded frames, `x264` at CRF 18 read all eleven frames exactly (glyph distance 2) while the hardware `hevc` preset at q65 read HP on five, MP on six and EXP on none, so use `hevc` only for long archival recordings where exact reads do not matter. Sizes are in [docs/capture-notes.md](docs/capture-notes.md).
 
 ## Session folder
 
@@ -84,7 +97,7 @@ Each run creates `recordings/<timestamp>-<title>/` (or the name given with `--na
 | `video.mp4` or `video.mkv` | Constant frame rate video from ffmpeg; `videoFrame` in `frames.jsonl` is -1 for frames left out of it |
 | `keyframes/NNNNNNN.png` | Lossless PNG every N seconds; the number is the frame sequence |
 | `frames.jsonl` | One JSON line per frame: `sequence`, `pts`, `wallClockUtc`, `videoFrame`, `keyframe` (path, only on keyframes) |
-| `session.json` | Summary: window, size, encoder, duration, delivered, dropped, idle, filled, skipped and cut counts, keyframe count, video bytes, ffmpeg exit code |
+| `session.json` | Summary: window (with its display's scale), frame size, capture size requested from ScreenCaptureKit, scale, colour space, encoder, duration, delivered, dropped, idle, filled, skipped and cut counts, mean frame copy time, keyframe count, video bytes, ffmpeg exit code |
 | `ffmpeg.log` | ffmpeg output |
 
 ScreenCaptureKit only delivers a frame when the window changed, so the video fills gaps of up to two seconds by repeating the previous frame (`filledVideoFrames`). Longer idle stretches are cut out of the video (`cutSeconds`), and a frame that arrives ahead of the constant-rate timeline is left out (`skippedVideoFrames`). The metadata keeps the true timestamp of every frame either way.
@@ -139,11 +152,11 @@ The watcher takes a recorder session folder instead of a window, so the whole pi
 dotnet run --project src/OakSoul.Watch -- --recording recordings/<session> --keyframes --crop-top 28 --speed 0
 ```
 
-`--keyframes` replays the sparse PNG keyframes, which are pixel-exact; without it the video is replayed frame by frame, which is only as faithful as its preset. `--speed 1` paces playback at the recorded rate, `0` runs as fast as frames decode. `--crop-top` applies to replay exactly as it would have at capture time, for sessions recorded with the title bar. Under the hood every consumer takes an `IFrameSource`, with `CaptureFrameSource` for live windows and `RecordingFrameSource` for sessions.
+`--keyframes` replays the sparse PNG keyframes, which are lossless copies of the captured frames; without it the video is replayed frame by frame, which is only as faithful as its preset. `--speed 1` paces playback at the recorded rate, `0` runs as fast as frames decode. `--crop-top` applies to replay exactly as it would have at capture time, for sessions recorded with the title bar. Under the hood every consumer takes an `IFrameSource`, with `CaptureFrameSource` for live windows and `RecordingFrameSource` for sessions.
 
 ### Fixture recordings
 
-Recordings under `recordings/` (gitignored) are the test fixtures. The first multi-map one, `fx-maps`, is a 197-second walk from Perion to Ellinia with a keyframe every second: 189 pixel-exact frames across ten maps. Replayed through the watcher it yields a complete, correctly spelled map timeline, stable per-map minimap panel sizes (the client resizes the panel per map and sometimes within one), the collapsed-minimap state, and unknown readings only on map-transition frames. Each new fixture has found something: the hazy Perion sky defeating the old panel-bottom scan, the collapsed minimap, roman numerals read as "IIl", and the bold W in "Wizard".
+Recordings under `recordings/` (gitignored) are the test fixtures. The first multi-map one, `fx-maps`, is a 197-second walk from Perion to Ellinia with a keyframe every second: 189 lossless frames across ten maps. Replayed through the watcher it yields a complete, correctly spelled map timeline, stable per-map minimap panel sizes (the client resizes the panel per map and sometimes within one), the collapsed-minimap state, and unknown readings only on map-transition frames. Each new fixture has found something: the hazy Perion sky defeating the old panel-bottom scan, the collapsed minimap, roman numerals read as "IIl", and the bold W in "Wizard".
 
 ## Map metadata from the client
 

@@ -2,8 +2,10 @@
 //
 // Exports (all @_cdecl):
 //   oaksoul_init()                       initialise the CoreGraphics window-server connection (call once, main thread)
-//   oaksoul_list_windows() -> char*      JSON array of shareable windows; free with oaksoul_free_string
-//   oaksoul_start_capture(...) -> i64    start streaming one window by ID, optionally cropped; 0 on failure with *errorOut set
+//   oaksoul_list_windows() -> char*      JSON array of shareable windows, each with the backing scale of the
+//                                        display it is on; free with oaksoul_free_string
+//   oaksoul_start_capture(...) -> i64    start streaming one window by ID, optionally cropped, in sRGB; 0 on failure
+//                                        with *errorOut set
 //   oaksoul_stop_capture(handle)         stop a stream started above
 //   oaksoul_pump_main_loop(seconds)      run the main CFRunLoop for up to `seconds` (hosts without AppKit call this)
 //
@@ -95,6 +97,25 @@ public func oaksoul_init() {
     _ = CGMainDisplayID()
 }
 
+/// The backing scale factor (pixels per point) of the display holding most of `frame`, which is in global
+/// display coordinates with the origin at the main display's top-left, as SCWindow.frame is. 1 when the frame
+/// is on no display.
+private func backingScale(of frame: CGRect) -> Double {
+    var displays = [CGDirectDisplayID](repeating: 0, count: 16)
+    var count: UInt32 = 0
+    guard CGGetDisplaysWithRect(frame, UInt32(displays.count), &displays, &count) == .success else { return 1 }
+    var bestArea: CGFloat = 0
+    var scale = 1.0
+    for display in displays.prefix(Int(count)) {
+        let overlap = CGDisplayBounds(display).intersection(frame)
+        let area = overlap.isNull ? 0 : overlap.width * overlap.height
+        guard area > bestArea, let mode = CGDisplayCopyDisplayMode(display), mode.width > 0 else { continue }
+        bestArea = area
+        scale = Double(mode.pixelWidth) / Double(mode.width)
+    }
+    return scale
+}
+
 @_cdecl("oaksoul_list_windows")
 public func oaksoul_list_windows() -> UnsafeMutablePointer<CChar>? {
     let (content, error) = fetchShareableContent()
@@ -116,6 +137,7 @@ public func oaksoul_list_windows() -> UnsafeMutablePointer<CChar>? {
             "height": window.frame.size.height,
             "onScreen": window.isOnScreen,
             "layer": window.windowLayer,
+            "scale": backingScale(of: window.frame),
         ])
     }
     let payload = try! JSONSerialization.data(withJSONObject: rows)
@@ -127,9 +149,11 @@ public func oaksoul_free_string(_ pointer: UnsafeMutablePointer<CChar>?) {
     free(pointer)
 }
 
+/// Starts streaming one window. `width` and `height` are the output size in pixels; 0 means the crop's (or the
+/// window's) point size times `scale`. Colours are delivered in sRGB, not in the display's colour space.
 @_cdecl("oaksoul_start_capture")
 public func oaksoul_start_capture(
-    _ windowID: UInt32, _ width: Int32, _ height: Int32, _ fps: Int32,
+    _ windowID: UInt32, _ width: Int32, _ height: Int32, _ scale: Int32, _ fps: Int32,
     _ cropX: Int32, _ cropY: Int32, _ cropWidth: Int32, _ cropHeight: Int32,
     _ callback: OakSoulFrameCallback, _ context: UnsafeMutableRawPointer?,
     _ errorOut: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
@@ -153,15 +177,22 @@ public func oaksoul_start_capture(
     }
     let baseWidth = hasCrop ? cropWidth : Int32(window.frame.size.width)
     let baseHeight = hasCrop ? cropHeight : Int32(window.frame.size.height)
-    configuration.width = Int(width > 0 ? width : baseWidth)
-    configuration.height = Int(height > 0 ? height : baseHeight)
+    let factor = max(scale, 1)
+    configuration.width = Int(width > 0 ? width : baseWidth * factor)
+    configuration.height = Int(height > 0 ? height : baseHeight * factor)
     configuration.pixelFormat = kCVPixelFormatType_32BGRA
+    // Without this ScreenCaptureKit converts to the display's colour space (Display P3 on a Retina Mac), which
+    // pulls saturated colours toward grey by a few levels; sRGB returns the values the game drew.
+    configuration.colorSpaceName = CGColorSpace.sRGB
     configuration.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(max(fps, 1)))
     configuration.queueDepth = 8
     configuration.showsCursor = false
     configuration.shouldBeOpaque = true
     if #available(macOS 14.0, *) {
         configuration.ignoreShadowsSingleWindow = true
+        // Serve the request from the full-resolution backing store. Measured the same as .automatic; .nominal
+        // breaks 2x output and, at point size, samples a different pixel of each 2x2 block from place to place.
+        configuration.captureResolution = .best
     }
 
     let output = StreamOutput(callback: callback, context: context)
