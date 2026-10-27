@@ -16,8 +16,9 @@ public static class BackgroundBuild
     /// <summary>One usable frame: its map, the tracker's camera, whether that camera is exact, and what to mask.</summary>
     public sealed record FrameInfo(MapData Map, PointD Camera, bool Exact, CaptureRect Panel, CaptureRect Tag);
 
+    /// <param name="frames">The usable frames, keyed by their position in the replay (<see cref="Frame.Index"/>).</param>
     /// <param name="keyframes">For a mosaic voted from a session's video: the session's lossless keyframes with the
-    /// video sequence each one copies (<see cref="KeyframesOf"/>); their pixels replace the video's where they agree
+    /// video frame each one copies (<see cref="KeyframesOf"/>); their pixels replace the video's where they agree
     /// (<see cref="MosaicBuilder.ExactRefine"/>).</param>
     public static async Task Run(TextWriter o, Func<IFrameSource> replay, IReadOnlyDictionary<long, FrameInfo> frames, ScreenMask mask, string dir,
         IReadOnlyList<(long VideoSequence, string Path)>? keyframes = null)
@@ -96,7 +97,7 @@ public static class BackgroundBuild
         }
     }
 
-    /// <summary>The keyframes of a session (frames.jsonl) with the video sequence (1-based, as replay numbers frames) each one copies.</summary>
+    /// <summary>The keyframes of a session (frames.jsonl) with the video frame each one copies, as its 1-based position in a video replay (<see cref="Frame.Index"/>).</summary>
     public static List<(long VideoSequence, string Path)> KeyframesOf(string session)
     {
         var list = new List<(long, string)>();
@@ -157,12 +158,12 @@ public static class BackgroundBuild
         using var source = replay();
         await foreach (var frame in source.Frames())
             using (frame)
-                if (frames.TryGetValue(frame.Sequence, out var f))
+                if (frames.TryGetValue(frame.Index, out var f))
                 {
                     mask.Reset();
                     mask.Exclude(f.Panel, 4);
                     mask.Exclude(OwnCharacter.Box(f.Tag, OwnCharacter.MosaicPad));
-                    action(frame.Sequence, f, frame.Pixels, frame.Width);
+                    action(frame.Index, f, frame.Pixels, frame.Width);
                 }
     }
 }

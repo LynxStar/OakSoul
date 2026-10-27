@@ -85,6 +85,23 @@ public sealed class EntityWatch
     public Dictionary<string, int> Skipped { get; } = [];
 
     /// <summary>
+    /// The capture sequence of a frame the detector ran on, by the frame id the detector was given (its position in the
+    /// replay, <see cref="Frame.Index"/>), for printing; the id itself when unknown.
+    /// </summary>
+    public long SequenceOf(long index) => _sequences.TryGetValue(index, out var seq) ? seq : index;
+    private readonly Dictionary<long, long> _sequences = [];
+
+    /// <summary>The detector's result for the last frame given to <see cref="Update"/>, or null when it did not run on it.</summary>
+    public EntityFrame? LastResult { get; private set; }
+
+    /// <summary>Why the detector did not run on the last frame (null when it ran).</summary>
+    public string? LastSkip { get; private set; }
+
+    /// <summary>The tag boxes (viewport coordinates) and the own-character box of the last frame the detector ran on.</summary>
+    public IReadOnlyList<TagBox> LastTags => LastResult is null ? [] : _detector?.LastTags ?? [];
+    public CaptureRect? LastOwnBox => LastResult is null ? null : _detector?.LastOwnBox;
+
+    /// <summary>
     /// Runs the detector on a frame; returns the world state refined by the registered camera (or the one given). The
     /// detector compares sprites pixel for pixel, so a frame that is not the game's own pixels is skipped, with
     /// <paramref name="notExact"/> the reason (a scaled client, a lossy video, a point-size capture): counted in
@@ -93,13 +110,20 @@ public sealed class EntityWatch
     public WorldState? Update(Frame frame, FrameGeometry geometry, WorldState? place, WorldTracker? world, NameTagHit? tag, CaptureRect? panel, StatusReading status, string? ownName, string stamp,
         string? notExact = null)
     {
+        LastResult = null;
+        LastSkip = null;
         if (notExact is not null)
         {
             var n = Skipped[notExact] = Skipped.GetValueOrDefault(notExact) + 1;
             if (n == 1) Console.WriteLine($"{stamp}  entities skip frames: {notExact}");
+            LastSkip = notExact;
             return place;
         }
-        if (!geometry.IsNative || place is not { MapId: { } mapId, Map: { } map } || world?.Index is not { } index) return place;
+        if (!geometry.IsNative || place is not { MapId: { } mapId, Map: { } map } || world?.Index is not { } index)
+        {
+            LastSkip = !geometry.IsNative ? "not native" : "no map";
+            return place;
+        }
         if (_mapId != mapId)
         {
             _tracker.Flush();
@@ -120,13 +144,21 @@ public sealed class EntityWatch
             }
             _tracker.MapId = mapId;
         }
-        if (_detector is null) return place;
+        if (_detector is null)
+        {
+            LastSkip = $"no background for map {mapId}";
+            return place;
+        }
         Footholds[mapId] = index;
         _tracker.Names.OwnName ??= ownName;
         var time = _times.TimeOf(frame);
-        var ctx = new DetectionContext(frame.Sequence, time, map, index, place.Camera, place.Source == WorldSource.DotAndTag, tag?.Tag, place.Position, panel);
-        _detector.DebugDir = _debugDir is not null && _debugFrames.Contains(frame.Sequence) ? _debugDir : null;
+        // The detector counts frames by their position in the replay (Frame.Index), which is unique even where the recorder
+        // filled an idle gap by repeating a captured frame (a filled video frame carries the sequence of the frame it repeats).
+        var ctx = new DetectionContext(frame.Index, time, map, index, place.Camera, place.Source == WorldSource.DotAndTag, tag?.Tag, place.Position, panel);
+        _sequences[frame.Index] = frame.Sequence;
+        _detector.DebugDir = _debugDir is not null && _debugFrames.Contains(frame.Index) ? _debugDir : null;
         var result = _detector.Detect(frame.Pixels, frame.Width, ctx);
+        LastResult = result;
         // Camera feedback: the registered camera is exact, so the own position follows from it and the tag.
         var refined = place;
         PointD? ownRefined = null;
@@ -137,8 +169,9 @@ public sealed class EntityWatch
             if (tagFeet is not null) ownRefined = refined.Position;
         }
         Rows.Add(new Row(mapId, result, status.ExpValue?.Total, refined.Position, tag is not null, place.RawPosition, place.Position, ownRefined, place.Source));
-        if (_detector.DebugDir is not null) Console.WriteLine($"{stamp}  debug frame {frame.Sequence}: {result.Note} reg {result.Registration?.Score:0.000} cam {result.Camera} {result.Milliseconds:0.0} ms");
-        if (_sheetDir is not null && _sheetPicks.Contains(frame.Sequence) && _tiles.Count < SheetFrames)
+        if (_detector.DebugDir is not null) Console.WriteLine($"{stamp}  debug frame {frame.Index} (sequence {frame.Sequence}): {result.Note} reg {result.Registration?.Score:0.000} cam {result.Camera} {result.Milliseconds:0.0} ms");
+        // Sheet frames are picked by position in the replay and captioned with their capture sequence.
+        if (_sheetDir is not null && _sheetPicks.Contains(frame.Index) && _tiles.Count < SheetFrames)
             _tiles.Add((frame.Sequence, time, _detector.Annotate(frame.Pixels, frame.Width, result, foreground: false, half: true)));
 
         var summary = Summary(result, refined.Position);

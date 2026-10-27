@@ -302,10 +302,16 @@ public sealed class MapNameTracker
         // Collapsed: the bar text "Region : Map" left of the buttons. Where the reader found the buttons, the text is read
         // up to them; otherwise from a generous fixed span, which also takes in the button captions and the world beyond
         // the bar (whose scrolling delays the read), and the WORLD caption is stripped afterwards.
-        _tracker = new TextRegionTracker(() => _collapsed
-            ? new CaptureRect(_panel.X + 4, _panel.Y + 2, _nameRight is { } r && r - 2 > _panel.X + 24 ? r - 2 - (_panel.X + 4) : Math.Min(330, MinimapReader.SearchArea.Width - _panel.X - 4), 18)
-            : new CaptureRect(_panel.X + 46, _panel.Y + 18, Math.Min(160, _panel.Width - 50), 44), upscale: 3) { StableFrames = stableFrames };
+        _tracker = new TextRegionTracker(Block, upscale: 3) { StableFrames = stableFrames };
     }
+
+    private CaptureRect Block() => _collapsed
+        ? new CaptureRect(_panel.X + 4, _panel.Y + 2, _nameRight is { } r && r - 2 > _panel.X + 24 ? r - 2 - (_panel.X + 4) : Math.Min(330, MinimapReader.SearchArea.Width - _panel.X - 4), 18)
+        : new CaptureRect(_panel.X + 46, _panel.Y + 18, Math.Min(160, _panel.Width - 50), 44);
+
+    /// <summary>The name block the last <see cref="Update"/> looked at (native frame pixels), or null before the first.</summary>
+    public CaptureRect? NameBlock => _updated ? Block() : null;
+    private bool _updated;
 
     public (string Region, string Map, double Confidence)? Current { get; private set; }
 
@@ -347,6 +353,7 @@ public sealed class MapNameTracker
         _panel = panel;
         _collapsed = collapsed;
         _nameRight = collapsed ? nameRight : null;
+        _updated = true;
         if (!_tracker.Update(geometry, frame)) return false;
         var lines = _tracker.Lines!;
         Current = Parse(lines, collapsed);

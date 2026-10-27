@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Bakes the overlay stream over a recording's frames, for reviewing what the pipeline saw frame by frame:
+       regenerate a stream with the current watcher, render frames, list a frame's items, contact sheets. Recordings
+       only; nothing is captured or drawn on screen. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>OakSoul.Bake</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../OakSoul.Overlay/OakSoul.Overlay.csproj" />
+    <ProjectReference Include="../OakSoul.Watch/OakSoul.Watch.csproj" />
+  </ItemGroup>
+
+</Project>

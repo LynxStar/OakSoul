@@ -3,9 +3,10 @@ using OakSoul.Capture;
 namespace OakSoul.Watch;
 
 /// <summary>
-/// Frame times in seconds from the start of the session. Keyframe replay stamps frame n at n seconds whatever the
-/// keyframe interval was (fx-combat has one every half second), so for keyframes the recorded times are taken from
-/// frames.jsonl; otherwise the frame's own timestamp is used.
+/// Frame times in seconds from the start of the session, as the entity detector is timed. A keyframe replay's playback
+/// clock (<see cref="Frame.Clock"/>) counts frame n as n seconds whatever the keyframe interval was (fx-combat-exact has
+/// one every half second), so for keyframes the recorded times are taken from frames.jsonl, by position in the replay;
+/// otherwise the playback clock is used.
 /// </summary>
 public sealed class SessionTimes
 {
@@ -27,8 +28,8 @@ public sealed class SessionTimes
 
     public double TimeOf(Frame frame)
     {
-        if (_keyframes is { } k && frame.Sequence >= 1 && frame.Sequence <= k.Count) return k[(int)frame.Sequence - 1];
-        _origin ??= frame.Pts;
-        return frame.Pts - _origin.Value;
+        if (_keyframes is { } k && frame.Index >= 1 && frame.Index <= k.Count) return k[(int)frame.Index - 1];
+        _origin ??= frame.Clock;
+        return frame.Clock - _origin.Value;
     }
 }

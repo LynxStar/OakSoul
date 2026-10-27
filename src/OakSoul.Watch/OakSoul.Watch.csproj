@@ -14,6 +14,7 @@
     <ProjectReference Include="../OakSoul.Vision/OakSoul.Vision.csproj" />
     <ProjectReference Include="../OakSoul.World/OakSoul.World.csproj" />
     <ProjectReference Include="../OakSoul.Detect/OakSoul.Detect.csproj" />
+    <ProjectReference Include="../OakSoul.Overlay/OakSoul.Overlay.csproj" />
   </ItemGroup>
 
 </Project>

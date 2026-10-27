@@ -87,11 +87,11 @@ public static class EntityReport
                 var now = ents.Count(x => x.Sprite?.Species.Id == e.Species.Id);
                 var carried = ents.Count(x => x.Identity?.MobId == e.Species.Id);
                 var cap = det?.CapOf(e.Species.Id) ?? e.Spawns;
-                var proof = det is not null && det.SeenAtOnce.TryGetValue(e.Species.Id, out var p) && p.Count > e.Spawns ? $" ({p.Count} proven on frame {p.Frame})" : "";
+                var proof = det is not null && det.SeenAtOnce.TryGetValue(e.Species.Id, out var p) && p.Count > e.Spawns ? $" ({p.Count} proven on frame {watch.SequenceOf(p.Frame)})" : "";
                 var perFrame = g.Select(r => r.Result.Entities.Count(x => x.Kind == EntityKind.Mob && x.Identity?.MobId == e.Species.Id)).ToList();
                 var max = perFrame.Count == 0 ? 0 : perFrame.Max();
                 var over = perFrame.Count(n => n > cap);
-                var overFrames = g.Where(r => r.Result.Entities.Count(x => x.Kind == EntityKind.Mob && x.Identity?.MobId == e.Species.Id) > cap).Select(r => r.Result.Frame).Take(6).ToList();
+                var overFrames = g.Where(r => r.Result.Entities.Count(x => x.Kind == EntityKind.Mob && x.Identity?.MobId == e.Species.Id) > cap).Select(r => watch.SequenceOf(r.Result.Frame)).Take(6).ToList();
                 var beyondList = perFrame.Count(n => n > e.Spawns);
                 o.WriteLine($"    {e.Species.Name,-16} {now,5} / {carried,5}   spawns {e.Spawns,2}{proof}  most in one frame {max,2}{(beyondList > 0 && over == 0 ? $", more than the life list on {beyondList} frames" : "")}" +
                             $"{(over > 0 ? $"  OVER THE CAP on {over} frames ({string.Join(", ", overFrames)}...)" : "")}");
@@ -109,7 +109,7 @@ public static class EntityReport
         // with an independent search offline.
         if (Environment.GetEnvironmentVariable("OAKSOUL_SPRITE_CSV") is { } csv)
             File.WriteAllLines(csv, diags.SelectMany(d => d.BestBySpecies.Values.Select(b =>
-                $"{d.Frame},{d.Kind},{d.Box.X},{d.Box.Y},{d.Box.Width},{d.Box.Height},{(d.TagText ?? "").Replace(',', ' ')},{(d.Accepted is { } a ? $"{a.Species.Id}" : "")}," +
+                $"{watch.SequenceOf(d.Frame)},{d.Kind},{d.Box.X},{d.Box.Y},{d.Box.Width},{d.Box.Height},{(d.TagText ?? "").Replace(',', ' ')},{(d.Accepted is { } a ? $"{a.Species.Id}" : "")}," +
                 $"{b.Species.Id},{b.Frame.Key},{b.Left},{b.Top},{b.Feet.X},{b.Feet.Y},{b.Matches},{b.Compared},{b.Tint},{b.Fogged},{b.Fog}")));
         var accepted = diags.Where(d => d.Accepted is not null).ToList();
         var acceptedScores = accepted.Select(d => d.Accepted!.Value.Score).ToList();
@@ -159,7 +159,7 @@ public static class EntityReport
                      .OrderByDescending(d => d.BestBySpecies.Values.Max(b => b.Score)).Take(6))
         {
             var b = d.BestBySpecies.Values.MaxBy(x => x.Score);
-            o.WriteLine($"      {d.Kind,-6} frame {d.Frame} box {d.Box.Width}x{d.Box.Height}+{d.Box.X}+{d.Box.Y}{(d.TagText is { } tt ? $" tag '{tt}'" : "")}: best {b}{(d.Accepted is { } a ? $"; accepted {a}" : "")}");
+            o.WriteLine($"      {d.Kind,-6} frame {watch.SequenceOf(d.Frame)} box {d.Box.Width}x{d.Box.Height}+{d.Box.X}+{d.Box.Y}{(d.TagText is { } tt ? $" tag '{tt}'" : "")}: best {b}{(d.Accepted is { } a ? $"; accepted {a}" : "")}");
         }
         o.WriteLine($"    gap: pet/player/effect candidates at most {(negatives.Count == 0 ? 0 : negatives.Max()):0.000}; tag-labelled mobs, own species, at least {(tagTrue.Count == 0 ? 0 : tagTrue.Min()):0.000} (p5 {Pct(tagTrue, 5):0.000});" +
                     $" accepted matches at least {(acceptedScores.Count == 0 ? 0 : acceptedScores.Min()):0.000}");
@@ -323,10 +323,10 @@ public static class EntityReport
             o.WriteLine($"    small candidates on a surface tried as drops: {sc.Count}; best icon score p50 {Pct(sc, 50):0.00} p90 {Pct(sc, 90):0.00} p99 {Pct(sc, 99):0.00} max {sc.Max():0.00};" +
                         $" histogram (tenths) {string.Join(" ", Histogram(sc))}; threshold {DropMatcher.Threshold:0.00}");
             foreach (var x in dm.Scores.OrderByDescending(x => x.Score).Take(8))
-                o.WriteLine($"      {x.Score:0.00} {x.ItemId} frame {x.Frame} box {x.Box.Width}x{x.Box.Height}+{x.Box.X}+{x.Box.Y}");
+                o.WriteLine($"      {x.Score:0.00} {x.ItemId} frame {watch.SequenceOf(x.Frame)} box {x.Box.Width}x{x.Box.Height}+{x.Box.X}+{x.Box.Y}");
         }
         foreach (var t in drops)
-            o.WriteLine($"    #{t.Id} {(t.DropItem ?? "unidentified"),-10} frames {t.FirstFrame}..{t.LastFrame} ({t.Frames} sightings) at {t.LastWorld}{(t.NearOwnAtEnd ? ", own character near at the end" : "")}");
+            o.WriteLine($"    #{t.Id} {(t.DropItem ?? "unidentified"),-10} frames {watch.SequenceOf(t.FirstFrame)}..{watch.SequenceOf(t.LastFrame)} ({t.Frames} sightings) at {t.LastWorld}{(t.NearOwnAtEnd ? ", own character near at the end" : "")}");
     }
 
     private static void Tags(TextWriter o, EntityWatch watch, List<EntityWatch.Row> done, List<DetectedEntity> mobs, List<EntityDetector> detectors)

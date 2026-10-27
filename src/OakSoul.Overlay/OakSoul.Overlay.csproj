@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The overlay data stream: a per-frame projection of everything the watcher concluded (entities, tags, the own
+       character, HUD readings, minimap, map geometry, camera) as gzip JSON Lines, with its layer registry, writer and
+       reader. Produced by OakSoul.Watch, consumed by OakSoul.Bake (and later a live see-through window). -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>OakSoul.Overlay</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../OakSoul.Detect/OakSoul.Detect.csproj" />
+  </ItemGroup>
+
+</Project>
