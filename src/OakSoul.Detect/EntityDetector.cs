@@ -83,13 +83,6 @@ public sealed partial class EntityDetector
     /// </summary>
     public const int TagAboveRows = 12, TagSlackX = 10;
 
-    /// <summary>
-    /// HP bar: a grey frame around a green and dark red fill, drawn above a mob that was hit, about 50x9 on the Dark
-    /// Axe Stumps and the Fire Boar. It is often merged with the sprite or the background behind it is unreliable, so
-    /// on fx-combat it was found over only 16% of the tagged mobs; it is a bonus signal, not a classifier.
-    /// </summary>
-    public const int HpBarMinWidth = 36, HpBarMaxWidth = 70, HpBarMinHeight = 5, HpBarMaxHeight = 13, HpBarGreenPixels = 4;
-
     /// <summary>Names of the timed stages, in <see cref="StageMs"/> order.</summary>
     public static readonly string[] StageNames = ["registration", "difference", "tags", "temporal", "components", "sprites", "drops", "tracking"];
 
@@ -99,6 +92,12 @@ public sealed partial class EntityDetector
     /// <summary>Per-frame milliseconds of the sprite stage, for its median.</summary>
     public List<double> SpriteStageMs { get; } = [];
     public int StageFrames { get; private set; }
+
+    /// <summary>
+    /// Candidates the species search (and the foothold search under an unmatched blob) ran on, and the milliseconds it took, by
+    /// the kind the tracker then gave them: what effect blobs and the like cost in searches that cannot find a mob.
+    /// </summary>
+    public Dictionary<EntityKind, (int Candidates, double Ms)> SearchByKind { get; } = [];
 
     /// <summary>Frames that needed the wide search.</summary>
     public int WideSearches { get; private set; }
@@ -138,13 +137,18 @@ public sealed partial class EntityDetector
     public EntityDetector(BackgroundMosaic mosaic, HudLayout layout, EntityTracker? tracker = null, MapMobSet? mobs = null, DropMatcher? drops = null, DamageReader? damage = null)
     {
         _mosaic = mosaic;
-        _mask = new ScreenMask(layout);
+        // The EXP and loot log stays in the world: only its text leaves the foreground (ClearLogText).
+        _mask = new ScreenMask(layout, [LogRegion]);
+        _logBox = layout.TryGet(LogRegion, out var log) ? log.Rect : null;
         _tracker = tracker ?? new EntityTracker();
         _tracker.MapId = mosaic.MapId;
         _mobs = mobs;
         _drops = drops;
         _damage = damage;
     }
+
+    /// <summary>Builds what the detector's sprite sets need before the first frame (the effects' anchor index), so no frame pays for it.</summary>
+    public void Prepare() => BuildEffectIndex();
 
     /// <summary>Mobs found by the foothold search: new ones where no blob was (over parallax background), and blobs no box alignment matched.</summary>
     public int SweepFinds { get; private set; }
@@ -287,27 +291,62 @@ public sealed partial class EntityDetector
         _fg.Difference(frame, frameWidth, _mask, _mosaic, camX, camY);
         var tDiff = sw.Elapsed.TotalMilliseconds;
         var vp = _mask.Viewport;
+        // What the client draws over the world that is no entity: the log's text, the mobs' HP bars (read, then out of the foreground).
+        var th = Stopwatch.GetTimestamp();
+        ClearLogText(frame, frameWidth);
+        LogMs += Stopwatch.GetElapsedTime(th).TotalMilliseconds;
+        var tbar = Stopwatch.GetTimestamp();
+        var hpBars = FindHpBars(frame, frameWidth);
+        BarMs += Stopwatch.GetElapsedTime(tbar).TotalMilliseconds;
+        HudMs += Stopwatch.GetElapsedTime(th).TotalMilliseconds;
         var tags = _tags.Find(_fg, frame, frameWidth, vp);
         _tags.IsPetText ??= _tracker.Names.IsPetTag;
         _tags.SplitPet(tags, frame, frameWidth, vp);
         foreach (var t in tags) _fg.Clear(t.X0 - 1, t.Y0 - 1, t.X1 + 1, t.Y1 + 1);
-        var tTags = sw.Elapsed.TotalMilliseconds;
-        // The temporal pass: the live tracks' predictions verified first. On a temporal frame the pixels they explain leave the
-        // foreground and the full search below sees the rest; every FullEvery frames the full search sees everything.
+        var ocrBefore = _tags.OcrMilliseconds;
+        _tags.Read(tags, frame, frameWidth, vp, Ocr);
+        var ocrMs = _tags.OcrMilliseconds - ocrBefore;
+        var tTags = sw.Elapsed.TotalMilliseconds - ocrMs;
+        // With the camera registered to the pixel, the own tag gives the own position exactly (the dot only to +-8).
+        var ownWorld = ctx.OwnTag is { } ownTag ? CameraModel.ScreenToWorld(new PointD(camX, camY), CameraModel.SolesFromTag(OwnCharacter.TagFeet(ownTag))) : ctx.OwnWorld;
+        _ownWorld = ownWorld;
+        // The temporal pass: the cursor, the pet, the live tracks' predictions and the meso coins verified first. On a temporal
+        // frame the pixels they explain leave the foreground and the full search below sees the rest; every FullEvery frames the
+        // full search sees everything (the pet, the cursor and the coins leave the foreground on every frame: they are never mobs).
         if (_mobs is not null) _search ??= new FootholdSearch(_mosaic, ctx.Map, ctx.Footholds, _mobs);
         var full = NextIsFull();
         if (full) Temporals.FullFrames++; else Temporals.TemporalFrames++;
+        BeginExplained(clear: !full);
+        th = Stopwatch.GetTimestamp();
+        var cursor = CursorAtLastPlace(frame, frameWidth);
+        HudMs += Stopwatch.GetElapsedTime(th).TotalMilliseconds;
+        var pet = FindPet(frame, frameWidth, ctx, camX, camY, tags, own, clear: !full);
         var predictions = _mobs is not null && Temporal ? Predict(frame, frameWidth, ctx, camX, camY, clear: !full) : [];
-        var tTemporal = sw.Elapsed.TotalMilliseconds;
+        th = Stopwatch.GetTimestamp();
+        var coins = FollowCoins(frame, frameWidth, ctx, camX, camY, clear: !full);
+        CoinMs += Stopwatch.GetElapsedTime(th).TotalMilliseconds;
+        var tTemporal = sw.Elapsed.TotalMilliseconds - ocrMs;
         // Blobs made mostly of darkened or brightened background (a parallax layer or the waterfall seen against the
         // screen-space model, the edge of a steam cloud) are not sprites.
-        var blobs = Merge(_fg.Components().Where(b => b.SolidFraction >= MinSolidFraction).ToList());
-        var tComp = sw.Elapsed.TotalMilliseconds;
+        var components = _fg.Components();
+        var blobs = Merge(components.Where(b => b.SolidFraction >= MinSolidFraction).ToList());
+        // A drop in steam is mostly whitened background, but its icon still shows: a drop-sized blob of that kind on a surface
+        // whose icon matches is kept (a meso coin in the steam under the ladder on fx-combat-exact's keyframe 496).
+        if (_drops is not null)
+            foreach (var b in components)
+                if (b.SolidFraction < MinSolidFraction && b.Width <= EntityTracker.DropMaxSize && b.Height <= EntityTracker.DropMaxSize && b.Width >= 4 && b.Pixels >= 60
+                    && ctx.Footholds.Nearest(new PointD(camX + (b.X0 + b.X1) / 2.0 + vp.X, camY + b.Y1 + 1 + vp.Y), DropSurfaceUnits) is not null
+                    && _drops.Match(frame, frameWidth, _mask, new CaptureRect(b.X0 + vp.X, b.Y0 + vp.Y, b.Width, b.Height)) is not null)
+                {
+                    blobs.Add(b);
+                    DropsInSteam++;
+                }
+        th = Stopwatch.GetTimestamp();
+        cursor ??= CursorInBlobs(blobs, frame, frameWidth);
+        HudMs += Stopwatch.GetElapsedTime(th).TotalMilliseconds;
+        pet ??= FindPetAfterBlobs(blobs, frame, frameWidth, ctx, camX, camY, tags, own, clear: !full);
+        var tComp = sw.Elapsed.TotalMilliseconds - ocrMs;
 
-        // HP bars become a flag on the blob under them.
-        var bars = new List<Blob>();
-        foreach (var b in blobs) if (IsHpBar(b, frame, frameWidth, vp)) bars.Add(b);
-        blobs.RemoveAll(bars.Contains);
         // A temporal frame's verified predictions join the residual blobs, so tags and HP bars attach to them as to any blob.
         var predicted = new Dictionary<Blob, Prediction>(ReferenceEqualityComparer.Instance);
         if (!full)
@@ -318,21 +357,24 @@ public sealed partial class EntityDetector
                 predicted[pb] = p;
             }
 
-        var ocrBefore = _tags.OcrMilliseconds;
-        _tags.Read(tags, frame, frameWidth, vp, Ocr);
-        var ocrMs = _tags.OcrMilliseconds - ocrBefore;
-
-        // With the camera registered to the pixel, the own tag gives the own position exactly (the dot only to +-8).
-        var ownWorld = ctx.OwnTag is { } ownTag ? CameraModel.ScreenToWorld(new PointD(camX, camY), CameraModel.SolesFromTag(OwnCharacter.TagFeet(ownTag))) : ctx.OwnWorld;
-        _ownWorld = ownWorld;
         var candidates = new List<Candidate>();
         var tagUsed = new bool[tags.Count];
         var tagOwner = new Blob?[tags.Count];
+        // The tag at the pet's place is the pet's.
+        if (pet is { Tag: >= 0 } pf) tagUsed[pf.Tag] = true;
+        // Small blobs touching the own character are parts of it, unless a drop's icon matches them (a coin the character stands by).
+        var besideOwn = new Dictionary<Blob, DropMatch>(ReferenceEqualityComparer.Instance);
+        foreach (var b in blobs)
+        {
+            var touchesOwn = own is { } ob && b.X0 + vp.X <= ob.X + ob.Width + 2 && b.X1 + vp.X >= ob.X - 2 && b.Y0 + vp.Y <= ob.Y + ob.Height + 2 && b.Y1 + vp.Y >= ob.Y - 2;
+            if (!touchesOwn || b.Pixels >= OwnFragmentPixels || predicted.ContainsKey(b) || _drops is null || b.Width > EntityTracker.DropMaxSize + 7 || b.Height > EntityTracker.DropMaxSize + 7) continue;
+            if (_drops.Match(frame, frameWidth, _mask, new CaptureRect(b.X0 + vp.X, b.Y0 + vp.Y, b.Width, b.Height)) is { } dm) { besideOwn[b] = WithAnchor(dm, camX, camY); DropsBesideOwn++; }
+        }
         foreach (var b in blobs)
         {
             var touchesOwn = own is { } ob && b.X0 + vp.X <= ob.X + ob.Width + 2 && b.X1 + vp.X >= ob.X - 2 && b.Y0 + vp.Y <= ob.Y + ob.Height + 2 && b.Y1 + vp.Y >= ob.Y - 2;
             var isPredicted = predicted.TryGetValue(b, out var pr);
-            if (touchesOwn && b.Pixels < OwnFragmentPixels && !isPredicted) continue;
+            if (touchesOwn && b.Pixels < OwnFragmentPixels && !isPredicted && !besideOwn.ContainsKey(b)) continue;
             // The tag under the blob, if any. A predicted mob stands where its frame is, whatever part of it the foreground showed.
             int bx0 = b.X0, bx1 = b.X1, by1 = b.Y1;
             if (isPredicted && pr!.Match is var pm) { bx0 = pm.Left + pm.Frame.X0 - vp.X; bx1 = pm.Left + pm.Frame.X1 - vp.X; by1 = pm.Top + pm.Frame.Y1 - vp.Y; }
@@ -341,6 +383,7 @@ public sealed partial class EntityDetector
             var bestCost = double.MaxValue;
             for (var i = 0; i < tags.Count; i++)
             {
+                if (tagUsed[i]) continue;
                 var t = tags[i];
                 var gapRows = t.Y0 - by1;
                 // Under a predicted mob a tag anywhere below its frame is its own (its start can hide behind the own character).
@@ -360,19 +403,20 @@ public sealed partial class EntityDetector
         foreach (var b in blobs)
         {
             var touchesOwn = own is { } ob && b.X0 + vp.X <= ob.X + ob.Width + 2 && b.X1 + vp.X >= ob.X - 2 && b.Y0 + vp.Y <= ob.Y + ob.Height + 2 && b.Y1 + vp.Y >= ob.Y - 2;
-            if (touchesOwn && b.Pixels < OwnFragmentPixels && !predicted.ContainsKey(b)) continue;
+            if (touchesOwn && b.Pixels < OwnFragmentPixels && !predicted.ContainsKey(b) && !besideOwn.ContainsKey(b)) continue;
             var cx = (b.X0 + b.X1) / 2.0;
             var ti = Array.FindIndex(tagOwner, o => ReferenceEquals(o, b));
             TagBox? tb = null;
             if (ti >= 0 && !tagUsed[ti]) { tagUsed[ti] = true; tb = tags[ti]; }
             // With a tag the feet are exact: centred on the tag, a couple of rows above its box.
             var feet = tb is not null ? new PointD(tb.CentreX + vp.X, tb.Y0 - 2 + vp.Y) : new PointD(cx + vp.X, b.Y1 + 1 + vp.Y);
-            var bar = bars.FirstOrDefault(r => r.Y1 <= b.Y0 + 4 && r.Y1 >= b.Y0 - 40 && Math.Abs((r.X0 + r.X1) / 2.0 - cx) <= 30);
-            if (bar is not null) bars.Remove(bar);
+            // An HP bar over the blob marks a mob that was hit.
+            var bar = hpBars.Any(r => r.Rect.Y + r.Rect.Height - 1 - vp.Y <= b.Y0 + 4 && r.Rect.Y + r.Rect.Height - 1 - vp.Y >= b.Y0 - 40 && Math.Abs(r.Rect.X + r.Rect.Width / 2.0 - vp.X - cx) <= 30);
             var isPredicted = predicted.TryGetValue(b, out var prediction);
             var cand = MakeCandidate(ctx, camX, camY, new CaptureRect(b.X0 + vp.X, b.Y0 + vp.Y, b.Width, b.Height), feet, b.Pixels, tb,
-                bar is not null, touchesOwn, isPredicted ? null : Thumb(frame, frameWidth, vp, b), ownWorld);
+                bar, touchesOwn, isPredicted ? null : Thumb(frame, frameWidth, vp, b), ownWorld);
             if (isPredicted) Predicted(cand, prediction!, ctx, camX, camY);
+            if (besideOwn.TryGetValue(b, out var nearOwnDrop)) cand.Drop = nearOwnDrop;
             candidates.Add(cand);
         }
         // Tags with no blob over them still mark an entity: its sprite stands over unreliable background, or is hidden.
@@ -386,10 +430,15 @@ public sealed partial class EntityDetector
             var guessBox = new CaptureRect((int)feet.X - 20, (int)feet.Y - 45, 40, 45);
             candidates.Add(MakeCandidate(ctx, camX, camY, guessBox, feet, 0, t, false, false, null, ownWorld));
         }
+        if (pet is not null) candidates.Add(PetCandidate(pet, tags, ctx, camX, camY));
+        candidates.AddRange(coins);
+        MarkPetFragments(candidates, camX, camY, ctx.Time);
 
         var tCand = sw.Elapsed.TotalMilliseconds - ocrMs;
         foreach (var c in candidates) c.Floor ??= FloorFor(c, ctx);
         DetachPetTags(candidates, ctx, camX, camY, ownWorld);
+        // The own skill effects are recognised before the species search, which then leaves them (and their pixels) alone.
+        RecogniseEffects(candidates, frame, frameWidth);
         _sweepsThisFrame = 0;
         // Larger blobs first: the per-frame budget of searches under unmatched blobs goes to the likeliest mobs.
         candidates.Sort((a, b) => b.Pixels.CompareTo(a.Pixels));
@@ -397,11 +446,17 @@ public sealed partial class EntityDetector
         // A verified prediction is a match already.
         if (_mobs is not null)
             for (var i = 0; i < candidates.Count; i++)
-                if (candidates[i].Found == FoundBy.Search && !(candidates[i].Pixels == 0 && _tracker.Names.IsCharacterTag(candidates[i].Tag?.Text))
-                    && Identify(candidates[i], frame, frameWidth, ctx, camX, camY) is { } rest) candidates.Add(rest);
+                if (candidates[i].Found == FoundBy.Search && candidates[i].Skill is null && candidates[i].PetSprite is null && candidates[i].Drop is null
+                    && !(candidates[i].Pixels == 0 && _tracker.Names.IsCharacterTag(candidates[i].Tag?.Text)))
+                {
+                    var ts = Stopwatch.GetTimestamp();
+                    var rest = Identify(candidates[i], frame, frameWidth, ctx, camX, camY);
+                    candidates[i].SearchMs += Stopwatch.GetElapsedTime(ts).TotalMilliseconds;
+                    if (rest is not null) candidates.Add(rest);
+                }
         // On a temporal frame the foothold search leaves out the columns of the mobs the predictions found.
         if (_mobs is not null) SearchGaps(candidates, frame, frameWidth, ctx, camX, camY, own,
-            full ? [] : predictions.Select(p => (p.Match.Left + p.Match.Frame.X0, p.Match.Left + p.Match.Frame.X1)).ToList());
+            full ? [] : predictions.Select(p => new CaptureRect(p.Match.Left + p.Match.Frame.X0, p.Match.Top + p.Match.Frame.Y0, p.Match.Frame.ExtentWidth, p.Match.Frame.ExtentHeight)).ToList());
         if (_mobs is not null && full) Reconcile(candidates, predictions, ctx, camX, camY);
         if (_mobs is not null) OneSpritePerMob(candidates, ctx, camX, camY);
         if (_mobs is not null) DropExplainedBlobs(candidates);
@@ -409,12 +464,29 @@ public sealed partial class EntityDetector
         var tSprites = sw.Elapsed.TotalMilliseconds - ocrMs;
         if (_drops is not null)
             foreach (var c in candidates)
-                if (c.Sprite is null && c.Pixels > 0 && !c.TouchesOwn && c.SurfaceDistance is { } sd && Math.Abs(sd) <= DropSurfaceUnits)
-                    c.Drop = _drops.Match(frame, frameWidth, _mask, c.Box);
+            {
+                if (c.Sprite is not null || c.Drop is not null || c.PetSprite is not null || c.Skill is not null || c.Pixels <= 0 || c.TouchesOwn) continue;
+                var onSurface = c.SurfaceDistance is { } sd && Math.Abs(sd) <= DropSurfaceUnits;
+                // A kill's drops fly in an arc before they land: near a recent death a small candidate is a drop wherever it is.
+                var flying = !onSurface && c.Box.Width <= EntityTracker.DropMaxSize + 7 && c.Box.Height <= EntityTracker.DropMaxSize + 7 && NearDeath(c, ctx.Time);
+                if (!onSurface && !flying) continue;
+                // A piece of a coin (in steam, behind something) is placed by the coin's anchor on the foothold under it.
+                var dm = _drops.Match(frame, frameWidth, _mask, c.Box);
+                if (dm is null && onSurface)
+                {
+                    var tc = Stopwatch.GetTimestamp();
+                    dm = CoinOnFoothold(c, frame, frameWidth, ctx, camX, camY);
+                    CoinMs += Stopwatch.GetElapsedTime(tc).TotalMilliseconds;
+                }
+                if (dm is null) continue;
+                c.Drop = WithAnchor(dm, camX, camY);
+                if (flying) { c.InFlight = true; DropsInFlight++; }
+            }
         MoveCharacterTags(candidates, ctx, camX, camY, ownWorld);
         if (own is { } ownBox) LastOwnBox = own = DropOwnSlivers(candidates, ownBox);
         if (_damage is not null) ReadDamage(candidates, frame, frameWidth, ctx, camX, camY, own);
         if (!full) DropLeftovers(candidates);
+        DropPetLeftovers(candidates);
         var tDrops = sw.Elapsed.TotalMilliseconds - ocrMs;
         // Diagnostics are timed apart and left out of the frame's cost.
         var diagMs = 0.0;
@@ -438,15 +510,24 @@ public sealed partial class EntityDetector
         }
 
         _tracker.SpeciesCap = _mobs is null ? null : CapOf;
+        _tracker.FloorBound = _mobs is not null && !_mobs.HasFlyers;
         if (_mobs is not null)
         {
             _tracker.Species ??= id => _mobs.ById(id)?.Species;
             _tracker.TagSpecies ??= text => _mobs.NamedLoose(TagDetector.Parse(text).Name ?? text).Select(e => e.Species.Id).ToList();
         }
         var entities = _tracker.Update(candidates, ctx.Frame, ctx.Time, ctx.Sequence);
+        for (var k = 0; k < entities.Count && k < candidates.Count; k++)
+            if (candidates[k].SearchMs > 0)
+            {
+                var kind = entities[k].Kind;
+                SearchByKind[kind] = (SearchByKind.GetValueOrDefault(kind).Candidates + 1, SearchByKind.GetValueOrDefault(kind).Ms + candidates[k].SearchMs);
+            }
         CreditKill(entities, ctx, ownWorld);
         if (_mobs is not null) PlaceHitboxes(entities, ctx, camX, camY);
+        var bars = AttachHpBars(hpBars, entities);
         RememberPoses(entities, ctx, full);
+        RememberDeaths(entities, ctx.Time);
         _lastDetected = true;
         if (SpriteDiagnostics)
             for (var i = Diagnostics.Count - 1; i >= 0 && Diagnostics[i].Frame == ctx.Frame; i--)
@@ -458,7 +539,7 @@ public sealed partial class EntityDetector
         SpriteStageMs.Add(tSprites - tCand);
         StageFrames++;
         if (DebugDir is not null) Dump(frame, frameWidth, ctx, entities, camX, camY);
-        return new EntityFrame(ctx.Frame, ctx.Time, entities, (camX, camY), reg.Value, ms, ocrMs);
+        return new EntityFrame(ctx.Frame, ctx.Time, entities, (camX, camY), reg.Value, ms, ocrMs) { HpBars = bars, Cursor = cursor };
     }
 
     /// <summary>
@@ -537,6 +618,15 @@ public sealed partial class EntityDetector
         PointD? feetOnly = blob ? null : c.Feet;
         _matcher.Prepare(frame, frameWidth, _mask, c.Box, feetOnly);
         var match = _matcher.First(c.Box, feetOnly, tries, sizeFilter: blob);
+        // A box cut on one side (by the screen's edge, unreliable background, something in front) holds the frame's other edge: the
+        // frames wider than the box are aligned on its left and on its right edge too (a Red Snail on fx-combat-exact's video frame
+        // 207 agreed on 0.41 of its pixels seven columns off the box's centre and was taken for an effect).
+        if (match is null && blob && c.Pixels >= SweepMinPixels && c.SurfaceDistance is { } csd && Math.Abs(csd) <= FloorUnits && order.Count > 0)
+        {
+            var tc = Stopwatch.GetTimestamp();
+            match = FirstCut(c.Box, FrameOrder(order[0].Species, last).Select(f => (order[0].Species, f)));
+            CutMs += Stopwatch.GetElapsedTime(tc).TotalMilliseconds;
+        }
         Candidate? rest = null;
         if (match is null && blob && c.Box.Width >= SplitMinWidth && _matcher.FirstAtEdges(c.Box, tries) is { } edge)
         {
@@ -577,6 +667,26 @@ public sealed partial class EntityDetector
         c.Foothold = nearest is { } n && Math.Abs(n.Distance) <= EntityTracker.OnFootholdUnits ? nearest : null;
         c.Floor = FloorFor(c, ctx);
         return rest;
+    }
+
+    /// <summary>Boxes matched by a frame aligned on one of their edges because the box was cut (see <see cref="Identify"/>), since construction.</summary>
+    public int CutAligned { get; private set; }
+    public double CutMs { get; private set; }
+
+    /// <summary>The best frame, wider than the box, that passes aligned on the box's left or right edge, or null (the likeliest species only, for cost).</summary>
+    private SpriteMatch? FirstCut(CaptureRect box, IEnumerable<(MobSpecies Species, SpriteFrame Frame)> tries)
+    {
+        SpriteMatch? found = null;
+        foreach (var (species, f) in tries)
+        {
+            if (found is { } m0 && species.Id != m0.Species.Id) break;
+            if (f.ExtentWidth <= box.Width + SpriteMatcher.SearchX || !SpriteMatcher.Fits(f, box.Width, box.Height)) continue;
+            foreach (var align in new[] { Align.Left, Align.Right })
+                if (_matcher.Best(box, null, species, f, found?.Score ?? SpriteMatcher.Threshold, align: align) is { } m && m.Score >= SpriteMatcher.Threshold
+                    && (found is null || m.Score > found.Value.Score)) found = m;
+        }
+        if (found is not null) CutAligned++;
+        return found;
     }
 
     /// <summary>The floor (foothold chain component) a candidate stands on or just above (<see cref="FloorUnits"/>), if any.</summary>
@@ -636,7 +746,7 @@ public sealed partial class EntityDetector
     /// </summary>
     private void DropExplainedBlobs(List<Candidate> candidates)
     {
-        var sprites = candidates.Where(c => c.Sprite is not null).Select(c => c.Sprite!.Value).ToList();
+        var sprites = candidates.Where(c => c.Sprite is not null).Select(c => c.Sprite!.Value).Concat(candidates.Where(c => c.PetSprite is not null).Select(c => c.PetSprite!.Value)).ToList();
         var pets = candidates.Where(c => c.Pixels == 0 && _tracker.Names.IsPetTag(c.Tag?.Text)).Select(c => c.Box).ToList();
         if (sprites.Count == 0) return;
         var vp = _mask.Viewport;
@@ -645,7 +755,7 @@ public sealed partial class EntityDetector
         for (var i = candidates.Count - 1; i >= 0; i--)
         {
             var c = candidates[i];
-            if (c.Sprite is not null || c.Drop is not null || c.Damage is not null || c.Pixels <= 0) continue;
+            if (c.Sprite is not null || c.Drop is not null || c.Damage is not null || c.PetSprite is not null || c.Skill is not null || c.Pixels <= 0) continue;
             // A tagged blob is dropped only as the leftover of a predicted mob (below), whose tag it then hands on.
             var heir = c.Tag is { } tag && !_tracker.Names.IsCharacterTag(tag.Text)
                 ? candidates.FirstOrDefault(p => p.Found != FoundBy.Search && p.Tag is null && p.Sprite is { } ps && Covers(ps, c.Box) >= ExplainedShare) : null;
@@ -696,16 +806,18 @@ public sealed partial class EntityDetector
         for (var i = candidates.Count - 1; i >= 0; i--)
         {
             var c = candidates[i];
-            if (c.Sprite is not null || c.Drop is not null || c.Damage is not null || c.Tag is not null || c.Pixels <= 0) continue;
-            if (c.Box.Width <= EntityTracker.DropMaxSize && c.Box.Height <= EntityTracker.DropMaxSize) continue;
-            if (!predicted.Any(m => Covers(m, c.Box) >= LeftoverShare)) continue;
+            if (c.Sprite is not null || c.Drop is not null || c.Damage is not null || c.Tag is not null || c.PetSprite is not null || c.Skill is not null || c.Pixels <= 0) continue;
+            // A drop-sized piece no icon matched is the mob's when its frame holds most of it (a Red Snail's unexplained pixels on the
+            // video's frame 207, 24x30, three quarters inside its frame, were an effect scoring 0.41 as the snail).
+            var small = c.Box.Width <= EntityTracker.DropMaxSize && c.Box.Height <= EntityTracker.DropMaxSize;
+            if (!predicted.Any(m => Covers(m, c.Box) >= (small ? SmallLeftoverShare : LeftoverShare))) continue;
             candidates.RemoveAt(i);
             ExplainedBlobs++;
         }
     }
 
     /// <summary>Share of a blob's box a predicted mob's frame extent must cover for the blob to be that mob's leftover (<see cref="DropLeftovers"/>).</summary>
-    public const double LeftoverShare = 0.5;
+    public const double LeftoverShare = 0.5, SmallLeftoverShare = 0.7;
 
     /// <summary>Blobs dropped by <see cref="DropExplainedBlobs"/> since construction.</summary>
     public int ExplainedBlobs { get; private set; }
@@ -737,6 +849,18 @@ public sealed partial class EntityDetector
             candidates.Add(MakeCandidate(ctx, camX, camY, new CaptureRect((int)feet.X - 20, (int)feet.Y - 45, 40, 45), feet, 0, t, false, false, null, ownWorld));
         }
     }
+
+    /// <summary>Milliseconds spent on the HUD's overlays (log text, HP bars, cursor) and on the coins (following them, matching their pieces), since construction.</summary>
+    public double HudMs { get; private set; }
+    public double LogMs { get; private set; }
+    public double BarMs { get; private set; }
+    public double CoinMs { get; private set; }
+
+    /// <summary>Drop-sized blobs of mostly whitened background (steam) kept because a drop's icon matched them, since construction.</summary>
+    public int DropsInSteam { get; private set; }
+
+    /// <summary>Rows between a predicted mob's frame bottom and a foothold line for the mob to stand on it (see <see cref="SearchGaps"/>).</summary>
+    public const int CoveredRows = 8;
 
     /// <summary>Unmatched blobs with fewer foreground pixels than this are not searched for along their foothold.</summary>
     public const int SweepMinPixels = 150;
@@ -793,9 +917,10 @@ public sealed partial class EntityDetector
     /// that blob; elsewhere it is a new candidate with no blob (the differencing could not see it). The species contest
     /// settles recolours as for any match.
     /// </summary>
-    /// <param name="covered">Screen columns of mobs already found (the temporal pass's verified predictions), left out of the search.</param>
+    /// <param name="covered">The boxes of mobs already found (the temporal pass's verified predictions): their columns are left out of the
+    /// search on the footholds they stand on, not on footholds above or below them.</param>
     private void SearchGaps(List<Candidate> candidates, ReadOnlySpan<byte> frame, int frameWidth, DetectionContext ctx, int camX, int camY, CaptureRect? own,
-        IReadOnlyList<(int X0, int X1)> covered)
+        IReadOnlyList<CaptureRect> covered)
     {
         if (_search is null) return;
         var t0 = Stopwatch.GetTimestamp();
@@ -807,7 +932,10 @@ public sealed partial class EntityDetector
             // Columns of the own character (mobs already matched are found again and dropped as the same mob).
             var skip = new List<(int, int)>();
             if (own is { } ob && ob.Y + ob.Height >= lineTop - FootholdSearch.BandRows && ob.Y <= lineBottom) skip.Add((ob.X, ob.X + ob.Width - 1));
-            skip.AddRange(covered);
+            // A predicted mob's columns only on the foothold it stands on (its frame's bottom within a few rows of the line): before, the
+            // columns were skipped at every height, which hid the stump on the slope at the top of keyframe 2161 behind a boar below it.
+            foreach (var b in covered)
+                if (b.Y + b.Height >= lineTop - CoveredRows && b.Y + b.Height <= lineBottom + CoveredRows) skip.Add((b.X, b.X + b.Width - 1));
             var species = _search.SpeciesFor(floor, (fh.Y1 + fh.Y2) / 2.0);
             if (species.Count == 0) continue;
             var hits = new List<(MobSpecies, SpriteFrame, int, int)>();
@@ -819,7 +947,7 @@ public sealed partial class EntityDetector
                 if (candidates.Any(c => c.Sprite is { } cs && SameMob(cs, m))) continue;
                 finds.Add(m);
                 // An unmatched blob it covers becomes this mob; otherwise a new candidate without a blob.
-                var holder = candidates.FirstOrDefault(c => c.Sprite is null && c.Drop is null && c.Pixels > 0 && !_tracker.Names.IsCharacterTag(c.Tag?.Text) && Covers(m, c.Box) >= 0.5);
+                var holder = candidates.FirstOrDefault(c => c.Sprite is null && c.Drop is null && c.PetSprite is null && c.Skill is null && c.Pixels > 0 && !_tracker.Names.IsCharacterTag(c.Tag?.Text) && Covers(m, c.Box) >= 0.5);
                 var cand = holder ?? MakeCandidate(ctx, camX, camY, new CaptureRect(m.Left + m.Frame.X0, m.Top + m.Frame.Y0, m.Frame.ExtentWidth, m.Frame.ExtentHeight),
                     m.Feet, 0, null, false, false, null, _ownWorld);
                 var hint = _tracker.Hint(cand, ctx.Time);
@@ -855,7 +983,7 @@ public sealed partial class EntityDetector
         for (var i = candidates.Count - 1; i >= 0; i--)
         {
             var c = candidates[i];
-            if (!c.TouchesOwn || c.Sprite is not null || c.Drop is not null || c.Tag is not null || c.Pixels <= 0) continue;
+            if (!c.TouchesOwn || c.Sprite is not null || c.Drop is not null || c.Tag is not null || c.PetSprite is not null || c.Skill is not null || c.Pixels <= 0) continue;
             var b = c.Box;
             if (b.X < own.X - OwnReach || b.X + b.Width > own.X + own.Width + OwnReach || b.Y < own.Y - OwnReach || b.Y + b.Height > own.Y + own.Height + OwnReach) continue;
             candidates.RemoveAt(i);
@@ -875,7 +1003,7 @@ public sealed partial class EntityDetector
         var t0 = Stopwatch.GetTimestamp();
         var regions = new List<CaptureRect>();
         foreach (var c in candidates)
-            if (c.Sprite is null && c.Drop is null && c.Pixels > 0 && c.Tag is null)
+            if (c.Sprite is null && c.Drop is null && c.PetSprite is null && c.Skill is null && c.Pixels > 0 && c.Tag is null)
                 regions.Add(new CaptureRect(c.Box.X - DamageMarginX, c.Box.Y - DamageMarginUp, c.Box.Width + 2 * DamageMarginX, c.Box.Height + DamageMarginUp + DamageMarginDown));
         if (own is { } ob) regions.Add(new CaptureRect(ob.X - 32, ob.Y - 96, ob.Width + 64, 120));
         // Overlapping regions are merged while the union stays small enough to read in one go.
@@ -909,7 +1037,7 @@ public sealed partial class EntityDetector
             for (var i = candidates.Count - 1; i >= 0; i--)
             {
                 var c = candidates[i];
-                if (c.Sprite is not null || c.Drop is not null || c.Tag is not null || c.Pixels <= 0 || c.Damage is not null) continue;
+                if (c.Sprite is not null || c.Drop is not null || c.Tag is not null || c.Pixels <= 0 || c.Damage is not null || c.PetSprite is not null || c.Skill is not null) continue;
                 double cx = c.Box.X + c.Box.Width / 2.0, cy = c.Box.Y + c.Box.Height / 2.0;
                 if (cx < box.X - 4 || cx > box.X + box.Width + 4 || cy < box.Y - 4 || cy > box.Y + box.Height + 4) continue;
                 pixels += c.Pixels;
@@ -1028,7 +1156,7 @@ public sealed partial class EntityDetector
             var g = groups.FirstOrDefault(g => g.Any(x => _mobs.Recolours(x.Species).Contains(m.Species)));
             if (g is null) groups.Add([m]); else g.Add(m);
         }
-        var winner = groups.Select(g => g.Count == 1 ? g[0] : Settle(g, last)).MaxBy(Value);
+        var winner = SettleShapes(groups.Select(g => g.Count == 1 ? g[0] : Settle(g, last)).MaxBy(Value), found);
         var rival = found.Where(x => x.Species.Id != winner.Species.Id).Select(x => (SpriteMatch?)x).MaxBy(x => Value(x!.Value));
         return rival is { } r ? winner with { Rival = r.Species, RivalScore = r.Score } : winner;
     }
@@ -1155,7 +1283,9 @@ public sealed partial class EntityDetector
     /// <summary>Scores a candidate against every species of the map (best frame each), for the report.</summary>
     private void Diagnose(Candidate c, ReadOnlySpan<byte> frame, int frameWidth, DetectionContext ctx)
     {
-        if (c.Pixels <= 0) return;
+        // The pet and the own skill effects are verified by their own frames; scored against the mobs they would only measure the
+        // mob standing behind them (their box is their own pixels' extent, not a blob of foreground).
+        if (c.Pixels <= 0 || c.PetSprite is not null || c.Skill is not null) return;
         var tagSpecies = (int?)null;
         string? tagName = null;
         if (c.Tag?.Text is { } text)
@@ -1323,19 +1453,6 @@ public sealed partial class EntityDetector
                 }
         }
         return blobs;
-    }
-
-    private static bool IsHpBar(Blob b, ReadOnlySpan<byte> frame, int frameWidth, CaptureRect vp)
-    {
-        if (b.Width < HpBarMinWidth || b.Width > HpBarMaxWidth || b.Height < HpBarMinHeight || b.Height > HpBarMaxHeight) return false;
-        var green = 0;
-        for (var y = b.Y0; y <= b.Y1; y++)
-            for (var x = b.X0; x <= b.X1; x++)
-            {
-                var o = ((y + vp.Y) * frameWidth + x + vp.X) * 4;
-                if (frame[o + 1] > 150 && frame[o + 2] < 120 && frame[o] < 120) green++;
-            }
-        return green >= HpBarGreenPixels;
     }
 
     /// <summary>8x8 mean luma of the blob's foreground pixels (background cells 0), for the appearance check.</summary>

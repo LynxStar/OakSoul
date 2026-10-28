@@ -151,7 +151,8 @@ public static class WatchProgram
         spritesPath ??= Path.Combine(Directory.GetCurrentDirectory(), "data", "sprites");
         var entityWatch = entities && world is not null ? new EntityWatch(layout, backgroundsPath, sessionTimes, sheetDir,
             recording is not null && keyframes && Directory.Exists(Path.Combine(recording, "keyframes")) ? Directory.GetFiles(Path.Combine(recording, "keyframes"), "*.png").Length : null,
-            mobInfoPath, spritesPath, diagnostics: entityReport, petName: petName) : null;
+            mobInfoPath, spritesPath, diagnostics: entityReport, petName: petName, character: ownName,
+            session: recording is null ? null : Path.GetFileName(Path.TrimEndingDirectorySeparator(recording))) : null;
         if (entities && world is null) Console.WriteLine("entities off: no map metadata");
 
         // A replayed frame is stamped with its time into the session (its capture pts less the session's first), which is
@@ -172,7 +173,11 @@ public static class WatchProgram
             OverlayProvenance.GitCommit(Directory.GetCurrentDirectory()), recording is null ? null : Path.GetFileName(Path.TrimEndingDirectorySeparator(recording)),
             recording is null ? null : OverlayProvenance.RelativePath(recording), recording is null ? "live" : keyframes ? "keyframes" : "video",
             recording is null ? source.Description : $"{OverlayProvenance.RelativePath(recording)} ({(keyframes ? "keyframes" : replay!.LosslessVideo ? "lossless video" : "lossy video")})",
-            layout.FrameWidth, layout.FrameHeight, ownName, SpriteMatcher.Threshold, DropMatcher.Threshold, DropMatcher.Threshold, OverlayLayers.Names, petName));
+            layout.FrameWidth, layout.FrameHeight, ownName, SpriteMatcher.Threshold, DropMatcher.Threshold, DropMatcher.Threshold, OverlayLayers.Names, petName)
+            {
+                PetSpecies = entityWatch?.PetSpecies is { } ps ? ps.Id.ToString(System.Globalization.CultureInfo.InvariantCulture) : null,
+                PetSpeciesName = entityWatch?.PetSpecies?.Name,
+            });
         var overlayMs = new List<double>();
         State? last = null;
         long frames = 0;

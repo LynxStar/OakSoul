@@ -159,12 +159,28 @@ public sealed class FootholdSearch
         if (_tried.Length < index.Frames.Count * n) _tried = new int[index.Frames.Count * n * 2];
         var generation = ++_generation;
         var tried = _tried;
+        // An anchor pixel at column qx belongs to a placement up to the frames' reach away, whose feet row is that placement's own:
+        // on a flat foothold one row for every column, on a slope every row the feet take within the reach, each hit checked
+        // against its placement's feet (before, the row of the anchor's own column was used, which missed mobs on slopes).
+        var flat = fh.Y1 == fh.Y2;
+        int anyFeet = int.MinValue;
+        for (var c = 0; c < n && anyFeet == int.MinValue; c++) anyFeet = feet[c];
+        if (anyFeet == int.MinValue) return;
+        // The line's row at every column, skipped or not: along one foothold it changes monotonically, so the rows within the reach
+        // of a column are those between the line's rows at the reach's two ends.
+        var line = flat ? null : new int[n];
+        if (line is not null)
+            for (var c = 0; c < n; c++) line[c] = fh.YAt(sx0 + c + camX) is { } yl ? (int)Math.Round(yl - camY) : anyFeet;
         for (var qx = Math.Max(0, sx0 - index.Reach); qx <= Math.Min(frameWidth - 1, sx1 + index.Reach); qx++)
         {
-            var c0 = Math.Clamp(qx - sx0, 0, n - 1);
-            var fy = feet[c0];
-            if (fy == int.MinValue) { for (var d = 1; d < n && fy == int.MinValue; d++) { if (c0 - d >= 0 && feet[c0 - d] != int.MinValue) fy = feet[c0 - d]; else if (c0 + d < n && feet[c0 + d] != int.MinValue) fy = feet[c0 + d]; } }
-            if (fy == int.MinValue) break;
+            int rowLo = anyFeet, rowHi = anyFeet;
+            if (line is not null)
+            {
+                int ca = Math.Clamp(qx - index.MaxDx - sx0, 0, n - 1), cb = Math.Clamp(qx - index.MinDx - sx0, 0, n - 1);
+                rowLo = Math.Min(line[ca], line[cb]);
+                rowHi = Math.Max(line[ca], line[cb]);
+            }
+            for (var fy = rowLo; fy <= rowHi; fy++)
             foreach (var k in AnchorRows)
             {
                 var qy = fy + k;
@@ -173,7 +189,7 @@ public sealed class FootholdSearch
                 foreach (var (fi, dx) in entries)
                 {
                     var c = qx - dx - sx0;
-                    if ((uint)c >= (uint)n || feet[c] == int.MinValue || tried[fi * n + c] == generation) continue;
+                    if ((uint)c >= (uint)n || feet[c] != fy || tried[fi * n + c] == generation) continue;
                     tried[fi * n + c] = generation;
                     var (sp, f) = index.Frames[fi];
                     var p = ProbeOf(f);
@@ -219,7 +235,12 @@ public sealed class FootholdSearch
     private int[] _tried = [];
     private int _generation;
 
-    private sealed record AnchorIndex(List<(MobSpecies Species, SpriteFrame Frame)> Frames, Dictionary<int, List<(int Frame, int Dx)>> ByColour, int Reach);
+    private sealed record AnchorIndex(List<(MobSpecies Species, SpriteFrame Frame)> Frames, Dictionary<int, List<(int Frame, int Dx)>> ByColour, int Reach)
+    {
+        /// <summary>The anchors' column offsets from their origins, least and most: a placement is this far from its anchor's column.</summary>
+        public int MinDx { get; init; }
+        public int MaxDx { get; init; }
+    }
 
     private readonly Dictionary<string, AnchorIndex> _anchors = [];
 
@@ -260,7 +281,8 @@ public sealed class FootholdSearch
                     if (!list.Contains((fi, a.Dx))) list.Add((fi, a.Dx));
                 }
         }
-        index = new AnchorIndex(frames, byColour, reach);
+        var dxs = byColour.Values.SelectMany(l => l.Select(e => e.Item2)).DefaultIfEmpty(0).ToList();
+        index = new AnchorIndex(frames, byColour, reach) { MinDx = dxs.Min(), MaxDx = dxs.Max() };
         _anchors[key] = index;
         return index;
     }

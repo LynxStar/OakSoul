@@ -46,7 +46,13 @@ public static class OverlayBuilder
         if (x.Tags is { } tags) Tags(items, tags, x.Layout);
         Self(items, x, place);
         if (x.Entities is { } result)
+        {
             foreach (var e in result.Entities) items.Add(Entity(e, x.Time));
+            foreach (var b in result.HpBars) items.Add(HpBarItem(b));
+            if (result.Cursor is { } cursor)
+                items.Add(new OverlayItem(OverlayLayers.Hud, "cursor").Set("rect", Rc(cursor.Rect)).Set("point", P(cursor.Hotspot)).Set("state", cursor.State)
+                    .Set("frame", cursor.Frame).Set("score", D2(cursor.Score)).Set("label", "cursor"));
+        }
         return new OverlayFrame
         {
             Sequence = x.Sequence, Pts = x.Pts, Filled = x.Filled, Time = Rd(x.Time, 3),
@@ -210,6 +216,7 @@ public static class OverlayBuilder
     {
         FoundBy.Prediction => "prediction",
         FoundBy.Transition => "transition",
+        FoundBy.Tag => "tag",
         _ => "search",
     };
 
@@ -221,6 +228,11 @@ public static class OverlayBuilder
         (false, true) => "steam",
         _ => "drawn",
     };
+
+    /// <summary>A mob's HP bar: its frame, the fill read (share and columns of 46), the fill's colour and the mob below it.</summary>
+    public static OverlayItem HpBarItem(HpBar b) =>
+        new OverlayItem(OverlayLayers.Entity, "hpbar").Set("rect", Rc(b.Rect)).Set("fill", Rd(b.Fill, 3)).Set("fillColumns", b.FillColumns).Set("colour", b.Colour)
+            .Set("track", b.Track).Set("label", $"HP {Math.Round(b.Fill * 100):0}%{(b.Track is { } t ? $" #{t}" : "")}");
 
     /// <param name="time">The frame's time into the session, for the carried identity's label ("last 1.00 at 23.0").</param>
     public static OverlayItem Entity(DetectedEntity e, double time = 0)
@@ -257,16 +269,27 @@ public static class OverlayBuilder
         else if (sprite is { } other)
             item.Set("match", $"{other.Species.IdText} {other.Species.Name} {other.Frame.Anim}/{other.Frame.Index}{(other.Frame.Facing > 0 ? "R" : "L")} {other.Score:0.00}");
         if (e.Swept) item.Set("sweep", true);
+        // The pet: its species and pose as matched (the client's pet frames), or found by its tag alone.
+        if (e.PetMatch is { } pm)
+            item.Set("petSpecies", pm.Species.Id.ToString("D7", System.Globalization.CultureInfo.InvariantCulture)).Set("speciesName", pm.Species.Name).Set("anim", pm.Frame.Anim)
+                .Set("frame", pm.Frame.Index).Set("facing", pm.Frame.Facing > 0 ? "R" : "L").Set("score", D2(pm.Score)).Set("evidence", "matched").Set("agree", new[] { pm.Matches, pm.Compared });
+        else if (e.Kind == EntityKind.Pet) item.Set("evidence", "tag");
+        // An own skill effect: the skill and its frame.
+        if (e.Skill is { } sk)
+            item.Set("skill", sk.Species.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)).Set("skillName", sk.Species.Name).Set("anim", sk.Frame.Anim)
+                .Set("frame", sk.Frame.Index).Set("facing", sk.Frame.Facing > 0 ? "R" : "L").Set("score", D2(sk.Score)).Set("agree", new[] { sk.Matches, sk.Compared });
         item.Set("found", Found(e.Found));
         if (e.Drop is { } d)
-            item.Set("item", d.ItemId).Set("category", d.IsMeso ? "meso" : d.Category).Set("score", D2(d.Score)).Set("evidence", "matched").Set("agree", new[] { d.Matches, d.Compared });
+            item.Set("item", d.ItemId).Set("category", d.IsMeso ? "meso" : d.Category).Set("score", D2(d.Score)).Set("evidence", "matched").Set("agree", new[] { d.Matches, d.Compared })
+                .Set("frame", d.IsMeso ? d.IconFrame : null).Set("anchor", d.Anchor is { } an ? P(an) : null);
+        if (e.InFlight) item.Set("inFlight", true);
         else if (e.Kind == EntityKind.Drop) item.Set("evidence", "unverified");
         if (e.Damage is { } dm)
             item.Set("value", dm.Value).Set("digits", dm.Digits).Set("direction", dm.DirectionText).Set("critical", dm.Critical ? true : null)
                 .Set("set", dm.Family).Set("complete", dm.Complete).Set("score", D2(dm.Score)).Set("alpha", D2(dm.Alpha));
         item.Set("world", P(e.World)).Set("foothold", e.FootholdId).Set("surface", e.FootholdDistance is { } fd ? Rd(fd, 1) : null)
             .Set("age", e.Age).Set("confidence", D2(e.Confidence)).Set("velocity", P(e.Velocity)).Set("pixels", e.Pixels > 0 ? e.Pixels : null)
-            .Set("hpBar", e.HpBar ? true : null);
+            .Set("hpBar", e.HpBar ? true : null).Set("hpFill", e.HpFill is { } hf ? Rd(hf, 3) : null);
         item.Set("label", OverlayLabels.Entity(item));
         return item;
     }

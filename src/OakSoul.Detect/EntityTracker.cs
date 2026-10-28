@@ -39,6 +39,21 @@ public sealed class Candidate
 
     /// <summary>The track whose prediction this candidate verified (its own species' sprite at its predicted place): association takes that track first.</summary>
     public int? PredictedTrack { get; set; }
+
+    /// <summary>Milliseconds the species search and the foothold search under the blob spent on this candidate (for the cost of what each kind triggers).</summary>
+    public double SearchMs { get; set; }
+
+    /// <summary>The own pet's sprite, matched exactly (the candidate is then the pet, whatever its tag says).</summary>
+    public SpriteMatch? PetSprite { get; set; }
+
+    /// <summary>The tag at the pet's tag position reads a piece of the pet's name (a fragment of a tag run into another): it is the pet's.</summary>
+    public bool PetTag { get; set; }
+
+    /// <summary>One of the own character's skill effects, matched exactly (the candidate is then an effect named by the skill).</summary>
+    public SpriteMatch? Skill { get; set; }
+
+    /// <summary>A drop popping out of a killed mob, matched or followed in the air before it lands.</summary>
+    public bool InFlight { get; set; }
 }
 
 /// <summary>
@@ -165,6 +180,39 @@ public sealed class EntityTracker
     /// </summary>
     public Func<int, int>? SpeciesCap { get; set; }
 
+    /// <summary>A new match under this score covered by another mob's much better one is that mob's (see <see cref="OneTrackPerMob"/>).</summary>
+    public const double WeakDuplicateScore = 0.5;
+
+    /// <summary>A search match under this score that names another pose than the track's exact one of the last <see cref="FlickerSeconds"/> is a flicker (see <see cref="Update"/>).</summary>
+    public const double WeakPoseScore = 0.6, ConvincingPose = 0.9, FlickerSeconds = 0.1;
+
+    /// <summary>Weak matches of another pose held as the track's last pose, since construction.</summary>
+    public int PoseFlickers { get; private set; }
+
+    /// <summary>Whether every species of the map stands on footholds (none flies): an unverified mob off any foothold is then not shown as a mob.</summary>
+    public bool FloorBound { get; set; }
+
+    /// <summary>Unverified mob detections off any foothold shown as unknown (<see cref="FloorBound"/>), since construction.</summary>
+    public int OffFootholdUnverified { get; private set; }
+
+    /// <summary>
+    /// Candidates bound to the live track of their mob instead of starting another (a match no association took), tags handed to
+    /// the mob they name, and weak identities that started no track, since construction.
+    /// </summary>
+    public int Rebound { get; private set; }
+
+    /// <summary>A track is retired as a duplicate only while it is young (matched at most this often) and the track verified on its mob is older.</summary>
+    public const int DuplicateSightings = 3;
+    public const double DuplicateSeconds = 0.15;
+
+    /// <summary>A track carried this long without a match of its own is a ghost when an older track of its species is verified within a body of it.</summary>
+    public const double GhostSeconds = 0.5, GhostSeenSeconds = 0.3;
+
+    /// <summary>Tracks retired as the duplicate of a mob another track of its species verified, since construction.</summary>
+    public int Retired { get; private set; }
+    public int TagsHanded { get; private set; }
+    public int WeakIdentities { get; private set; }
+
     /// <summary>Carried identities left out by <see cref="SpeciesCap"/> since construction.</summary>
     public int CappedIdentities { get; private set; }
 
@@ -192,12 +240,19 @@ public sealed class EntityTracker
     public sealed record LiveTrack(int TrackId, SpriteMatch Last, PointD LastWorld, double LastMatchTime, double LastSeenTime, PointD Velocity, int? Floor,
         bool Dead, double DeathTime, double HitTime, int Verified);
 
+    /// <summary>A live meso track for the coin pass: its last match (with the coin's anchor) and when it was seen.</summary>
+    public sealed record LiveCoin(int TrackId, DropMatch Last, double LastSeenTime);
+
+    /// <summary>The drop tracks whose meso coin matched with a known anchor, seen within <paramref name="memory"/> seconds.</summary>
+    public List<LiveCoin> LiveCoins(double time, double memory) =>
+        _tracks.Where(t => t.Drop is { IsMeso: true, AnchorWorld: not null } && time - t.LastTime <= memory).Select(t => new LiveCoin(t.Id, t.Drop!, t.LastTime)).ToList();
+
     /// <summary>
     /// The identified mob tracks whose sprite matched within <paramref name="memory"/> seconds (the pet excluded; a dead track
     /// only while its die pose may still show), most verified first.
     /// </summary>
     public List<LiveTrack> Live(double time, double memory) =>
-        _tracks.Where(t => !t.IsPet && t.MobId is not null && t.LastSprite is not null && time - t.LastMatchTime <= memory && (!t.Dead || time - t.DeathTime <= DeathHoldSeconds))
+        _tracks.Where(t => !t.IsPet && !t.Retired && t.MobId is not null && t.LastSprite is not null && time - t.LastMatchTime <= memory && (!t.Dead || time - t.DeathTime <= DeathHoldSeconds))
             .OrderByDescending(t => t.Verified).ThenBy(t => t.Id)
             .Select(t => new LiveTrack(t.Id, t.LastSprite!.Value, t.LastMatchWorld, t.LastMatchTime, t.LastTime, Velocity(t), t.Floor, t.Dead, t.DeathTime, t.HitTime, t.Verified))
             .ToList();
@@ -217,6 +272,7 @@ public sealed class EntityTracker
         public string? Tag, Name;
         public readonly Dictionary<string, int> NameVotes = new(StringComparer.OrdinalIgnoreCase);
         public int? Level;
+        public readonly Dictionary<int, int> LevelVotes = [];
         public int TaggedFrames;
         public byte[]? Thumb;
         public double LastAppearance = double.NaN;
@@ -246,6 +302,8 @@ public sealed class EntityTracker
         public long SeenUpdate;
         public bool IsPet;
         public DamageMatch? Damage;
+        /// <summary>A duplicate of another track's mob (see <see cref="OneTrackPerMob"/>): forgotten at the end of the frame, never continued.</summary>
+        public bool Retired;
     }
 
     /// <summary>The track a candidate most likely continues (the nearest predicted position within the gate), or null.</summary>
@@ -255,7 +313,7 @@ public sealed class EntityTracker
         var bestD = double.MaxValue;
         foreach (var tr in _tracks)
         {
-            if (tr.IsPet || tr.Dead) continue;
+            if (tr.IsPet || tr.Dead || tr.Retired) continue;
             var dt = Math.Max(0.01, time - tr.LastTime);
             if (dt > (tr.MobId is not null ? IdentifiedMemorySeconds : MaxMissedSeconds)) continue;
             var d = Predicted(tr, time).DistanceTo(cand.World);
@@ -277,9 +335,14 @@ public sealed class EntityTracker
     /// The association gate after <paramref name="dt"/> seconds: <see cref="GateBase"/> plus motion, at most
     /// <see cref="MaxMissedSeconds"/> worth of it at full speed; beyond that (identified tracks only) half speed.
     /// </summary>
+    /// <summary>A drop's first seconds, in which it may fly in an arc (world units per second the gate then allows).</summary>
+    public const double DropFlightSeconds = 2, DropFlightPerSecond = 400;
+
     private static double Gate(Track tr, double dt)
     {
-        var speed = tr.Age >= 3 && tr.Moved == 0 ? StillPerSecond : GatePerSecond;
+        // A drop that just popped out of a killed mob flies in an arc before it lands.
+        var speed = tr.Drop is not null && tr.LastTime - tr.FirstTime <= DropFlightSeconds ? DropFlightPerSecond
+            : tr.Age >= 3 && tr.Moved == 0 ? StillPerSecond : GatePerSecond;
         return GateBase + speed * Math.Min(dt, MaxMissedSeconds) + speed / 2 * Math.Max(0, dt - MaxMissedSeconds);
     }
 
@@ -290,12 +353,15 @@ public sealed class EntityTracker
         var previousFull = _lastFull;
         // The pet: the one candidate under its tag continues the pet's one track, wherever it is; no other candidate does,
         // and that candidate continues no other track.
-        var petCandidate = -1;
+        // The pet's sprite, matched exactly, makes the pet whatever its tag says; else the one candidate under the pet's tag.
+        var petCandidate = candidates.FindIndex(c => c.PetSprite is not null);
         for (var c = 0; c < candidates.Count; c++)
         {
-            if (!Names.IsPetTag(candidates[c].Tag?.Text)) continue;
+            if (c == petCandidate || !Names.IsPetTag(candidates[c].Tag?.Text) && !candidates[c].PetTag) continue;
             if (petCandidate < 0) { petCandidate = c; continue; }
             PetDuplicates++;
+            // A tag of the pet away from the pet's sprite is another reading of its tag; it labels nothing else.
+            if (candidates[petCandidate].PetSprite is not null) { candidates[c].Tag = null; candidates[c].PetTag = false; continue; }
             // Of two, the one with a blob nearer where the pet was; the other loses the tag.
             var keep = candidates[c].Pixels > 0 && (candidates[petCandidate].Pixels == 0 || (_pet is { } pt && candidates[c].World.DistanceTo(pt.World) < candidates[petCandidate].World.DistanceTo(pt.World)));
             if (keep) { candidates[petCandidate].Tag = null; petCandidate = c; } else candidates[c].Tag = null;
@@ -307,7 +373,7 @@ public sealed class EntityTracker
         for (var t = 0; t < _tracks.Count; t++)
         {
             var tr = _tracks[t];
-            if (tr.IsPet) continue;
+            if (tr.IsPet || tr.Retired) continue;
             var dt = Math.Max(0.01, time - tr.LastTime);
             var predicted = Predicted(tr, time);
             // Something that has been standing still gets a tighter gate, so a static drop does not jump to a blob
@@ -390,6 +456,18 @@ public sealed class EntityTracker
             trackUsed[t] = true;
             candTrack[c] = t;
         }
+        if (OneTrackPerMob(candidates, candTrack, trackUsed, petCandidate, time) is { Count: > 0 } absorbed)
+        {
+            // Candidates that were another piece of a mob a track holds this frame (a fragment, its tag alone, a weak duplicate):
+            // they leave the frame, and the pet's index moves with the rest.
+            var pet = petCandidate >= 0 ? candidates[petCandidate] : null;
+            var keep = Enumerable.Range(0, candidates.Count).Where(i => !absorbed.Contains(i)).ToList();
+            var kept = keep.Select(i => candidates[i]).ToList();
+            candTrack = keep.Select(i => candTrack[i]).ToArray();
+            candidates.Clear();
+            candidates.AddRange(kept);
+            petCandidate = pet is null ? -1 : candidates.IndexOf(pet);
+        }
 
         var result = new List<DetectedEntity>(candidates.Count);
         for (var c = 0; c < candidates.Count; c++)
@@ -412,6 +490,15 @@ public sealed class EntityTracker
                 tr = new Track { Id = _nextId++, FirstFrame = frame, FirstTime = time, FirstWorld = cand.World, World = cand.World, MapId = MapId };
                 _tracks.Add(tr);
             }
+            // A weak match of another pose right after an exact one (the mob half hidden: the pet in front of a frozen Wild Boar on
+            // fx-combat-exact's continuity frames 747 and 748, stand/4 at 0.24, die1/0 at 0.52, between exact moves) keeps the
+            // track's identity and its last pose, shown as carried, instead of flickering.
+            if (cand.Sprite is { } ws && tr.LastSprite is { } prevPose && ws.Species.Id == tr.MobId && ws.Score < WeakPoseScore && prevPose.Score >= ConvincingPose
+                && time - tr.LastMatchTime <= FlickerSeconds && ws.Frame.Key != prevPose.Frame.Key && cand.PredictedTrack is null)
+            {
+                cand.Sprite = null;
+                PoseFlickers++;
+            }
             Observe(tr, cand, frame, time, sequence);
             MobIdentity? identity = null;
             if (tr.MobId is { } mobId && tr.LastSprite is { } last)
@@ -425,14 +512,25 @@ public sealed class EntityTracker
                 };
             }
             var dying = tr.Dead || (identity is { } idn && idn.Anim.StartsWith("die", StringComparison.Ordinal));
-            result.Add(new DetectedEntity(tr.Id, tr.Kind, tr.Confidence, cand.Box, cand.Feet, cand.World, cand.Foothold?.Foothold.Id,
+            var kind = tr.Kind;
+            // Every species of a floor-bound map stands on a foothold: a mob nothing verified that does not (a parallax cliff
+            // moving past, an effect in the air) is not shown as a mob.
+            if (kind == EntityKind.Mob && identity is null && cand.Sprite is null && FloorBound && !(cand.SurfaceDistance is { } sd0 && Math.Abs(sd0) <= OnFootholdUnits))
+            {
+                kind = EntityKind.Unknown;
+                OffFootholdUnverified++;
+            }
+            result.Add(new DetectedEntity(tr.Id, kind, tr.Confidence, cand.Box, cand.Feet, cand.World, cand.Foothold?.Foothold.Id,
                 cand.SurfaceDistance, cand.Tag?.Text, tr.Level, tr.IsPet ? Names.PetName : tr.Name ?? tr.MobName,
                 tr.Age, tr.FirstFrame, tr.FirstTime, Velocity(tr), cand.Pixels, cand.HpBar, identity, cand.Sprite, cand.Drop, cand.BoxSurfaceDistance)
             {
                 State = dying && identity is not null ? MobState.Dying : MobState.Alive,
                 Damage = cand.Damage,
                 Swept = cand.Swept,
-                Found = cand.Found,
+                Found = tr.IsPet && cand.PetSprite is null ? FoundBy.Tag : cand.Found,
+                PetMatch = cand.PetSprite,
+                Skill = cand.Skill,
+                InFlight = cand.InFlight,
             });
         }
         if (candidates.Count > 0) _lastFull = _update;
@@ -450,12 +548,159 @@ public sealed class EntityTracker
             var tr = _tracks[t];
             if (tr.IsPet) continue;
             var memory = tr.Dead ? DeathHoldSeconds : tr.MobId is not null && tr.Verified >= IdentifiedSightings ? IdentifiedMemorySeconds : MaxMissedSeconds;
-            if (time - tr.LastTime <= memory) continue;
+            if (time - tr.LastTime <= memory && !tr.Retired) continue;
             Finished.Add(Summarize(tr));
             _tracks.RemoveAt(t);
         }
         return result;
     }
+
+    /// <summary>
+    /// One mob, one track, after the greedy association. A candidate whose sprite matched a species that no track took continues
+    /// the live track of that species standing on the same mob (its last feet within the body's half width plus
+    /// <see cref="OwnerSlack"/>) rather than starting a second one: a rule had refused the pair, or the track had gone to a piece of
+    /// the mob nothing verified, which then leaves the frame when it lies on the matched frame. A search identity below the
+    /// matcher's threshold (a recolour's score at a contest's placement) starts no track: it loses its sprite, and leaves the frame
+    /// when another mob's frame covers it. A tagged piece with no sprite whose tag names a species (or carries a level badge)
+    /// standing on a live track of a mob hands its tag to that mob's candidate and leaves the frame, or continues the track when
+    /// nothing else did. Returns the candidates that leave the frame.
+    /// </summary>
+    private HashSet<int> OneTrackPerMob(List<Candidate> candidates, int[] candTrack, bool[] trackUsed, int petCandidate, double time)
+    {
+        var absorbed = new HashSet<int>();
+        int AssignedTo(int t) => Array.IndexOf(candTrack, t);
+        int Owner(Candidate cand, int? species, bool requireFree, double slack = OwnerSlack)
+        {
+            var owner = -1;
+            var bestD = double.MaxValue;
+            for (var t = 0; t < _tracks.Count; t++)
+            {
+                var tr = _tracks[t];
+                if (tr.IsPet || tr.MobId is null || tr.Dead || tr.LastSprite is not { } ls || time - tr.LastTime > MaxMissedSeconds) continue;
+                if (species is { } sp && tr.MobId != sp) continue;
+                var (l, _, r, _) = ls.Frame.Body;
+                double dx = Math.Abs(tr.World.X - cand.World.X), dy = Math.Abs(tr.World.Y - cand.World.Y);
+                if (dx > (r - l) / 2.0 + slack || dy > OwnerSlackY) continue;
+                if (requireFree && trackUsed[t] && AssignedTo(t) is var a and >= 0 && candidates[a].Sprite is { } os && os.Species.Id == tr.MobId) continue;
+                // A tag goes to a mob that is here: a track not matched for a while and not taken this frame is not revived by a tag.
+                if (!requireFree && !trackUsed[t] && time - tr.LastMatchTime > GhostSeconds) continue;
+                if (dx < bestD) { bestD = dx; owner = t; }
+            }
+            return owner;
+        }
+        for (var c = 0; c < candidates.Count; c++)
+        {
+            // A match that went to a track nobody's identity (a blob's track from before it was matched) counts as unassigned here.
+            if (candTrack[c] >= 0 && _tracks[candTrack[c]].MobId is not null || c == petCandidate || candidates[c].Sprite is not { } sp || candidates[c].PetSprite is not null) continue;
+            var cand = candidates[c];
+            // A weak match lying on another mob a track holds with a much better match (the ladder stump's leftover pixels matched as a
+            // Dark Stump at 0.21 beside its Dark Axe Stump at 1.00, continuity 737) is that mob's, not a second one.
+            if (sp.Score < WeakDuplicateScore && candidates.Where((o, i) => i != c && candTrack[i] >= 0 && o.Sprite is { } os && os.Score >= sp.Score + 0.3).Any(o => Covers(o.Sprite!.Value, cand.Box) >= 0.5))
+            {
+                absorbed.Add(c);
+                WeakIdentities++;
+                continue;
+            }
+            if (sp.Score < SpriteMatcher.Threshold && cand.PredictedTrack is null)
+            {
+                cand.Sprite = null;
+                WeakIdentities++;
+                if (candidates.Where((o, i) => i != c && o.Sprite is { } os && os.Score >= SpriteMatcher.Threshold).Any(o => Covers(o.Sprite!.Value, cand.Box) >= 0.5)) absorbed.Add(c);
+                continue;
+            }
+            if (Owner(cand, sp.Species.Id, requireFree: true) is not (var owner and >= 0)) continue;
+            if (candTrack[c] >= 0) trackUsed[candTrack[c]] = false;
+            if (trackUsed[owner] && AssignedTo(owner) is var prev and >= 0)
+            {
+                candTrack[prev] = -1;
+                if (candidates[prev].Sprite is null && candidates[prev].Damage is null && candidates[prev].Drop is null && Covers(sp, candidates[prev].Box) >= 0.5)
+                {
+                    absorbed.Add(prev);
+                    if (candidates[prev].Tag is { } pt && cand.Tag is null && !Names.IsCharacterTag(pt.Text)) cand.Tag = pt;
+                }
+            }
+            trackUsed[owner] = true;
+            candTrack[c] = owner;
+            Rebound++;
+        }
+        // Two tracks on one mob: a young track that nothing verified this frame, standing where an older track of its species was
+        // verified (within half its body), is that mob's duplicate (a track born while a knock-back took the mob out of its own track's reach, on fx-combat-exact's
+        // frame 728, lived on as a carried identity on the mob's fragments and took its kill). It is retired, and the piece of the
+        // mob it was carried on leaves the frame.
+        for (var t = 0; t < _tracks.Count; t++)
+        {
+            var tr = _tracks[t];
+            if (tr.IsPet || tr.MobId is not { } sid || tr.LastSprite is not { } ls || tr.Retired) continue;
+            var mine = AssignedTo(t);
+            if (mine >= 0 && candidates[mine].Sprite is { } ms && ms.Species.Id == sid) continue;
+            // Only a track seen a moment ago can be another track's mob: on keyframes half a second apart a mob of the species may
+            // simply have walked to where the young track's own mob was.
+            var ghost = time - tr.LastMatchTime > GhostSeconds && time - tr.LastTime <= GhostSeenSeconds;
+            if (time - tr.LastTime > DuplicateSeconds && !ghost) continue;
+            var (l, _, r, _) = ls.Frame.Body;
+            // A young track within half a body of an older verified one; or any track only carried for a while (on the mob's fragments,
+            // its last match long gone, last seen a moment ago) within a body of a verified one.
+            var reach = ghost ? r - l + OwnerSlack : (r - l) / 2.0;
+            var holder = -1;
+            for (var c = 0; c < candidates.Count && holder < 0; c++)
+                if (c != mine && candTrack[c] >= 0 && candTrack[c] != t && candidates[c].Sprite is { } cs && cs.Species.Id == sid
+                    && (ghost || _tracks[candTrack[c]].FirstTime < tr.FirstTime && tr.Verified <= DuplicateSightings) && Math.Abs(candidates[c].World.X - tr.World.X) <= reach
+                    && Math.Abs(candidates[c].World.Y - tr.World.Y) <= OwnerSlackY) holder = c;
+            if (holder < 0) continue;
+            tr.Retired = true;
+            Retired++;
+            if (mine < 0) continue;
+            trackUsed[t] = false;
+            candTrack[mine] = -1;
+            if (candidates[mine].Sprite is null && candidates[mine].Damage is null && candidates[mine].Drop is null && Covers(candidates[holder].Sprite!.Value, candidates[mine].Box) >= 0.5)
+                absorbed.Add(mine);
+        }
+        // A tag belongs to one entity: a mob's tag on a piece of the mob goes to the mob.
+        for (var c = 0; c < candidates.Count; c++)
+        {
+            var cand = candidates[c];
+            // A piece on a track of its own counts too, as long as that track is nobody's identity (a mob's tag on a fragment).
+            if (candTrack[c] >= 0 && _tracks[candTrack[c]].MobId is not null) continue;
+            if (absorbed.Contains(c) || c == petCandidate || cand.Sprite is not null || cand.Tag?.Text is not { } text || Names.IsCharacterTag(text)) continue;
+            var (level, _) = TagDetector.Parse(Names.Strip(text));
+            var named = TagSpecies?.Invoke(Names.Strip(text));
+            if (level is null && named is not { Count: > 0 }) continue;
+            if (Owner(cand, named is { Count: 1 } ? named.First() : null, requireFree: false, TagOwnerSlack) is not (var owner and >= 0)) continue;
+            if (trackUsed[owner] && AssignedTo(owner) is var holder and >= 0)
+            {
+                if (holder == c) continue;
+                if (candidates[holder].Tag is null) candidates[holder].Tag = cand.Tag;
+                if (candTrack[c] >= 0) trackUsed[candTrack[c]] = false;
+                candTrack[c] = -1;
+                absorbed.Add(c);
+            }
+            else
+            {
+                if (candTrack[c] >= 0) trackUsed[candTrack[c]] = false;
+                trackUsed[owner] = true;
+                candTrack[c] = owner;
+            }
+            TagsHanded++;
+        }
+        return absorbed;
+    }
+
+    /// <summary>The share of a box that a match's visible extent covers.</summary>
+    private static double Covers(SpriteMatch m, CaptureRect box)
+    {
+        int x0 = Math.Max(box.X, m.Left + m.Frame.X0), x1 = Math.Min(box.X + box.Width - 1, m.Left + m.Frame.X1);
+        int y0 = Math.Max(box.Y, m.Top + m.Frame.Y0), y1 = Math.Min(box.Y + box.Height - 1, m.Top + m.Frame.Y1);
+        return x1 < x0 || y1 < y0 ? 0 : (double)(x1 - x0 + 1) * (y1 - y0 + 1) / Math.Max(1, box.Width * box.Height);
+    }
+
+    /// <summary>Slack in world units around a track's body half width (and up and down) within which a candidate stands on that track's mob.</summary>
+    public const double OwnerSlack = 12, OwnerSlackY = 24;
+
+    /// <summary>
+    /// The same for a tag's piece: a tag is centred on its mob, so a piece of it (the badge alone, "Lv. 2" of the frozen Wild Boar's
+    /// tag on fx-combat-exact's frame 755, the rest under the pet's) can stand half a tag's width to its side.
+    /// </summary>
+    public const double TagOwnerSlack = 60;
 
     /// <summary>
     /// Two tag reads name the same thing: equal, a few letters apart (<see cref="TagNames.SameName"/>), or naming the same
@@ -522,7 +767,7 @@ public sealed class EntityTracker
     /// </summary>
     public int? Kill(int speciesId, PointD? own, double time)
     {
-        var pick = _tracks.Where(t => !t.Dead && !t.IsPet && t.MobId == speciesId && time - t.LastTime <= MaxMissedSeconds)
+        var pick = _tracks.Where(t => !t.Dead && !t.IsPet && !t.Retired && t.MobId == speciesId && time - t.LastTime <= MaxMissedSeconds)
             .OrderByDescending(t => t.LastSprite is { } ls && (ls.Frame.Anim.StartsWith("hit", StringComparison.Ordinal) || ls.Frame.Anim.StartsWith("die", StringComparison.Ordinal)) || time - t.HitTime <= HitMemorySeconds)
             .ThenBy(t => own is { } o ? t.World.DistanceTo(o) : 0).FirstOrDefault();
         if (pick is null) { KillsUnmatched++; return null; }
@@ -606,7 +851,9 @@ public sealed class EntityTracker
             if (level is { } lv and > 0 && name is not null)
             {
                 Names.SawMob(name, lv);
-                tr.Level = lv;
+                // The level the badges read most often: a badge half under another tag reads short ("5 Wild Boar" for Lv. 25).
+                tr.LevelVotes[lv] = tr.LevelVotes.GetValueOrDefault(lv) + 1;
+                tr.Level = tr.LevelVotes.MaxBy(v => v.Value).Key;
                 vote = Names.MatchMob(name, lv) ?? name;
             }
             else if (level is not null)
@@ -651,6 +898,7 @@ public sealed class EntityTracker
         // The pet is the one candidate under its tag, on the pet's one track; the own name's tag outside the own box is a player's.
         if (tr.IsPet) return (EntityKind.Pet, 0.95);
         if (c.Damage is not null) return (EntityKind.Damage, 0.97);
+        if (c.Skill is not null) return (EntityKind.Effect, 0.95);
         if (Names.IsCharacterTag(c.Tag?.Text)) return Names.IsPet(TagDetector.Parse(c.Tag!.Text).Name) ? (EntityKind.Unknown, 0.4) : (EntityKind.Player, 0.9);
         // A sprite of a mob that spawns here, matched now or before, is decisive; so is a drop's icon.
         if (c.Sprite is not null) return (EntityKind.Mob, 0.97);

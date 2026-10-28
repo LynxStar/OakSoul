@@ -43,6 +43,13 @@ public static class OverlayLabels
         }
         if (e.Kind == "drop")
             return e.Str("item") is { } item ? $"#{track} {(e.Str("category") == "meso" ? "meso" : "item")} {item} {(e.Double("score") ?? 0).ToString("0.00", CultureInfo.InvariantCulture)}" : $"#{track} Drop?";
+        if (e.Kind == "drop" && e.Bool("inFlight") && e.Str("item") is { } flying)
+            return $"#{track} {(e.Str("category") == "meso" ? "meso" : "item")} {flying} {(e.Double("score") ?? 0).ToString("0.00", CultureInfo.InvariantCulture)} in flight";
+        if (e.Kind == "pet" && e.Str("speciesName") is { } species)
+            return $"#{track} Pet {e.Str("name")} ({species}) {e.Str("anim")}/{e.Long("frame")} {e.Str("facing")} {(e.Double("score") ?? 0).ToString("0.00", CultureInfo.InvariantCulture)}{FoundMark(e)}";
+        if (e.Kind == "effect" && e.Str("skillName") is { } skill)
+            return $"#{track} Effect {skill} {e.Str("anim")}/{e.Long("frame")} {(e.Double("score") ?? 0).ToString("0.00", CultureInfo.InvariantCulture)}";
+        if (e.Kind == "hpbar") return e.Str("label") ?? "HP";
         if (e.Kind == "damage")
             return $"#{track} dmg {(e.Bool("complete") ? "" : "?")}{e.Str("digits")} {e.Str("direction")}{(e.Bool("critical") ? " crit" : "")}" +
                    $"{(e.Double("alpha") is { } a && a < 0.95 ? $" fading {a.ToString("0.00", CultureInfo.InvariantCulture)}" : "")}";

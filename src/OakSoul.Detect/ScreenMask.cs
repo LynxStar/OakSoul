@@ -28,14 +28,16 @@ public sealed class ScreenMask
 
     private readonly byte[] _fixed;
 
-    public ScreenMask(HudLayout layout)
+    /// <param name="unmasked">Fixed regions left in the world: the detector leaves the EXP and loot log in, and takes only its text
+    /// out of the foreground (a mob walking behind the log is drawn over by the text, not hidden: see EntityDetector.ClearLogText).</param>
+    public ScreenMask(HudLayout layout, IReadOnlyCollection<string>? unmasked = null)
     {
         var viewport = layout["world.viewport"].Rect;
         Viewport = viewport;
         _fixed = new byte[viewport.Width * viewport.Height];
         Bits = new byte[_fixed.Length];
         foreach (var name in FixedHudRegions)
-            if (layout.TryGet(name, out var region)) Fill(_fixed, region.Rect, 2);
+            if (unmasked?.Contains(name) != true && layout.TryGet(name, out var region)) Fill(_fixed, region.Rect, 2);
         Fill(_fixed, ChatBarTop, 0);
         Reset();
     }

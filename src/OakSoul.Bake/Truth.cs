@@ -19,6 +19,12 @@ namespace OakSoul.Bake;
 /// also satisfy every other condition given: <c>nameEndsWith</c>, <c>nameContains</c>, <c>state</c>, <c>direction</c>,
 /// <c>covers</c> points its rect contains, <c>excludes</c> points it does not), <c>notKind</c> (no entity of these kinds
 /// there), <c>none</c> (no entity at all there) and <c>self</c> (the own character's box contains the place's centre).
+/// Since review 2 also: <c>name</c> (the entity's name, exactly), <c>fields</c> (an object of field values the entity must
+/// have, exactly: <c>{"skillName":"Cold Beam"}</c>), <c>fieldsNot</c> (values it must not have: <c>{"state":"dying"}</c>),
+/// <c>range</c> (numeric fields within [min, max]: <c>{"fill":[0.5,0.65]}</c>), <c>count</c> (exactly this many entities
+/// of the kind, satisfying the conditions, at the place: one mob, one track), <c>minCount</c> (at least this many) and
+/// <c>hudKind</c> (a HUD item of that kind, the cursor, at the place). An entry whose frame is not in the stream because the
+/// stream cannot hold it (a video-only sequence against the keyframe stream, a keyframe the video left out) reports n/a.
 /// </summary>
 public static class Truth
 {
@@ -32,7 +38,9 @@ public static class Truth
         if (!File.Exists(streamPath)) throw new BakeException($"no stream at {streamPath}; run: regenerate {session.Name}{(o.Video ? " --video" : "")}");
         var stream = OverlayStream.Load(streamPath);
         var frames = stream.Frames.Where(f => !f.Filled).GroupBy(f => f.Sequence).ToDictionary(g => g.Key, g => g.First());
-        int pass = 0, fail = 0, missing = 0, other = 0, lineNo = 0;
+        int pass = 0, fail = 0, missing = 0, other = 0, lineNo = 0, notApplicable = 0;
+        var replay = stream.Header.Replay;
+        var recording = Path.Combine(session.Recording, "keyframes");
         Console.WriteLine($"truth {path} against {streamPath}");
         foreach (var line in File.ReadLines(path))
         {
@@ -46,6 +54,13 @@ public static class Truth
             var place = Place(e);
             if (!frames.TryGetValue(seq, out var frame))
             {
+                // A keyframe stream holds only the keyframes: an entry about a frame between them does not apply to it.
+                if (replay == "keyframes" && !File.Exists(Path.Combine(recording, $"{seq:D7}.png")))
+                {
+                    notApplicable++;
+                    Console.WriteLine($"  n/a  {id}  seq {seq:D7}: not a keyframe (video only)");
+                    continue;
+                }
                 missing++;
                 fail++;
                 Console.WriteLine($"  FAIL {id}  seq {seq:D7}: the frame is not in the stream");
@@ -55,7 +70,7 @@ public static class Truth
             if (ok) pass++; else fail++;
             Console.WriteLine($"  {(ok ? "PASS" : "FAIL")} {id}  seq {seq:D7} {place.Text}: {why}");
         }
-        Console.WriteLine($"truth: {pass + fail} entries, {pass} pass, {fail} fail{(missing > 0 ? $" ({missing} frames not in the stream)" : "")}{(other > 0 ? $"; {other} entries of other sessions skipped" : "")}");
+        Console.WriteLine($"truth: {pass + fail + notApplicable} entries, {pass} pass, {fail} fail{(notApplicable > 0 ? $", {notApplicable} n/a (not in a {replay} stream)" : "")}{(missing > 0 ? $" ({missing} frames not in the stream)" : "")}{(other > 0 ? $"; {other} entries of other sessions skipped" : "")}");
         return fail == 0 ? 0 : 1;
     }
 
@@ -102,12 +117,24 @@ public static class Truth
             var good = at.Where(i => i.Kind == kind).Where(i =>
                 (S("nameEndsWith") is not { } end || (i.Str("name") ?? "").EndsWith(end, StringComparison.OrdinalIgnoreCase)) &&
                 (S("nameContains") is not { } part || (i.Str("name") ?? "").Contains(part, StringComparison.OrdinalIgnoreCase)) &&
+                (S("name") is not { } exact || string.Equals(i.Str("name"), exact, StringComparison.OrdinalIgnoreCase)) &&
                 (S("state") is not { } state || i.Str("state") == state) &&
                 (S("direction") is not { } dir || i.Str("direction") == dir) &&
+                (!expect.TryGetProperty("fields", out var fields) || fields.EnumerateObject().All(f => FieldIs(i, f))) &&
+                (!expect.TryGetProperty("fieldsNot", out var fieldsNot) || fieldsNot.EnumerateObject().All(f => !FieldIs(i, f))) &&
+                (!expect.TryGetProperty("range", out var range) || range.EnumerateObject().All(f => i.Double(f.Name) is { } v && v >= f.Value[0].GetDouble() && v <= f.Value[1].GetDouble())) &&
                 (!expect.TryGetProperty("covers", out var cov) || cov.EnumerateArray().All(p => Contains(i, p))) &&
                 (!expect.TryGetProperty("excludes", out var exc) || exc.EnumerateArray().All(p => !Contains(i, p)))).ToList();
             if (good.Count == 0) problems.Add($"no {kind}{Conditions(expect)} here");
-            else matched = Describe(good[0]);
+            else matched = good.Count == 1 ? Describe(good[0]) : string.Join(", ", good.Select(Describe));
+            if (expect.TryGetProperty("count", out var count) && good.Count != count.GetInt32()) problems.Add($"{good.Count} {kind}{Conditions(expect)} here, expected {count.GetInt32()}");
+            if (expect.TryGetProperty("minCount", out var minCount) && good.Count < minCount.GetInt32()) problems.Add($"{good.Count} {kind}{Conditions(expect)} here, expected at least {minCount.GetInt32()}");
+        }
+        if (S("hudKind") is { } hudKind)
+        {
+            var hud = frame.Layer(OverlayLayers.Hud).Where(i => i.Kind == hudKind && At(i, place)).ToList();
+            if (hud.Count == 0) problems.Add($"no {hudKind} in the hud layer here");
+            else matched = (matched is null ? "" : matched + "; ") + $"hud {hudKind} '{hud[0].Label}' {(hud[0].Rect is { } hr ? $"{hr.X},{hr.Y},{hr.W},{hr.H}" : "")}";
         }
         if (expect.TryGetProperty("notKind", out var nk))
         {
@@ -127,11 +154,23 @@ public static class Truth
         return (true, matched ?? (at.Count == 0 ? "nothing here, as expected" : $"here: {string.Join(", ", at.Select(Describe))}"));
     }
 
+    /// <summary>Whether an item's field has the value a truth entry gives (a string, number or bool).</summary>
+    private static bool FieldIs(OverlayItem i, JsonProperty f) => f.Value.ValueKind switch
+    {
+        JsonValueKind.String => i.Str(f.Name) == f.Value.GetString(),
+        JsonValueKind.Number => i.Double(f.Name) is { } v && Math.Abs(v - f.Value.GetDouble()) < 1e-9,
+        JsonValueKind.True => i.Bool(f.Name),
+        JsonValueKind.False => !i.Bool(f.Name),
+        _ => false,
+    };
+
     private static string Conditions(JsonElement expect)
     {
         var parts = new List<string>();
-        foreach (var name in new[] { "nameEndsWith", "nameContains", "state", "direction" })
+        foreach (var name in new[] { "name", "nameEndsWith", "nameContains", "state", "direction" })
             if (expect.TryGetProperty(name, out var v)) parts.Add($"{name} {v.GetString()}");
+        foreach (var name in new[] { "fields", "fieldsNot", "range" })
+            if (expect.TryGetProperty(name, out var v)) parts.Add($"{name} {v.GetRawText()}");
         if (expect.TryGetProperty("covers", out var c)) parts.Add($"covering {string.Join(" ", c.EnumerateArray().Select(p => $"{p[0]},{p[1]}"))}");
         if (expect.TryGetProperty("excludes", out var x)) parts.Add($"not covering {string.Join(" ", x.EnumerateArray().Select(p => $"{p[0]},{p[1]}"))}");
         return parts.Count == 0 ? "" : " (" + string.Join(", ", parts) + ")";

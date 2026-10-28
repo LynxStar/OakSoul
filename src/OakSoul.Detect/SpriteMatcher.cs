@@ -260,6 +260,9 @@ public sealed class SpriteMatcher
 
     private readonly ScreenPatch _patch = new();
 
+    /// <summary>The prepared screen patch, for comparisons the detector makes on the same pixels (the species contest's telling pixels).</summary>
+    internal ScreenPatch Patch => _patch;
+
     /// <summary>
     /// Screen pixels the temporal pass's verified predictions explain (viewport coordinates, the screen mask's layout, non-zero
     /// where explained), or null. Patches prepared while it is set leave them out like masked pixels, so the full search that

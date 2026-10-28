@@ -61,6 +61,7 @@ public static class EntityReport
         CameraFeedback(o, watch, rows);
         Review(o, watch, rows, done, detectors);
         Temporal(o, done, detectors);
+        Review2(o, watch, done, detectors);
         Cost(o, done, detectors);
     }
 
@@ -123,10 +124,43 @@ public static class EntityReport
         var mobs = all.Where(e => e.Kind == EntityKind.Mob && e.Identity is not null).ToList();
         o.WriteLine($"  hitboxes: {mobs.Count(e => e.Hitbox is not null)} identified mob detections, {mobs.Count(e => e.HitboxFromClient)} from the client's lt/rb, {mobs.Count(e => e.Hitbox is not null && !e.HitboxFromClient)} from the sprite extent (frames without lt/rb);" +
                     $" carried identities {mobs.Count(e => !e.Identity!.Verified)}, carried for median {Pct(mobs.Where(e => !e.Identity!.Verified).Select(e => e.Identity!.CarriedFor).ToList(), 50):0.0} s, max {mobs.Where(e => !e.Identity!.Verified).Select(e => e.Identity!.CarriedFor).DefaultIfEmpty(0).Max():0.0} s");
+        var byKind = detectors.SelectMany(d => d.SearchByKind).GroupBy(k => k.Key).OrderByDescending(g => g.Sum(k => k.Value.Ms)).ToList();
+        o.WriteLine($"  species and foothold searches by the kind the candidate became (candidates, ms per frame): {string.Join(", ", byKind.Select(g => $"{g.Key.ToString().ToLowerInvariant()} {g.Sum(k => k.Value.Candidates)} {g.Sum(k => k.Value.Ms) / frames:0.00}"))}");
         o.WriteLine($"  associations refused: {(watch.Tracker.Refused.Count == 0 ? "none" : string.Join(", ", watch.Tracker.Refused.OrderByDescending(r => r.Value).Select(r => $"{r.Key} {r.Value}")))}");
         if (watch.Tracker.Names.PetMismatch is { } pm) o.WriteLine($"  pet check: {pm}");
     }
 
+
+    /// <summary>
+    /// What the second review round added: the pet tracked by its sprite, meso coins followed through their animation and drops
+    /// in the air, one track per mob, HP bars, the cursor, the log's text, the own skill effects and the finished tracks.
+    /// </summary>
+    private static void Review2(TextWriter o, EntityWatch watch, List<EntityWatch.Row> done, List<EntityDetector> detectors)
+    {
+        var frames = Math.Max(1, done.Count);
+        var all = done.SelectMany(r => r.Result.Entities).ToList();
+        var pets = all.Where(e => e.Kind == EntityKind.Pet).ToList();
+        o.WriteLine($"  pet: species {(watch.PetSpecies is { } ps ? $"{ps.Name} ({ps.Id}){(watch.PetIdentifiedNow is { } now ? $", identified in this session on frame {now.Sequence} at {now.Score:0.00}" : ", known at the start")}" : "not identified")};" +
+                    $" sightings {pets.Count}: by prediction {pets.Count(e => e.Found == FoundBy.Prediction)}, by the search {pets.Count(e => e.Found == FoundBy.Search)} (at its tag {detectors.Sum(d => d.PetAtTag)}, in a blob {detectors.Sum(d => d.PetInBlob)}), by its tag alone {pets.Count(e => e.Found == FoundBy.Tag)};" +
+                    $" with the tag read {pets.Count(e => e.Tag is not null)}; track ids {pets.Select(e => e.TrackId).Distinct().Count()};" +
+                    $" {detectors.Sum(d => d.PetMs) / frames:0.00} ms per frame (identification tries {detectors.Sum(d => d.PetIdentifyTries)}); tags reading a piece of its name taken as its {detectors.Sum(d => d.PetFragments)}");
+        var coins = all.Where(e => e.Drop is { IsMeso: true }).ToList();
+        o.WriteLine($"  meso coins: {coins.Select(e => e.TrackId).Distinct().Count()} tracks, {coins.Count} detections, {detectors.Sum(d => d.CoinsFollowed)} followed at their anchor through the animation ({detectors.Sum(d => d.CoinsLost)} not found there);" +
+                    $" frames {string.Join(", ", coins.GroupBy(e => e.Drop!.IconFrame).OrderBy(g => g.Key).Select(g => $"{g.Key}: {g.Count()}"))};" +
+                    $" drops matched in flight near a kill {detectors.Sum(d => d.DropsInFlight)}, beside the own character {detectors.Sum(d => d.DropsBesideOwn)}, in steam {detectors.Sum(d => d.DropsInSteam)}; coins found from a piece of them on a foothold {detectors.Sum(d => d.CoinPieces)}");
+        o.WriteLine($"  one track per mob: {watch.Tracker.Rebound} matches bound to their mob's live track instead of a new one, {watch.Tracker.Retired} duplicate tracks of a verified mob retired, {watch.Tracker.TagsHanded} tags handed to the mob they name," +
+                    $" {watch.Tracker.WeakIdentities} weak identities that started no track (under the threshold, or on another mob's better match), {watch.Tracker.PoseFlickers} weak poses held as the track's last;" +
+                    $" unverified mobs off any foothold shown as unknown {watch.Tracker.OffFootholdUnverified}");
+        var bars = done.SelectMany(r => r.Result.HpBars).ToList();
+        o.WriteLine($"  HP bars: {bars.Count} read ({bars.Count(b => b.Track is not null)} over a mob), fill colours {string.Join(", ", bars.GroupBy(b => b.Colour).Select(g => $"{g.Key} {g.Count()}"))}");
+        var cursor = done.Count(r => r.Result.Cursor is not null);
+        o.WriteLine($"  cursor: on {cursor} frames ({detectors.Sum(d => d.CursorAtLast)} at its last place, {detectors.Sum(d => d.CursorInBlob)} in a blob); log text pixels out of the foreground {detectors.Sum(d => d.LogTextPixels) / (double)frames:0} per frame");
+        var effects = all.Where(e => e.Skill is not null).ToList();
+        o.WriteLine($"  own skill effects: {effects.Count} recognised ({string.Join(", ", effects.GroupBy(e => $"{e.Skill!.Value.Species.Name} {e.Skill.Value.Frame.Anim}").OrderByDescending(g => g.Count()).Select(g => $"{g.Key} {g.Count()}"))});" +
+                    $" {detectors.Sum(d => d.EffectBlobsTried)} blobs tried, {detectors.Sum(d => d.EffectMs) / frames:0.00} ms per frame");
+        o.WriteLine($"  time per frame: HUD overlays {detectors.Sum(d => d.HudMs) / frames:0.00} ms (log text {detectors.Sum(d => d.LogMs) / frames:0.00}, HP bars {detectors.Sum(d => d.BarMs) / frames:0.00}, the rest the cursor), coins (followed, pieces) {detectors.Sum(d => d.CoinMs) / frames:0.00} ms, pet {detectors.Sum(d => d.PetMs) / frames:0.00} ms, own effects {detectors.Sum(d => d.EffectMs) / frames:0.00} ms, cut boxes aligned on an edge {detectors.Sum(d => d.CutAligned)} in {detectors.Sum(d => d.CutMs) / frames:0.00} ms");
+        o.WriteLine($"  look-alike shapes settled on their telling pixels {detectors.Sum(d => d.ShapeSettled)} ({detectors.Sum(d => d.ShapeChanged)} changed the winner); predictions not made for finished mobs {detectors.Sum(d => d.FinishedSkips)}");
+    }
 
     /// <summary>
     /// The temporal pass: how the mob sightings were found (a track's predicted pose verified, a transition verified, or the full

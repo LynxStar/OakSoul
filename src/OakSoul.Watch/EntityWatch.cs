@@ -40,9 +40,11 @@ public sealed class EntityWatch
     /// <param name="mobInfo">The mob data exported by OakSoul.MobExport --sprites (data/mobinfo), for sprite verification.</param>
     /// <param name="sprites">The sprites exported by OakSoul.SpriteExport --items (data/sprites), for drop icons.</param>
     /// <param name="diagnostics">Score every candidate against every species too, for the report's score distributions.</param>
+    /// <param name="character">The own character's name (the watcher's --name): the pet's identified species is kept per character.</param>
     public EntityWatch(HudLayout layout, string backgrounds, SessionTimes times, string? sheetDir, long? totalFrames,
-        string? mobInfo = null, string? sprites = null, bool diagnostics = false, string? petName = null)
+        string? mobInfo = null, string? sprites = null, bool diagnostics = false, string? petName = null, string? character = null, string? session = null)
     {
+        _session = session;
         _tracker.Names.PetName = petName;
         _layout = layout;
         _backgrounds = backgrounds;
@@ -54,6 +56,26 @@ public sealed class EntityWatch
         _damage = sprites is null ? null : DamageReader.Load(sprites);
         Console.WriteLine(_damage is null ? $"entities: no damage digits at {sprites}/effect (run OakSoul.SpriteExport --effects); damage numbers stay effects"
             : $"entities: damage digits {string.Join(", ", _damage.FamilyNames)} ({_damage.GlyphCount} glyphs) from {sprites}/effect");
+        if (sprites is not null)
+        {
+            _pets = petName is null ? null : SpriteSet.Pets(sprites);
+            _cursors = SpriteSet.Cursor(sprites);
+            _coins = SpriteSet.Mesos(sprites);
+            _skills = SpriteSet.SkillEffects(sprites);
+            Console.WriteLine($"entities: {(_pets is null ? "no pet frames" : $"{_pets.Groups.Count} pets' frames")}, {(_cursors is null ? "no cursor" : $"{_cursors.Groups.Count} cursor states")}, {(_coins is null ? "no coin frames" : $"{_coins.Groups.Count} meso coins")}," +
+                $" {(_skills is null ? "no skill effects" : $"{_skills.Groups.Count} skill effects ({string.Join(", ", _skills.Groups.Values.Select(g => g.Name).Distinct())})")} from {sprites}" +
+                (_pets is null && petName is not null ? " (run OakSoul.SpriteExport --pets --cursor --mesos --skill-effects JOBS)" : ""));
+            if (petName is not null && character is not null)
+            {
+                _petFile = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(sprites)) ?? ".", "pets", $"{character}.json");
+                if (LoadPet(_petFile, petName) is { } known && _pets?.Groups.TryGetValue(known.Id, out var species) == true)
+                {
+                    PetSpecies = species;
+                    Console.WriteLine($"pet      {petName} is a {species.Name} ({species.Id}), identified {known.When} (from {_petFile})");
+                }
+                else Console.WriteLine($"pet      {petName}: species not identified yet; it will be, by an exact match of the pets' frames under its tag");
+            }
+        }
         _times = times;
         _sheetDir = sheetDir;
         if (sheetDir is not null)
@@ -65,6 +87,41 @@ public sealed class EntityWatch
         _debugDir = Environment.GetEnvironmentVariable("OAKSOUL_DEBUG_DUMP");
         _debugFrames = (Environment.GetEnvironmentVariable("OAKSOUL_DEBUG_FRAMES") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries).Select(long.Parse).ToHashSet();
     }
+
+    private readonly SpriteSet? _pets, _cursors, _coins, _skills;
+    private readonly string? _petFile;
+
+    /// <summary>The pet's species: identified in an earlier session (kept per character next to the sprites) or in this one.</summary>
+    public MobSpecies? PetSpecies { get; private set; }
+
+    /// <summary>The capture sequence and score of this session's identification of the pet, when it happened in this session.</summary>
+    public (long Sequence, double Score)? PetIdentifiedNow { get; private set; }
+
+    private static (string Id, string When)? LoadPet(string path, string petName)
+    {
+        if (!File.Exists(path)) return null;
+        using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
+        var r = doc.RootElement;
+        if (r.GetProperty("pet").GetString() != petName) return null;
+        return (r.GetProperty("species").GetString() ?? "", r.TryGetProperty("identified", out var w) ? w.GetString() ?? "" : "");
+    }
+
+    /// <summary>Keeps the pet's identification for the character (data/pets/&lt;character&gt;.json), so later sessions know the species from their first frame.</summary>
+    private void PetIdentified(MobSpecies species, long sequence, SpriteMatch match, string stamp)
+    {
+        PetSpecies = species;
+        PetIdentifiedNow = (sequence, match.Score);
+        foreach (var d in Detectors) d.PetSpecies = species;
+        var when = $"on {_session ?? "a live capture"} frame {sequence} ({match.Frame.Key}, {match.Matches}/{match.Compared} pixels)";
+        Console.WriteLine($"{stamp}  pet      {_tracker.Names.PetName} is a {species.Name} ({species.Id}), identified {when}");
+        if (_petFile is null) return;
+        Directory.CreateDirectory(Path.GetDirectoryName(_petFile)!);
+        File.WriteAllText(_petFile, System.Text.Json.JsonSerializer.Serialize(new { pet = _tracker.Names.PetName, species = species.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), speciesName = species.Name, identified = when },
+            new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    private string _stamp = "";
+    private readonly string? _session;
 
     /// <summary>
     /// Per processed frame: the result plus what the report compares it with. <see cref="Own"/> is the own position
@@ -152,10 +209,13 @@ public sealed class EntityWatch
                 _detector = mosaic is null ? null : new EntityDetector(mosaic, _layout, _tracker, mobs, _drops, _damage)
                 {
                     SpriteDiagnostics = _diagnostics,
+                    Pets = _pets, Cursors = _cursors, Coins = _coins, SkillEffects = _skills, PetSpecies = PetSpecies,
+                    PetIdentified = (species, seq, m) => PetIdentified(species, seq, m, _stamp),
                     // OAKSOUL_TEMPORAL=off runs the full search alone on every frame; OAKSOUL_TEMPORAL_FULL_EVERY=N sets how often it runs.
                     Temporal = Environment.GetEnvironmentVariable("OAKSOUL_TEMPORAL") is not ("off" or "0"),
                     FullEvery = int.TryParse(Environment.GetEnvironmentVariable("OAKSOUL_TEMPORAL_FULL_EVERY"), out var every) && every > 0 ? every : EntityDetector.DefaultFullEvery,
                 };
+                _detector?.Prepare();
                 _detectors[mapId] = _detector;
                 Console.WriteLine(mosaic is null ? $"entities: no background for map {mapId} in {_backgrounds} (build it with --build-background)"
                     : $"entities: background {mapId} loaded from {_backgrounds} ({mosaic.Width}x{mosaic.Height}, {mosaic.Frames} frames)");
@@ -176,6 +236,7 @@ public sealed class EntityWatch
             frame.Sequence, status.ExpValue?.Total, frame.Pts);
         _sequences[frame.Index] = frame.Sequence;
         _detector.DebugDir = _debugDir is not null && _debugFrames.Contains(frame.Index) ? _debugDir : null;
+        _stamp = stamp;
         var result = _detector.Detect(frame.Pixels, frame.Width, ctx);
         LastResult = result;
         // Camera feedback: the registered camera is exact, so the own position follows from it and the tag.

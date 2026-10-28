@@ -29,6 +29,8 @@ public static class OverlayJson
             w.WriteStartArray("frame"); w.WriteNumberValue(h.FrameWidth); w.WriteNumberValue(h.FrameHeight); w.WriteEndArray();
             if (h.Name is not null) w.WriteString("name", h.Name);
             if (h.Pet is not null) w.WriteString("pet", h.Pet);
+            if (h.PetSpecies is not null) w.WriteString("petSpecies", h.PetSpecies);
+            if (h.PetSpeciesName is not null) w.WriteString("petSpeciesName", h.PetSpeciesName);
             w.WriteStartObject("thresholds");
             w.WriteNumber("sprite", h.SpriteThreshold);
             w.WriteNumber("drop", h.DropThreshold);
@@ -117,7 +119,8 @@ public static class OverlayJson
         double T(string name) => th.ValueKind == JsonValueKind.Object && th.TryGetProperty(name, out var v) ? v.GetDouble() : double.NaN;
         return new OverlayHeader(schema, S("producer") ?? "", S("commit"), S("session"), S("recording"), S("replay"), S("source") ?? "",
             frame[0].GetInt32(), frame[1].GetInt32(), S("name"), T("sprite"), T("drop"), T("coin"),
-            r.TryGetProperty("layers", out var layers) ? layers.EnumerateArray().Select(l => l.GetString() ?? "").ToList() : [], S("pet"));
+            r.TryGetProperty("layers", out var layers) ? layers.EnumerateArray().Select(l => l.GetString() ?? "").ToList() : [], S("pet"))
+        { PetSpecies = S("petSpecies"), PetSpeciesName = S("petSpeciesName") };
     }
 
     public static OverlayFrame ParseFrame(string line)

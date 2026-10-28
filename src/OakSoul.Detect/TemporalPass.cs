@@ -45,6 +45,19 @@ public sealed partial class EntityDetector
     /// <summary>Window of the precise prediction: this many pixels around the feet plus the reach of 1.5 times the walking speed over the time since the last match; rows likewise (more for jumpers).</summary>
     public const int PreciseSlackX = 2, PreciseSlackY = 2, JumpSlackY = 6;
 
+    /// <summary>
+    /// A track whose kill was credited stops being predicted once none of its poses verified for this long: the EXP can come before
+    /// the die animation (the frozen Wild Boar of fx-combat-exact's frames 772 to 778 showed exact moves after its kill's EXP and died
+    /// on 779), so one failed frame is not the end.
+    /// </summary>
+    public const double FinishedSeconds = 0.3;
+
+    /// <summary>Score a die pose needs to replace a living pose by a transition while no kill was credited.</summary>
+    public const double DieTransitionScore = 0.8;
+
+    /// <summary>Slack after the last die frame's delay before the mob counts as gone.</summary>
+    public const double DieGraceSeconds = 0.15;
+
     /// <summary>Extra columns a hit or die pose may have moved: the knock-back that starts with the hit.</summary>
     public const int KnockSlackX = 6;
 
@@ -105,6 +118,28 @@ public sealed partial class EntityDetector
     }
 
     /// <summary>
+    /// Starts the frame's explained pixels: on a temporal frame every pixel the pet, a verified prediction or an own skill effect
+    /// explains is left out of all matching that follows (the later predictions and the full search on the rest).
+    /// </summary>
+    private void BeginExplained(bool clear)
+    {
+        if (!clear) return;
+        if (_explained.Length != _fg.Width * _fg.Height) _explained = new byte[_fg.Width * _fg.Height];
+        else Array.Clear(_explained);
+        _matcher.Explained = _explained;
+    }
+
+    /// <summary>
+    /// Tracks no longer predicted: their kill was credited and their die pose is gone (a prediction of it failed), or their die
+    /// animation ran to its last frame and past that frame's delay. Before, a vanished track was predicted until its memory ran
+    /// out (1.2 s; about 12,000 failed predictions on fx-combat-exact's video).
+    /// </summary>
+    private readonly HashSet<int> _finished = [];
+
+    /// <summary>Predictions not made because the track's mob was finished (see <see cref="_finished"/>), since construction.</summary>
+    public int FinishedSkips { get; private set; }
+
+    /// <summary>
     /// Verifies the predictions of the live identified tracks. On a temporal frame (<paramref name="clear"/>) the pixels each
     /// verified prediction explains are cleared from the foreground mask, so the full search that follows sees only the
     /// rest; on a full frame they are left in place.
@@ -112,14 +147,6 @@ public sealed partial class EntityDetector
     private List<Prediction> Predict(ReadOnlySpan<byte> frame, int frameWidth, DetectionContext ctx, int camX, int camY, bool clear)
     {
         var t0 = Stopwatch.GetTimestamp();
-        // On a temporal frame every pixel a verified prediction explains is left out of all matching that follows (the later
-        // predictions and the full search on the rest).
-        if (clear)
-        {
-            if (_explained.Length != _fg.Width * _fg.Height) _explained = new byte[_fg.Width * _fg.Height];
-            else Array.Clear(_explained);
-            _matcher.Explained = _explained;
-        }
         var result = new List<Prediction>();
         var stretch = new List<(EntityTracker.LiveTrack Track, MobSpecies Species)>();
         var pts = ctx.Pts ?? ctx.Time;
@@ -150,12 +177,27 @@ public sealed partial class EntityDetector
         foreach (var t in _tracker.Live(ctx.Time, PredictMemorySeconds))
         {
             if (_mobs!.ById(t.Last.Species.Id)?.Species is not { } species) continue;
+            if (_finished.Contains(t.TrackId)) { FinishedSkips++; continue; }
+            // A die animation that ran to its last frame and past its delay is over: the mob is gone.
+            if (t.Last.Frame.Anim.StartsWith("die", StringComparison.Ordinal) && _poses.TryGetValue(t.TrackId, out var shown)
+                && !species.Frames.Any(f => f.Anim == t.Last.Frame.Anim && f.Facing == t.Last.Frame.Facing && f.Index > t.Last.Frame.Index)
+                && pts - shown.Since > t.Last.Frame.DelayMs / 1000.0 + DieGraceSeconds)
+            {
+                _finished.Add(t.TrackId);
+                FinishedSkips++;
+                continue;
+            }
             Temporals.Tracks++;
             var dtm = ctx.Time - t.LastMatchTime;
             if (dtm <= PreciseSeconds && _poses.TryGetValue(t.TrackId, out var pose))
             {
                 Temporals.Precise++;
-                if (Precise(t, species, frame, frameWidth, ctx, camX, camY, dtm, pts - pose.Since, step) is not { } p) { Temporals.Failed++; continue; }
+                if (Precise(t, species, frame, frameWidth, ctx, camX, camY, dtm, pts - pose.Since, step) is not { } p)
+                {
+                    Temporals.Failed++;
+                    if (t.Dead && dtm > FinishedSeconds) _finished.Add(t.TrackId);
+                    continue;
+                }
                 // Two tracks on one mob (a track broken earlier and its successor): the more verified one keeps it.
                 if (result.Any(a => SameMob(a.Match, p.Match))) { Temporals.Conflicts++; continue; }
                 Accept(t, p.Match, p.Found, true, frame);
@@ -166,7 +208,12 @@ public sealed partial class EntityDetector
         foreach (var (t, species) in stretch)
         {
             Temporals.Stretch++;
-            if (Stretch(t, species, frame, frameWidth, ctx, camX, camY, result) is not { } m) { Temporals.Failed++; continue; }
+            if (Stretch(t, species, frame, frameWidth, ctx, camX, camY, result) is not { } m)
+            {
+                Temporals.Failed++;
+                if (t.Dead && ctx.Time - t.LastMatchTime > FinishedSeconds) _finished.Add(t.TrackId);
+                continue;
+            }
             Accept(t, m, m.Frame.Anim == t.Last.Frame.Anim && m.Frame.Facing == t.Last.Frame.Facing ? FoundBy.Prediction : FoundBy.Transition, false, frame);
         }
         Temporals.Ms += Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
@@ -210,8 +257,11 @@ public sealed partial class EntityDetector
             foreach (var f in frames)
             {
                 if (!tried.Add(f)) continue;
-                if (_matcher.Best(new CaptureRect(fx, fy, 1, 1), new PointD(fx, fy), species, f, PredictThreshold, winX + (knock ? KnockSlackX : 0), winY,
-                        minComparable: PredictMinComparable) is { } m && m.Score >= PredictThreshold && (groupBest is null || m.Score > groupBest.Value.Score))
+                // A mob whose kill no EXP gain credited dies only on a convincing die pose: half hidden behind the pet, the frozen Wild
+                // Boar of fx-combat-exact's continuity frames took die1/0 at 0.52 on frame 748, a second before its kill's EXP.
+                var needed = !t.Dead && f.Anim.StartsWith("die", StringComparison.Ordinal) && f.Anim != last.Anim ? DieTransitionScore : PredictThreshold;
+                if (_matcher.Best(new CaptureRect(fx, fy, 1, 1), new PointD(fx, fy), species, f, needed, winX + (knock ? KnockSlackX : 0), winY,
+                        minComparable: PredictMinComparable) is { } m && m.Score >= needed && (groupBest is null || m.Score > groupBest.Value.Score))
                     groupBest = m;
             }
             if (groupBest is not { } g) continue;
@@ -239,9 +289,11 @@ public sealed partial class EntityDetector
         SpriteFrame? Step(int k) => at < 0 || seq.Count == 0 ? null : IsDie(last.Anim) ? seq[Math.Clamp(at + k, 0, seq.Count - 1)] : seq[((at + k) % seq.Count + seq.Count) % seq.Count];
         if (dead)
         {
-            // The kill was credited: only the die pose, the frame shown and those after it first.
+            // The kill was credited: the die pose, the frame shown and those after it first; until it starts, the pose it was in (the
+            // EXP can come a few frames before the die animation).
             if (IsDie(last.Anim)) yield return (FoundBy.Prediction, true, inPose + step / 2 >= last.DelayMs / 1000.0 ? [Step(1)!, last] : [last, Step(1)!]);
             yield return (FoundBy.Transition, true, Anims(IsDie, facing).Concat(Anims(IsDie, -facing)));
+            if (!IsDie(last.Anim)) yield return (FoundBy.Prediction, false, seq);
             yield break;
         }
         var next = Step(1);
@@ -352,7 +404,9 @@ public sealed partial class EntityDetector
     /// way); the best that passes and is no other track's mob wins, and a place where none does gives way to the next.
     /// </summary>
     /// <param name="last">The track's last frame: its animation and facing are scored first, and a convincing score ends the place.</param>
-    private SpriteMatch? ScorePlaces(ReadOnlySpan<byte> frame, int frameWidth, List<(MobSpecies, SpriteFrame, int, int)> hits, double px0, List<Prediction> taken, SpriteFrame last)
+    /// <param name="threshold">The score a placement needs (default <see cref="PredictThreshold"/>; the pet's search passes its own).</param>
+    private SpriteMatch? ScorePlaces(ReadOnlySpan<byte> frame, int frameWidth, List<(MobSpecies, SpriteFrame, int, int)> hits, double px0, List<Prediction> taken, SpriteFrame last,
+        double threshold = PredictThreshold)
     {
         if (hits.Count == 0) return null;
         var left = hits.OrderBy(h => Math.Abs(h.Item3 - px0)).ToList();
@@ -373,8 +427,8 @@ public sealed partial class EntityDetector
             _matcher.PrepareRegion(frame, frameWidth, _mask, x0 - pad, y0 - pad, x1 + pad, y1 + pad);
             foreach (var (sp, f, x, y) in kept.OrderBy(h => h.Item2.Facing == last.Facing ? h.Item2.Anim == last.Anim ? 0 : 1 : 2))
             {
-                if (_matcher.Best(new CaptureRect(x, y, 1, 1), new PointD(x, y), sp, f, PredictThreshold, FootholdSearch.RefineX, FootholdSearch.RefineY, minComparable: PredictMinComparable) is { } m
-                    && m.Score >= PredictThreshold && (best is null || m.Score > best.Value.Score || m.Score == best.Value.Score && m.Compared > best.Value.Compared))
+                if (_matcher.Best(new CaptureRect(x, y, 1, 1), new PointD(x, y), sp, f, threshold, FootholdSearch.RefineX, FootholdSearch.RefineY, minComparable: PredictMinComparable) is { } m
+                    && m.Score >= threshold && (best is null || m.Score > best.Value.Score || m.Score == best.Value.Score && m.Compared > best.Value.Compared))
                     best = m;
                 if (best is { } b0 && (b0.Score >= ConvincingScore || b0.Matches == b0.Compared)) break;
             }
@@ -495,6 +549,8 @@ public sealed partial class EntityDetector
         foreach (var e in entities)
         {
             if (e.Kind != EntityKind.Mob || e.Identity is not { Verified: true } id) continue;
+            // A track verified alive again (a die pose matched by mistake) is predicted again.
+            if (!id.Anim.StartsWith("die", StringComparison.Ordinal) && e.State != MobState.Dying) _finished.Remove(e.TrackId);
             if (id.Sightings == 1) { if (full) Temporals.FirstMatchFull++; else Temporals.FirstMatchTemporal++; }
             var key = $"{id.MobId}:{id.Anim}/{id.FrameIndex}{id.Facing}";
             _poses[e.TrackId] = _poses.TryGetValue(e.TrackId, out var p) && p.Key == key ? (key, p.Since, pts) : (key, pts, pts);
@@ -523,11 +579,19 @@ public sealed partial class EntityDetector
             var same = candidates.FirstOrDefault(c => c.Sprite is { } s && SameMob(s, p.Match));
             if (same is not null)
             {
-                if (same.Sprite!.Value.Species.Id == p.Match.Species.Id) { same.PredictedTrack ??= p.TrackId; Temporals.FullAgree++; }
+                if (same.Sprite!.Value.Species.Id == p.Match.Species.Id)
+                {
+                    same.PredictedTrack ??= p.TrackId;
+                    Temporals.FullAgree++;
+                }
                 else Temporals.FullDrift++;
                 continue;
             }
-            candidates.Add(PredictedCandidate(p, ctx, camX, camY));
+            // An unverified blob the predicted frame holds is that mob's blob (a box cut so that no frame fitted it: a Red Snail on the
+            // video's frame 207 was a separate effect beside its own prediction).
+            var blob = candidates.FirstOrDefault(c => c.Sprite is null && c.Drop is null && c.PetSprite is null && c.Skill is null && c.Damage is null && c.Tag is null && c.Pixels > 0 && Covers(p.Match, c.Box) >= LeftoverShare);
+            if (blob is not null) Predicted(blob, p, ctx, camX, camY);
+            else candidates.Add(PredictedCandidate(p, ctx, camX, camY));
             Temporals.FullOnly++;
         }
     }

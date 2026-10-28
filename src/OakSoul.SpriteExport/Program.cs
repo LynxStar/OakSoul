@@ -25,7 +25,12 @@ internal static partial class Program
           --maps         minimap canvases          -> minimap/<mapId>.png
           --effects      damage number digits (Effect BasicEff.img No*: NoRed0, NoViolet1, ...)
                                                    -> effect/BasicEff/<set>/<digit>.png, effect/damage-digits.json
+          --pets         every pet's animation frames -> pet/<id>/<anim>_<n>.png, pet/frames.json
+          --cursor       the mouse cursor (UI Basic.img/Cursor) -> ui/cursor/<state>_<n>.png, ui/cursor/frames.json
+          --mesos        the meso coins' spinning frames with their origins -> item/meso/<id>/iconRaw_<n>.png, item/meso/frames.json
           --all          all of the above (the default when no selector is given)
+          --skill-effects JOBS  the effect frames of every skill of these jobs (comma-separated, e.g. 200,220)
+                                                   -> skill-effect/<skillId>/<node>_<n>.png, skill-effect/frames.json
           --verify       decode every canvas in every _Canvas archive without writing anything, and report
                          counts per pixel format and any failures
           --client DIR   client Data folder (default: the MapleStoryNA bottle's appdata/Data)
@@ -45,7 +50,8 @@ internal static partial class Program
     {
         string client = DefaultClient;
         string? outDir = null;
-        bool mobs = false, items = false, skills = false, maps = false, effects = false, verify = false;
+        bool mobs = false, items = false, skills = false, maps = false, effects = false, verify = false, pets = false, cursor = false, mesos = false;
+        string[] skillJobs = [];
         try
         {
             for (int i = 0; i < args.Length; i++)
@@ -60,7 +66,11 @@ internal static partial class Program
                     case "--skills": skills = true; break;
                     case "--maps": maps = true; break;
                     case "--effects": effects = true; break;
-                    case "--all": mobs = items = skills = maps = effects = true; break;
+                    case "--pets": pets = true; break;
+                    case "--cursor": cursor = true; break;
+                    case "--mesos": mesos = true; break;
+                    case "--skill-effects": skillJobs = Next().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries); break;
+                    case "--all": mobs = items = skills = maps = effects = pets = cursor = mesos = true; break;
                     case "--verify": verify = true; break;
                     case "-h" or "--help": Console.WriteLine(Usage); return 0;
                     default:
@@ -87,8 +97,8 @@ internal static partial class Program
         if (verify)
             return Verify(client);
 
-        if (!(mobs || items || skills || maps || effects))
-            mobs = items = skills = maps = effects = true;
+        if (!(mobs || items || skills || maps || effects || pets || cursor || mesos) && skillJobs.Length == 0)
+            mobs = items = skills = maps = effects = pets = cursor = mesos = true;
 
         outDir = Path.GetFullPath(outDir ?? Path.Combine(RepoRoot(), "data", "sprites"));
         if (IsUnder(outDir, client))
@@ -109,6 +119,14 @@ internal static partial class Program
             run.ExportMinimaps();
         if (effects)
             run.ExportEffects();
+        if (pets)
+            run.ExportPets();
+        if (cursor)
+            run.ExportCursor();
+        if (mesos)
+            run.ExportMesos();
+        if (skillJobs.Length > 0)
+            run.ExportSkillEffects(skillJobs);
 
         run.WriteContactSheets();
         run.WriteManifest();

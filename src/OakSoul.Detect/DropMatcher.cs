@@ -8,6 +8,12 @@ public sealed record DropMatch(string ItemId, string Category, int IconFrame, in
 {
     public double Score => Compared == 0 ? 0 : (double)Matches / Compared;
     public bool IsMeso => ItemId.StartsWith("0900000", StringComparison.Ordinal);
+
+    /// <summary>A meso coin's anchor on screen (the client's origin of its spinning frames, the same for every frame), when known.</summary>
+    public World.PointD? Anchor { get; init; }
+
+    /// <summary>The anchor in world coordinates (the camera moves between frames; the coin lies still).</summary>
+    public World.PointD? AnchorWorld { get; init; }
     public override string ToString() => $"{(IsMeso ? "meso" : Category)} {ItemId}#{IconFrame} {Score:0.00}";
 }
 
@@ -73,7 +79,8 @@ public sealed class DropMatcher
         {
             var category = e.GetProperty("category").GetString() ?? "";
             var node = e.GetProperty("node").GetString() ?? "";
-            if (!category.StartsWith("item/", StringComparison.Ordinal) || !node.Contains("iconRaw", StringComparison.Ordinal)) continue;
+            // The coins' frames with their origins (item/meso) are the coin pass's; their icons are under item/special already.
+            if (!category.StartsWith("item/", StringComparison.Ordinal) || category == "item/meso" || !node.Contains("iconRaw", StringComparison.Ordinal)) continue;
             if (e.GetProperty("width").GetInt32() > MaxIcon || e.GetProperty("height").GetInt32() > MaxIcon) continue;
             // "0400.img/04000000/info/iconRaw", "0900.img/09000000/iconRaw/2", "5000000.img/info/iconRaw".
             var parts = node.Split('/');

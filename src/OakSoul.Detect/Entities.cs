@@ -31,6 +31,8 @@ public enum FoundBy : byte
     Prediction,
     /// <summary>Another pose of the track's species (a neighbouring frame, stand or move, the other facing, hit, die, another animation) verified at its predicted place.</summary>
     Transition,
+    /// <summary>The pet found by its tag alone (its sprite did not verify in this frame).</summary>
+    Tag,
 }
 
 /// <summary>What a mob track is doing: alive, or dying (its die pose matched, or a kill credited by an EXP gain).</summary>
@@ -71,6 +73,18 @@ public sealed record DetectedEntity(
     /// <summary>How the entity was found in this frame: the full search, or a track's prediction (or a transition of it) verified.</summary>
     public FoundBy Found { get; init; }
 
+    /// <summary>The pet's sprite as matched in this frame (the client's pet frames, exactly), when it was.</summary>
+    public SpriteMatch? PetMatch { get; init; }
+
+    /// <summary>The own skill effect matched on this entity (an effect), when one was.</summary>
+    public SpriteMatch? Skill { get; init; }
+
+    /// <summary>A mob's HP bar fill (0..1), read from the bar drawn over it in this frame.</summary>
+    public double? HpFill { get; init; }
+
+    /// <summary>A drop in the air, popping out of a killed mob.</summary>
+    public bool InFlight { get; init; }
+
     /// <summary>The box drawn for the entity: the hitbox for an identified mob, the damage number's digits, else <see cref="Box"/>.</summary>
     public CaptureRect DisplayBox => Hitbox ?? Box;
 
@@ -94,10 +108,32 @@ public sealed record MobIdentity(int MobId, string Name, int Facing, string Anim
     public override string ToString() => $"{Name} {Anim}/{FrameIndex}{(Facing > 0 ? "R" : "L")}{(Verified ? "" : "~")}";
 }
 
+/// <summary>
+/// A mob's HP bar as the client draws it over a mob that was hit: a 52x10 frame (black, white, black) around four rows of
+/// fill, 46 columns wide. The fill is read exactly, column by column: the current HP is the leading run of green (00FF00 over
+/// the red of what was lost) or of red (DE0000 over black).
+/// </summary>
+/// <param name="Fill">Current HP as a share of the bar, to a column (1/46).</param>
+/// <param name="Colour">The fill's colour: green or red.</param>
+/// <param name="Track">The mob the bar is drawn over (its track), when one was found below it.</param>
+public sealed record HpBar(CaptureRect Rect, double Fill, int FillColumns, string Colour)
+{
+    public int? Track { get; init; }
+}
+
+/// <summary>The mouse cursor, matched exactly against the client's cursor frames: its state, frame and hotspot (the frame's origin).</summary>
+public sealed record CursorMatch(string State, int Frame, PointD Hotspot, CaptureRect Rect, double Score);
+
 /// <summary>The detector's answer for one frame.</summary>
 public sealed record EntityFrame(long Frame, double Time, IReadOnlyList<DetectedEntity> Entities, (int X, int Y)? Camera,
     Registration? Registration, double Milliseconds, double OcrMilliseconds, string? Note = null)
 {
+    /// <summary>The mob HP bars read in this frame.</summary>
+    public IReadOnlyList<HpBar> HpBars { get; init; } = [];
+
+    /// <summary>The mouse cursor, when it is over the world.</summary>
+    public CursorMatch? Cursor { get; init; }
+
     public static EntityFrame Empty(long frame, double time, string note) => new(frame, time, [], null, null, 0, 0, note);
 
     public int Count(EntityKind kind) => Entities.Count(e => e.Kind == kind);

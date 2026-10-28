@@ -114,6 +114,10 @@ public sealed class OverlayFrame
 public sealed record OverlayHeader(string Schema, string Producer, string? Commit, string? Session, string? Recording, string? Replay, string Source,
     int FrameWidth, int FrameHeight, string? Name, double SpriteThreshold, double DropThreshold, double CoinThreshold, IReadOnlyList<string> Layers, string? Pet = null)
 {
+    /// <summary>The pet's species (client pet id, 7 digits) and name, when known when the stream started (identified in an earlier session).</summary>
+    public string? PetSpecies { get; init; }
+    public string? PetSpeciesName { get; init; }
+
     /// <summary>The schema this code writes and reads. Bump the number on any incompatible change.</summary>
     public const string CurrentSchema = "oaksoul.overlay/1";
 }

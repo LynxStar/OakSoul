@@ -95,6 +95,26 @@ public sealed class TagNames
     /// <summary>Whether a read names a known name by the same rule as <see cref="MatchMob"/> (a few misread letters, or a long enough start or end).</summary>
     public static bool SameName(string read, string known) => Similarity(read, known) <= MaxDistance;
 
+    /// <summary>
+    /// Whether a read holds a piece of the pet's name: a word of three letters or more within one edit of a piece of the name
+    /// ("ara" of Mara, from "ara oar" and "ara-v, 11" where the pet's tag ran into a boar's). Only a tag at the pet's tag
+    /// position is asked: there such a read is the pet's tag, never a player's.
+    /// </summary>
+    public bool IsPetFragment(string? text)
+    {
+        if (PetName is null || string.IsNullOrWhiteSpace(text)) return false;
+        var name = Normalize(PetName);
+        foreach (var raw in text.Split([' ', '-', ',', '.', ':', ';', '\'', '"'], StringSplitOptions.RemoveEmptyEntries))
+        {
+            var w = Normalize(raw);
+            if (w.Length < 3 || w.Any(char.IsDigit)) continue;
+            for (var len = Math.Max(2, w.Length - 1); len <= Math.Min(name.Length, w.Length + 1); len++)
+                for (var i = 0; i + len <= name.Length; i++)
+                    if (Distance(w, name.Substring(i, len)) <= 1) return true;
+        }
+        return false;
+    }
+
     public bool IsPet(string? name) => name is not null && PetName is not null && Distance(Normalize(name), Normalize(PetName)) <= 1;
 
     /// <summary>
