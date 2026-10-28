@@ -97,20 +97,16 @@ public partial class MainWindow : Window
 {
     private static readonly double[] Speeds = [0.25, 1, 2];
     private readonly Queue<(double Wall, double Time)> _rate = new();
-    private static readonly string[] KindChoices = ["—", .. ReviewSession.EntityKinds, NoteExpect.Nothing];
-    private static readonly string[] NotKindChoices = ["—", .. ReviewSession.EntityKinds];
 
     private readonly ToolOptions _options;
     private readonly RepoPaths _paths;
     private readonly DispatcherTimer _playTimer;
     private readonly Stopwatch _clock = Stopwatch.StartNew();
     private readonly Dictionary<string, CheckBox> _layerBoxes = [], _kindBoxes = [];
-    private readonly List<ToggleButton> _categoryButtons = [];
     private ReviewSession? _session;
     private bool _playing, _refreshQueued;
     private TimeSpan _lastTick;
     private double _playTime;
-    private NoteCategory? _category;
     private (int X, int Y, int W, int H) _pendingRegion;
     private bool _pendingPoint;
     private int _pendingIndex = -1;
@@ -125,7 +121,6 @@ public partial class MainWindow : Window
         _paths = paths ?? new RepoPaths();
         InitializeComponent();
         BuildToggles();
-        BuildEditor();
         Wire();
         _playTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(15), DispatcherPriority.Render, OnPlayTick);
         AddHandler(KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
@@ -297,20 +292,6 @@ public partial class MainWindow : Window
         _session?.ViewUpdated();
     }
 
-    private void BuildEditor()
-    {
-        foreach (var c in NoteCategory.All)
-        {
-            var b = new ToggleButton { Content = $"{c.Key} {c.Title}", Margin = new Thickness(0, 0, 3, 3), FontSize = 12, Tag = c };
-            b.Click += (_, _) => PickCategory(c);
-            _categoryButtons.Add(b);
-            CategoryButtons.Children.Add(b);
-        }
-        ExpectKind.ItemsSource = KindChoices;
-        ExpectNotKind.ItemsSource = NotKindChoices;
-        ExpectState.ItemsSource = new[] { "dying" };
-    }
-
     private void Wire()
     {
         OpenButton.Click += (_, _) => ShowOpenPanel();
@@ -331,6 +312,8 @@ public partial class MainWindow : Window
             UpdatePacket();
         };
 
+        LeftToggle.Click += (_, _) => ShowPanels(LeftToggle.IsChecked == true, null);
+        RightToggle.Click += (_, _) => ShowPanels(null, RightToggle.IsChecked == true);
         NoteTool.Click += (_, _) => SetTool(NoteTool.IsChecked == true ? Tool.Note : Tool.Select);
         ZoomIn.Click += (_, _) => Frame.ZoomBy(1);
         ZoomOut.Click += (_, _) => Frame.ZoomBy(-1);
@@ -343,12 +326,6 @@ public partial class MainWindow : Window
 
         SaveNoteButton.Click += (_, _) => SaveNote();
         CancelNoteButton.Click += (_, _) => CloseEditor();
-        ExpectName.TextChanged += (_, _) =>
-        {
-            // A species picked with no kind given is a mob.
-            if (ExpectKind.SelectedIndex <= 0 && ExpectName.Text is { Length: > 0 } t && (ExpectName.ItemsSource as IEnumerable<string>)?.Contains(t) == true)
-                ExpectKind.SelectedItem = "mob";
-        };
 
         StartButton.Click += (_, _) => Navigate(() => _session?.Seek(0));
         EndButton.Click += (_, _) => Navigate(() => _session?.Seek(_session.Timeline.Count - 1));
@@ -706,6 +683,24 @@ public partial class MainWindow : Window
 
     // ---- navigation ----
 
+    /// <summary>Opens or collapses the side panels (null leaves one as it is); the note editor opens the right one while it is up.</summary>
+    private void ShowPanels(bool? left, bool? right)
+    {
+        if (left is { } l)
+        {
+            LeftToggle.IsChecked = l;
+            LeftPanel.IsVisible = l;
+            ReviewGrid.ColumnDefinitions[0].Width = new GridLength(l ? 300 : 0);
+        }
+        if (right is { } r)
+        {
+            RightToggle.IsChecked = r;
+            var shown = r || Editor.IsVisible;
+            RightPanel.IsVisible = shown;
+            ReviewGrid.ColumnDefinitions[2].Width = new GridLength(shown ? 360 : 0);
+        }
+    }
+
     private void SetTool(Tool tool)
     {
         Frame.Tool = tool;
@@ -819,7 +814,6 @@ public partial class MainWindow : Window
         {
             if (e.Key == Key.Escape) { CloseEditor(); e.Handled = true; return; }
             if (e.Key == Key.Enter && (shift || command || !typing)) { SaveNote(); e.Handled = true; return; }
-            if (!typing && !command && NoteCategory.All.FirstOrDefault(c => KeyChar(e.Key) == c.Key) is { } cat) { PickCategory(cat); e.Handled = true; return; }
         }
         if (typing)
         {
@@ -837,6 +831,8 @@ public partial class MainWindow : Window
             case Key.End when s is not null: Navigate(() => s.Seek(s.Timeline.Count - 1)); break;
             case Key.Space: TogglePlay(); break;
             case Key.N: SetTool(Frame.Tool == Tool.Note ? Tool.Select : Tool.Note); break;
+            case Key.OemOpenBrackets: ShowPanels(LeftToggle.IsChecked != true, null); break;
+            case Key.OemCloseBrackets: ShowPanels(null, RightToggle.IsChecked != true); break;
             case Key.S:
                 SpeedBox.SelectedIndex = (SpeedBox.SelectedIndex + 1) % Speeds.Length;
                 break;
@@ -870,6 +866,10 @@ public partial class MainWindow : Window
 
     // ---- notes ----
 
+    /// <summary>
+    /// The note editor for a region just drawn: a preview of the captured area (the crop the note will keep, with the
+    /// overlay), where it is (frame, sequence, time, the region's game pixels), the words, focused, and save or cancel.
+    /// </summary>
     private void OpenEditor((int X, int Y, int W, int H) region, bool point)
     {
         if (_session is not { } s) return;
@@ -881,65 +881,47 @@ public partial class MainWindow : Window
         Frame.PendingIsPoint = point;
         Frame.InvalidateVisual();
         var e = s.Entry;
-        EditorRegion.Text = $"{(point ? $"point {region.X},{region.Y}" : $"rect {region.X},{region.Y},{region.W},{region.H}")} on seq {e.Sequence:D7}{(e.Filled ? " (fill)" : "")} at {OverlayFrame.FormatTime(e.Time)}";
-        var frame = s.Frame;
-        var under = frame is null ? [] : NoteBuilder.Under(frame, region).ToList();
-        EditorUnder.Text = frame is null ? "the stream has not reached this frame: the note will have no snapshot"
-            : under.Count == 0 ? "nothing of the stream here" : "here now:\n" + string.Join("\n", under.Select(u => $"  {u.Kind} {u.Label}"));
-        var names = s.Species.ForMap(frame?.MapId ?? s.Stream?.MapChanges.LastOrDefault()?.To)
-            .Concat(frame?.Layer(OverlayLayers.Entity).Select(x => x.Str("name")).OfType<string>() ?? [])
-            .Distinct().Order(StringComparer.Ordinal).ToList();
-        ExpectName.ItemsSource = names;
-        _category = null;
-        foreach (var b in _categoryButtons) b.IsChecked = false;
-        ExpectKind.SelectedIndex = 0;
-        ExpectNotKind.SelectedIndex = 0;
-        ExpectName.Text = "";
-        ExpectState.Text = "";
+        EditorRegion.Text = $"frame {s.Cursor + 1} of {s.Timeline.Count}  ·  seq {e.Sequence:D7}{(e.Filled ? " (fill)" : "")}  ·  {OverlayFrame.FormatTime(e.Time)}\n" +
+                            (point ? $"point {region.X},{region.Y}" : $"rect {region.X},{region.Y}  {region.W}x{region.H}");
+        (EditorPreview.Source as IDisposable)?.Dispose();
+        EditorPreview.Source = null;
+        if (MakeCrops(s, s.Cursor, region, point) is { } crops)
+        {
+            crops.Raw.Dispose();
+            EditorPreview.Source = crops.Overlay;
+        }
         NoteText.Text = "";
-        var (packet, review, isNew) = s.Packets.NextPacket();
-        EditorPacket.Text = $"goes to {Path.Combine(s.Packets.Dir, packet + ".jsonl")}{(isNew ? $" (new, review {review})" : "")}; crops to {Path.Combine(_paths.ReviewData, s.Name, packet)}";
         Editor.IsVisible = true;
-        Status("note: write what is wrong (a category if you like); Shift+Enter saves, Esc cancels");
-        // One region per N: drawing it ends the note tool, and the words come next.
+        ShowPanels(null, RightToggle.IsChecked == true);
+        Status("note: write what is wrong; Shift+Enter saves, Esc cancels");
+        // One region per N: drawing it ends the note tool, and the words come next (laid out first: the panel may have
+        // only just opened, and a control not yet laid out takes no focus).
         SetTool(Tool.Select);
-        NoteText.Focus();
-    }
-
-    private void PickCategory(NoteCategory category)
-    {
-        _category = category;
-        foreach (var b in _categoryButtons) b.IsChecked = ReferenceEquals(b.Tag, category);
+        UpdateLayout();
         NoteText.Focus();
     }
 
     private void CloseEditor()
     {
         Editor.IsVisible = false;
+        ShowPanels(null, RightToggle.IsChecked == true);
+        (EditorPreview.Source as IDisposable)?.Dispose();
+        EditorPreview.Source = null;
         _pendingIndex = -1;
         Frame.Pending = null;
         Frame.InvalidateVisual();
         Frame.Focus();
     }
 
-    private static string? Choice(ComboBox box) => box.SelectedItem is string s && s != "—" ? s : null;
-
-    private static string? Text(string? text) => string.IsNullOrWhiteSpace(text) ? null : text.Trim();
-
     private void SaveNote()
     {
         if (_session is not { } s || _pendingIndex < 0) return;
-        var category = _category ?? NoteCategory.Find("other");
-        var kind = Choice(ExpectKind);
-        var name = Text(ExpectName.Text);
-        if (kind is null && name is not null && s.Species.ForMap(s.Stream?.At(_pendingIndex)?.MapId).Contains(name)) kind = "mob";
-        var expect = new NoteExpect(kind, name, Text(ExpectState.Text), Choice(ExpectNotKind));
         var words = (NoteText.Text ?? "").TrimEnd();
         var index = _pendingIndex;
         var (region, point) = (_pendingRegion, _pendingPoint);
         try
         {
-            var (note, cropError) = s.SaveNote(index, region, point, category.Id, expect, words, (raw, overlay) => WriteCrops(s, index, region, point, raw, overlay));
+            var (note, cropError) = s.SaveNote(index, region, point, "other", new NoteExpect(null, null, null, null), words, (raw, overlay) => WriteCrops(s, index, region, point, raw, overlay));
             CloseEditor();
             Status($"saved note {note.Id} to {note.Packet.Path}{(cropError is null ? "" : $"; crops not written: {cropError}")}");
         }
@@ -952,20 +934,25 @@ public partial class MainWindow : Window
     /// <summary>Margin around a note's region in its crops, in game pixels.</summary>
     public const int CropMargin = 24;
 
-    /// <summary>Writes a note's crops at 4x: the raw pixels of the region and margin, and the same with the overlay as shown.</summary>
-    private string? WriteCrops(ReviewSession s, int index, (int X, int Y, int W, int H) region, bool point, string rawPath, string overlayPath)
+    /// <summary>A note's crops at 4x: the raw pixels of the region and margin, and the same with the overlay as shown; none while the frame's pixels are not decoded.</summary>
+    private static (RenderTargetBitmap Raw, RenderTargetBitmap Overlay)? MakeCrops(ReviewSession s, int index, (int X, int Y, int W, int H) region, bool point)
     {
         var pixels = s.Pixels.Copy(index);
-        if (pixels is null) return "the frame's pixels are not decoded";
+        if (pixels is null) return null;
+        using var bitmap = new WriteableBitmap(new PixelSize(s.Pixels.Width, s.Pixels.Height), new Vector(96, 96), PixelFormat.Bgra8888, AlphaFormat.Opaque);
+        using (var fb = bitmap.Lock())
+            for (var y = 0; y < s.Pixels.Height; y++) Marshal.Copy(pixels, y * s.Pixels.Width * 4, fb.Address + y * fb.RowBytes, s.Pixels.Width * 4);
+        int x0 = Math.Clamp(region.X - CropMargin, 0, s.Pixels.Width - 1), y0 = Math.Clamp(region.Y - CropMargin, 0, s.Pixels.Height - 1);
+        int x1 = Math.Clamp(region.X + region.W + CropMargin, x0 + 1, s.Pixels.Width), y1 = Math.Clamp(region.Y + region.H + CropMargin, y0 + 1, s.Pixels.Height);
+        return FrameView.Crops(bitmap, s.Stream?.At(index), (x0, y0, x1 - x0, y1 - y0), new PaintOptions(s.Layers, s.Kinds, s.Labels), region, point);
+    }
+
+    /// <summary>Writes a note's crops (see <see cref="MakeCrops"/>); the reason when they could not be written.</summary>
+    private string? WriteCrops(ReviewSession s, int index, (int X, int Y, int W, int H) region, bool point, string rawPath, string overlayPath)
+    {
         try
         {
-            using var bitmap = new WriteableBitmap(new PixelSize(s.Pixels.Width, s.Pixels.Height), new Vector(96, 96), PixelFormat.Bgra8888, AlphaFormat.Opaque);
-            using (var fb = bitmap.Lock())
-                for (var y = 0; y < s.Pixels.Height; y++) Marshal.Copy(pixels, y * s.Pixels.Width * 4, fb.Address + y * fb.RowBytes, s.Pixels.Width * 4);
-            int x0 = Math.Clamp(region.X - CropMargin, 0, s.Pixels.Width - 1), y0 = Math.Clamp(region.Y - CropMargin, 0, s.Pixels.Height - 1);
-            int x1 = Math.Clamp(region.X + region.W + CropMargin, x0 + 1, s.Pixels.Width), y1 = Math.Clamp(region.Y + region.H + CropMargin, y0 + 1, s.Pixels.Height);
-            var options = new PaintOptions(s.Layers, s.Kinds, s.Labels);
-            var (raw, overlay) = FrameView.Crops(bitmap, s.Stream?.At(index), (x0, y0, x1 - x0, y1 - y0), options, region, point);
+            if (MakeCrops(s, index, region, point) is not var (raw, overlay)) return "the frame's pixels are not decoded";
             using (raw)
             using (overlay)
             {

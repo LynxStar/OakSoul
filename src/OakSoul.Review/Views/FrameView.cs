@@ -31,6 +31,8 @@ public sealed class FrameView : Control
     private ReviewSession? _session;
     private Point _origin;
     private bool _fitted;
+    // Fitted and not zoomed or panned since: a resize (a side panel opening) fits again.
+    private bool _followFit;
     private Point? _panFrom;
     private Point _panOrigin;
     private (int X, int Y)? _dragFrom;
@@ -154,7 +156,7 @@ public sealed class FrameView : Control
         var fill = Math.Min(Bounds.Width * s / _session.Pixels.Width, Bounds.Height * s / _session.Pixels.Height);
         Zoom = Math.Clamp(Math.Floor(fill) >= 1 && Math.Floor(fill) / fill > 0.96 ? Math.Floor(fill) : fill, MinZoom, MaxZoom);
         _origin = new Point(Snap((Bounds.Width - _session.Pixels.Width * Scale) / 2), Snap((Bounds.Height - _session.Pixels.Height * Scale) / 2));
-        _fitted = true;
+        _fitted = _followFit = true;
         ZoomChanged?.Invoke();
         InvalidateVisual();
     }
@@ -168,6 +170,7 @@ public sealed class FrameView : Control
         var whole = Math.Round(zoom);
         var next = Math.Clamp(whole >= 1 && Math.Abs(zoom - whole) / whole < 0.03 ? whole : zoom, MinZoom, MaxZoom);
         if (Math.Abs(next - Zoom) < 1e-9) return;
+        _followFit = false;
         var p = at ?? Bounds.Center;
         var before = Scale;
         Zoom = next;
@@ -181,6 +184,7 @@ public sealed class FrameView : Control
     /// <summary>Centres a game region in the view (keeping the zoom).</summary>
     public void CentreOn((int X, int Y, int W, int H) region)
     {
+        _followFit = false;
         _origin = new Point(Snap(Bounds.Width / 2 - (region.X + region.W / 2.0) * Scale), Snap(Bounds.Height / 2 - (region.Y + region.H / 2.0) * Scale));
         Clamp();
         InvalidateVisual();
@@ -196,7 +200,7 @@ public sealed class FrameView : Control
     protected override void OnSizeChanged(SizeChangedEventArgs e)
     {
         base.OnSizeChanged(e);
-        if (!_fitted) Fit();
+        if (!_fitted || _followFit) Fit();
     }
 
     public (int X, int Y) GamePixel(Point screen) => ((int)Math.Floor((screen.X - _origin.X) / Scale), (int)Math.Floor((screen.Y - _origin.Y) / Scale));
@@ -331,6 +335,7 @@ public sealed class FrameView : Control
         if (_panFrom is { } from)
         {
             _origin = new Point(Snap(_panOrigin.X + p.X - from.X), Snap(_panOrigin.Y + p.Y - from.Y));
+            _followFit = false;
             Clamp();
             InvalidateVisual();
             return;
@@ -404,6 +409,7 @@ public sealed class FrameView : Control
         else
         {
             _origin = new Point(Snap(_origin.X + e.Delta.X * 40), Snap(_origin.Y + e.Delta.Y * 40));
+            _followFit = false;
             Clamp();
             InvalidateVisual();
         }

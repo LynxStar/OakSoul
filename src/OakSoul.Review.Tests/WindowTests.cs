@@ -39,10 +39,6 @@ public class WindowTests
         window.KeyReleaseQwerty(key, modifiers);
     }
 
-    private static void Category(MainWindow window, string id) =>
-        window.CategoryButtons.Children.OfType<Avalonia.Controls.Primitives.ToggleButton>().Single(b => ((NoteCategory)b.Tag!).Id == id)
-            .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-
     private static Point At(MainWindow window, (int X, int Y) game)
     {
         var screen = window.Frame.ScreenRect((game.X, game.Y, 1, 1)).Center;
@@ -84,32 +80,34 @@ public class WindowTests
         Assert.Equal(781, s.Entry.Sequence);
         Fixture.Pump(() => window.Frame.Shown == s.Cursor);
 
-        // Two notes, drawn and written as a reviewer would: N, drag, the words typed straight in (the note text has the
-        // focus), a category clicked, Shift+Enter.
+        // The side panels start collapsed; [ and ] open them.
+        Assert.False(window.LeftPanel.IsVisible);
+        Assert.False(window.RightPanel.IsVisible);
+        Press(window, PhysicalKey.BracketLeft, RawInputModifiers.None);
+        Assert.True(window.LeftPanel.IsVisible);
+
+        // Two notes, drawn and written as a reviewer would: N, drag, the words typed straight in (the editor opens the
+        // right panel with the captured area previewed and the words focused), Shift+Enter.
         Press(window, PhysicalKey.N, RawInputModifiers.None);
         Drag(window, (520, 18), (592, 68));
         Assert.True(window.Editor.IsVisible);
+        Assert.True(window.RightPanel.IsVisible);
+        Assert.NotNull(window.EditorPreview.Source);
         Assert.Equal(Tool.Select, window.Frame.Tool);
         Assert.Same(window.NoteText, window.FocusManager?.GetFocusedElement());
         window.KeyTextInput("the stump on the top platform has no box");
-        Category(window, "missed");
-        window.ExpectKind.SelectedItem = "mob";
-        window.ExpectName.Text = "Dark Axe Stump";
         Shot(window, "editor.png");
         Press(window, PhysicalKey.Enter, RawInputModifiers.Shift);
         Assert.False(window.Editor.IsVisible);
+        Assert.False(window.RightPanel.IsVisible);
         Assert.Same(window.Frame, window.FocusManager?.GetFocusedElement());
         Press(window, PhysicalKey.N, RawInputModifiers.None);
         Drag(window, (222, 667), (271, 701));
         window.KeyTextInput("the box covers the top of the stump and cuts off its lower part");
-        Category(window, "wrong-box");
-        window.ExpectKind.SelectedItem = "mob";
         Press(window, PhysicalKey.Enter, RawInputModifiers.Shift);
         var notes = s.Packets.Notes.ToList();
         Assert.Equal(2, notes.Count);
-        Assert.Equal("missed", notes[0].Category);
         Assert.Equal("the stump on the top platform has no box", notes[0].Text);
-        Assert.Equal("wrong-box", notes[1].Category);
         Assert.Equal(781, notes[1].Sequence);
         Assert.All(notes, n => Assert.True(File.Exists(Path.Combine(Fixture.Root!, n.RawCrop!)) && File.Exists(Path.Combine(Fixture.Root!, n.OverlayCrop!)), $"crops of {n.Id}"));
         Assert.NotEmpty(notes[1].Json["entities"]!.AsArray());
@@ -142,14 +140,19 @@ public class WindowTests
         window.Tabs.SelectedItem = window.NotesTab;
         Shot(window, "notes.png");
 
-        // Promote both notes: the confirmation lists the entries, confirming appends them to the (scratch) truth file.
+        // Notes that say what is really there (written to the packet, not through the editor) promote to truth: the
+        // confirmation lists the entries, confirming appends them to the (scratch) truth file.
+        var index = s.Cursor;
+        s.SaveNote(index, (520, 18, 73, 51), false, "missed", new NoteExpect("mob", "Dark Axe Stump", null, null), "the stump has no box", (_, _) => null);
+        s.SaveNote(index, (222, 667, 50, 35), false, "wrong-box", new NoteExpect("mob", null, null, null), "the box cuts off the stump", (_, _) => null);
         var before = s.Truth.Entries.Count;
         window.PromoteAllButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Assert.True(window.ConfirmPanel.IsVisible);
         Shot(window, "promote.png");
         window.ConfirmButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Assert.Equal(before + 2, s.Truth.Entries.Count);
-        Assert.All(s.Packets.Notes, n => Assert.NotNull(n.Promoted));
+        Assert.All(s.Packets.Notes.Skip(2), n => Assert.NotNull(n.Promoted));
+        Assert.All(s.Packets.Notes.Take(2), n => Assert.Null(n.Promoted));
         var promoted = s.Truth.Entries[^1];
         Assert.StartsWith($"r{notes[1].Packet.Review}-781-", promoted.Id);
         Assert.NotNull(promoted.Verdict?.Pass);

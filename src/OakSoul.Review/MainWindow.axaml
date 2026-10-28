@@ -36,8 +36,9 @@
     <TabControl Grid.Row="1" x:Name="Tabs" Padding="0" Margin="0">
 
       <TabItem Header="Review" x:Name="ReviewTab">
-        <Grid ColumnDefinitions="300,*,360">
-          <ScrollViewer Grid.Column="0" Background="#15171A">
+        <!-- The side panels start collapsed: the frame takes the width until [ or ] opens one. -->
+        <Grid x:Name="ReviewGrid" ColumnDefinitions="0,*,0">
+          <ScrollViewer x:Name="LeftPanel" Grid.Column="0" Background="#15171A" IsVisible="False">
             <StackPanel Margin="6">
               <Border Classes="panel">
                 <StackPanel>
@@ -75,8 +76,11 @@
           <Grid Grid.Column="1">
             <views:FrameView x:Name="Frame" />
             <StackPanel Orientation="Horizontal" Spacing="2" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="8">
+              <ToggleButton x:Name="LeftToggle" Content="◧ Info ([)" Margin="0,0,6,0" ToolTip.Tip="Show or hide the left panel: the frame's readings, the HUD, entity counts, and the layer and kind switches" />
               <ToggleButton x:Name="NoteTool" Content="Note (N)" ToolTip.Tip="Drag a rectangle on the frame (or click a point, for something missed) and write a note about it; Esc cancels" />
             </StackPanel>
+            <ToggleButton x:Name="RightToggle" Content="Inspector (]) ◨" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="8"
+                          ToolTip.Tip="Show or hide the right panel: the inspector (click an entity for its full record and a strip of where its track was seen) and the note editor" />
             <Border HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="8" Background="#C0101114" CornerRadius="4" Padding="4,2">
               <StackPanel Orientation="Horizontal" Spacing="4">
                 <Button x:Name="ZoomOut" Content="−" Width="28" ToolTip.Tip="Zoom out (−)" />
@@ -98,33 +102,18 @@
             </Canvas>
           </Grid>
 
-          <ScrollViewer Grid.Column="2" Background="#15171A">
+          <ScrollViewer x:Name="RightPanel" Grid.Column="2" Background="#15171A" IsVisible="False">
             <StackPanel Margin="6">
               <Border x:Name="Editor" Classes="panel" IsVisible="False" BorderBrush="#C8A830">
-                <StackPanel Spacing="4">
+                <StackPanel Spacing="6">
                   <TextBlock Classes="panelTitle" Text="New note" Foreground="#FFD84A" />
+                  <Image x:Name="EditorPreview" MaxHeight="240" Stretch="Uniform" HorizontalAlignment="Left" ToolTip.Tip="The captured area with the overlay, as the note's crop will show it" />
                   <TextBlock x:Name="EditorRegion" FontFamily="Menlo, Consolas, monospace" FontSize="11" Foreground="#A0A8B0" TextWrapping="Wrap" />
-                  <TextBlock Text="Category (other when none is picked)" FontSize="12" />
-                  <WrapPanel x:Name="CategoryButtons" />
-                  <TextBlock Text="What it really is (optional; makes the note promotable to truth)" FontSize="12" TextWrapping="Wrap" Margin="0,4,0,0" />
-                  <Grid ColumnDefinitions="56,*" RowDefinitions="Auto,Auto,Auto,Auto">
-                    <TextBlock Grid.Row="0" Text="Kind" VerticalAlignment="Center" />
-                    <ComboBox Grid.Row="0" Grid.Column="1" x:Name="ExpectKind" HorizontalAlignment="Stretch" Margin="0,2" />
-                    <TextBlock Grid.Row="1" Text="Name" VerticalAlignment="Center" />
-                    <AutoCompleteBox Grid.Row="1" Grid.Column="1" x:Name="ExpectName" Margin="0,2" FilterMode="Contains" MinimumPrefixLength="0" Watermark="species or name" />
-                    <TextBlock Grid.Row="2" Text="State" VerticalAlignment="Center" />
-                    <AutoCompleteBox Grid.Row="2" Grid.Column="1" x:Name="ExpectState" Margin="0,2" FilterMode="Contains" MinimumPrefixLength="0" Watermark="e.g. dying" />
-                    <TextBlock Grid.Row="3" Text="Not" VerticalAlignment="Center" />
-                    <ComboBox Grid.Row="3" Grid.Column="1" x:Name="ExpectNotKind" HorizontalAlignment="Stretch" Margin="0,2" />
-                  </Grid>
-                  <TextBlock Text="Note, in your words" FontSize="12" Margin="0,4,0,0" />
                   <TextBox x:Name="NoteText" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="80" Watermark="what is wrong here (Shift+Enter saves, Esc cancels)" />
-                  <TextBlock x:Name="EditorUnder" FontFamily="Menlo, Consolas, monospace" FontSize="11" Foreground="#A0A8B0" TextWrapping="Wrap" />
                   <StackPanel Orientation="Horizontal" Spacing="6">
                     <Button x:Name="SaveNoteButton" Content="Save (⇧↵)" />
                     <Button x:Name="CancelNoteButton" Content="Cancel (Esc)" />
                   </StackPanel>
-                  <TextBlock x:Name="EditorPacket" FontSize="11" Foreground="#8A9098" TextWrapping="Wrap" />
                 </StackPanel>
               </Border>
               <Border Classes="panel">
