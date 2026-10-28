@@ -14,7 +14,7 @@ namespace OakSoul.Review.Tests;
 /// <summary>
 /// The window rendered headless over fx-combat-exact, driven with the keyboard and mouse as a reviewer would, with
 /// screenshots in data/review-shots/: review.png (frame 781 with an entity selected and hovered and two notes),
-/// review-zoom.png, editor.png, tracks.png, notes.png, promote.png, and in video mode review-video.png.
+/// review-zoom.png, editor.png, tracks.png, events.png, notes.png, promote.png, and in video mode review-video.png.
 /// </summary>
 public class WindowTests
 {
@@ -126,7 +126,11 @@ public class WindowTests
         Shot(window, "tracks.png");
         Assert.True(window.Tracks.RowCount > 0);
 
-        window.Tabs.SelectedIndex = 2;
+        window.Tabs.SelectedItem = window.EventsTab;
+        Shot(window, "events.png");
+        Assert.Contains(window.EventsList.ItemsSource!.Cast<EventFrame>(), f => s.Timeline[f.Index].Sequence == 781 && f.Lines.Any(l => l.What == "note"));
+
+        window.Tabs.SelectedItem = window.NotesTab;
         Shot(window, "notes.png");
 
         // Promote both notes: the confirmation lists the entries, confirming appends them to the (scratch) truth file.
@@ -141,10 +145,14 @@ public class WindowTests
         Assert.StartsWith($"r{notes[1].Packet.Review}-781-", promoted.Id);
         Assert.NotNull(promoted.Verdict?.Pass);
 
-        // Jump from the notes list back to a note's frame.
-        window.Tabs.SelectedIndex = 0;
+        // Go to the note's frame by its number (Cmd+G).
+        var noteFrame = s.NoteIndex(notes[0]);
         s.Seek(0);
-        Press(window, PhysicalKey.N, RawInputModifiers.None);
+        Press(window, PhysicalKey.G, RawInputModifiers.Meta);
+        Assert.True(window.GotoPanel.IsVisible);
+        window.GotoBox.Text = (noteFrame + 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        Press(window, PhysicalKey.Enter, RawInputModifiers.None);
+        Assert.False(window.GotoPanel.IsVisible);
         Assert.Equal(781, s.Entry.Sequence);
         window.Close();
     }
@@ -166,7 +174,7 @@ public class WindowTests
         // Stepping on finds the next frames decoded (read ahead).
         Press(window, PhysicalKey.ArrowRight, RawInputModifiers.None);
         Fixture.Pump(() => window.Frame.Shown == s.Cursor);
-        Press(window, PhysicalKey.ArrowRight, RawInputModifiers.Shift);
+        s.StepKeyframe(1);
         Fixture.Pump(() => window.Frame.Shown == s.Cursor);
         Assert.True(s.Entry.HasKeyframe);
         Assert.Equal(new RecordingPixels(s.Bake.Recording).Load([s.Entry.Sequence])[s.Entry.Sequence], s.Pixels.Copy(s.Cursor));

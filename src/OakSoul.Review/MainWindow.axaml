@@ -4,6 +4,7 @@
         xmlns:local="using:OakSoul.Review"
         x:Class="OakSoul.Review.MainWindow"
         Title="OakSoul review"
+        Icon="avares://OakSoul.Review/Assets/icon.png"
         Width="1640" Height="1010" MinWidth="1100" MinHeight="640"
         Background="#101114">
   <Grid RowDefinitions="Auto,*,Auto,Auto">
@@ -35,25 +36,25 @@
     <TabControl Grid.Row="1" x:Name="Tabs" Padding="0" Margin="0">
 
       <TabItem Header="Review" x:Name="ReviewTab">
-        <Grid ColumnDefinitions="260,*,360">
+        <Grid ColumnDefinitions="300,*,360">
           <ScrollViewer Grid.Column="0" Background="#15171A">
             <StackPanel Margin="6">
               <Border Classes="panel">
                 <StackPanel>
                   <TextBlock Classes="panelTitle" Text="Frame" />
-                  <SelectableTextBlock x:Name="FrameInfo" FontFamily="Menlo, Consolas, monospace" FontSize="12" TextWrapping="Wrap" />
+                  <SelectableTextBlock x:Name="FrameInfo" FontFamily="Menlo, Consolas, monospace" FontSize="12" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
                 </StackPanel>
               </Border>
               <Border Classes="panel">
                 <StackPanel>
                   <TextBlock Classes="panelTitle" Text="Character and HUD" />
-                  <SelectableTextBlock x:Name="CharacterInfo" FontFamily="Menlo, Consolas, monospace" FontSize="12" TextWrapping="Wrap" />
+                  <SelectableTextBlock x:Name="CharacterInfo" FontFamily="Menlo, Consolas, monospace" FontSize="12" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
                 </StackPanel>
               </Border>
               <Border Classes="panel">
                 <StackPanel>
                   <TextBlock Classes="panelTitle" Text="Entities" />
-                  <SelectableTextBlock x:Name="CountsInfo" FontFamily="Menlo, Consolas, monospace" FontSize="12" TextWrapping="Wrap" />
+                  <SelectableTextBlock x:Name="CountsInfo" FontFamily="Menlo, Consolas, monospace" FontSize="12" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
                 </StackPanel>
               </Border>
               <Border Classes="panel">
@@ -82,8 +83,8 @@
               <StackPanel Orientation="Horizontal" Spacing="4">
                 <Button x:Name="ZoomOut" Content="−" Width="28" ToolTip.Tip="Zoom out (−)" />
                 <TextBlock x:Name="ZoomText" VerticalAlignment="Center" MinWidth="70" TextAlignment="Center" FontSize="12" />
-                <Button x:Name="ZoomIn" Content="+" Width="28" ToolTip.Tip="Zoom in (+, or Cmd+wheel)" />
-                <Button x:Name="ZoomFit" Content="Fit" ToolTip.Tip="Largest zoom that fits (0)" />
+                <Button x:Name="ZoomIn" Content="+" Width="28" ToolTip.Tip="Zoom in (+, or the wheel; Shift+wheel pans)" />
+                <Button x:Name="ZoomFit" Content="Fit" ToolTip.Tip="Zoom to fill the view (0)" />
               </StackPanel>
             </Border>
             <Border HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="8" Background="#C0101114" CornerRadius="4" Padding="6,2" IsHitTestVisible="False">
@@ -159,7 +160,40 @@
         </DockPanel>
       </TabItem>
 
-      <TabItem Header="Notes and truth" x:Name="NotesTab">
+      <TabItem Header="Events" x:Name="EventsTab">
+        <DockPanel Margin="6">
+          <TextBlock DockPanel.Dock="Top" x:Name="EventsTitle" Classes="panelTitle" Margin="0,0,0,6" Text="Events" />
+          <ScrollViewer>
+            <ItemsControl x:Name="EventsList">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="local:EventFrame">
+                  <StackPanel Margin="0,0,0,8">
+                    <Border Background="#1A1D22" BorderBrush="#2C3138" BorderThickness="1" CornerRadius="4" Padding="8,4" Cursor="Hand" Tapped="OnEventFrameTapped">
+                      <TextBlock Text="{Binding Header}" FontWeight="SemiBold" FontFamily="Menlo, Consolas, monospace" FontSize="12" />
+                    </Border>
+                    <ItemsControl ItemsSource="{Binding Lines}" Margin="24,2,0,0">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="local:EventLine">
+                          <Border Padding="4,2" Cursor="Hand" Background="Transparent" Tapped="OnEventLineTapped">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                              <Border Background="{Binding Brush}" CornerRadius="3" Padding="4,0" Width="64" VerticalAlignment="Top">
+                                <TextBlock Text="{Binding What}" FontSize="11" FontWeight="SemiBold" HorizontalAlignment="Center" />
+                              </Border>
+                              <TextBlock Text="{Binding Text}" FontSize="12" TextWrapping="Wrap" MaxWidth="1400" />
+                            </StackPanel>
+                          </Border>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                  </StackPanel>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </ScrollViewer>
+        </DockPanel>
+      </TabItem>
+
+      <TabItem Header="Notes" x:Name="NotesTab">
         <Grid ColumnDefinitions="*,*">
           <DockPanel Grid.Column="0" Margin="6">
             <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
@@ -172,23 +206,36 @@
             <ScrollViewer>
               <ItemsControl x:Name="NotesList">
                 <ItemsControl.ItemTemplate>
-                  <DataTemplate x:DataType="local:NoteRow">
-                    <Border Background="#1A1D22" BorderBrush="#2C3138" BorderThickness="1" CornerRadius="4" Padding="8,6" Margin="0,0,0,4" Cursor="Hand" Tapped="OnNoteTapped">
-                      <Grid ColumnDefinitions="52,*,Auto">
-                        <Border Grid.Column="0" Background="{Binding VerdictBrush}" CornerRadius="3" Padding="4,1" VerticalAlignment="Top">
-                          <TextBlock Text="{Binding Verdict}" FontSize="11" FontWeight="SemiBold" HorizontalAlignment="Center" />
-                        </Border>
-                        <StackPanel Grid.Column="1" Margin="8,0" Spacing="2">
-                          <TextBlock Text="{Binding Heading}" FontWeight="SemiBold" TextWrapping="Wrap" />
-                          <TextBlock Text="{Binding Words}" TextWrapping="Wrap" />
-                          <TextBlock Text="{Binding Detail}" FontFamily="Menlo, Consolas, monospace" FontSize="11" Foreground="#9AA2AA" TextWrapping="Wrap" />
-                        </StackPanel>
-                        <StackPanel Grid.Column="2" Spacing="3" VerticalAlignment="Top">
-                          <Button Content="Promote…" IsVisible="{Binding CanPromote}" Click="OnPromoteNote" FontSize="11" />
-                          <Button Content="Delete" Click="OnDeleteNote" FontSize="11" />
-                        </StackPanel>
-                      </Grid>
-                    </Border>
+                  <DataTemplate x:DataType="local:NoteGroup">
+                    <StackPanel Margin="0,0,0,8">
+                      <TextBlock Text="{Binding Header}" FontWeight="SemiBold" FontFamily="Menlo, Consolas, monospace" FontSize="12" Foreground="#FFD84A" Margin="0,0,0,3" />
+                      <ItemsControl ItemsSource="{Binding Notes}" Margin="16,0,0,0">
+                        <ItemsControl.ItemTemplate>
+                          <DataTemplate x:DataType="local:NoteRow">
+                            <Border Background="#1A1D22" BorderBrush="#2C3138" BorderThickness="1" CornerRadius="4" Padding="8,6" Margin="0,0,0,4" Cursor="Hand" Tapped="OnNoteTapped">
+                              <Grid ColumnDefinitions="52,*,Auto" RowDefinitions="Auto,Auto">
+                                <Border Grid.Column="0" Background="{Binding VerdictBrush}" CornerRadius="3" Padding="4,1" VerticalAlignment="Top">
+                                  <TextBlock Text="{Binding Verdict}" FontSize="11" FontWeight="SemiBold" HorizontalAlignment="Center" />
+                                </Border>
+                                <StackPanel Grid.Column="1" Margin="8,0" Spacing="2">
+                                  <TextBlock Text="{Binding Heading}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                  <TextBlock Text="{Binding Words}" TextWrapping="Wrap" />
+                                  <TextBlock Text="{Binding Detail}" FontFamily="Menlo, Consolas, monospace" FontSize="11" Foreground="#9AA2AA" TextWrapping="Wrap" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="2" Spacing="3" VerticalAlignment="Top">
+                                  <Button Content="Promote…" IsVisible="{Binding CanPromote}" Click="OnPromoteNote" FontSize="11" />
+                                  <Button Content="Delete" Click="OnDeleteNote" FontSize="11" />
+                                </StackPanel>
+                                <StackPanel Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="6" Margin="8,6,0,0" IsVisible="{Binding HasCrops}">
+                                  <Image Source="{Binding RawCrop}" MaxHeight="160" MaxWidth="320" Stretch="Uniform" ToolTip.Tip="The captured area, raw pixels" />
+                                  <Image Source="{Binding OverlayCrop}" MaxHeight="160" MaxWidth="320" Stretch="Uniform" ToolTip.Tip="The captured area with the overlay as it was shown" />
+                                </StackPanel>
+                              </Grid>
+                            </Border>
+                          </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                      </ItemsControl>
+                    </StackPanel>
                   </DataTemplate>
                 </ItemsControl.ItemTemplate>
               </ItemsControl>
@@ -224,24 +271,16 @@
     <!-- Transport. -->
     <Border Grid.Row="2" Background="#181A1E" Padding="8,4" BorderBrush="#2A2E34" BorderThickness="0,1,0,0">
       <DockPanel>
-        <WrapPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center">
-          <Button x:Name="PrevKill" Content="◀ kill" ToolTip.Tip="Previous kill, an EXP gain (Shift+K)" Margin="0,0,2,0" />
-          <Button x:Name="NextKill" Content="kill ▶" ToolTip.Tip="Next kill (K)" Margin="0,0,8,0" />
-          <Button x:Name="PrevNote" Content="◀ note" ToolTip.Tip="Previous review note (Shift+N)" Margin="0,0,2,0" />
-          <Button x:Name="NextNote" Content="note ▶" ToolTip.Tip="Next review note (N)" Margin="0,0,8,0" />
-          <Button x:Name="PrevFail" Content="◀ fail" ToolTip.Tip="Previous failing truth entry (Shift+F)" Margin="0,0,2,0" />
-          <Button x:Name="NextFail" Content="fail ▶" ToolTip.Tip="Next failing truth entry (F)" Margin="0,0,16,0" />
-          <Button x:Name="BackSecond" Content="−1 s" ToolTip.Tip="Back one second (Cmd+←)" Margin="0,0,2,0" />
-          <Button x:Name="BackKey" Content="−1 kf" ToolTip.Tip="Back one keyframe, 15 frames (Shift+←)" Margin="0,0,2,0" />
-          <Button x:Name="BackFrame" Content="−1" ToolTip.Tip="Back one frame (←)" Margin="0,0,2,0" />
-          <Button x:Name="PlayButton" Content="▶ Play" Width="78" ToolTip.Tip="Play or pause (Space)" Margin="0,0,2,0" />
-          <Button x:Name="FwdFrame" Content="+1" ToolTip.Tip="Forward one frame (→)" Margin="0,0,2,0" />
-          <Button x:Name="FwdKey" Content="+1 kf" ToolTip.Tip="Forward one keyframe, 15 frames (Shift+→)" Margin="0,0,2,0" />
-          <Button x:Name="FwdSecond" Content="+1 s" ToolTip.Tip="Forward one second (Cmd+→)" Margin="0,0,8,0" />
-          <ComboBox x:Name="SpeedBox" Width="84" ToolTip.Tip="Playback speed (S cycles)" Margin="0,0,8,0" />
-          <TextBox x:Name="JumpBox" Width="170" Watermark="seq or m:ss, Enter (G)" />
-        </WrapPanel>
-        <TextBlock x:Name="PositionText" DockPanel.Dock="Right" FontFamily="Menlo, Consolas, monospace" FontSize="12" VerticalAlignment="Center" Margin="12,0,0,0" />
+        <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
+          <Button x:Name="StartButton" Content="⏮" Width="36" ToolTip.Tip="Start of the replay (Home)" />
+          <Button x:Name="BackFrame" Content="◀" Width="36" ToolTip.Tip="Back one frame (←), pausing; Shift+← back 5 s" />
+          <Button x:Name="PlayButton" Content="▶ Play" Width="84" ToolTip.Tip="Play or pause (Space)" />
+          <Button x:Name="FwdFrame" Content="▶" Width="36" ToolTip.Tip="Forward one frame (→), pausing; Shift+→ forward 5 s" />
+          <Button x:Name="EndButton" Content="⏭" Width="36" ToolTip.Tip="End of the replay (End)" Margin="0,0,8,0" />
+          <ComboBox x:Name="SpeedBox" Width="84" ToolTip.Tip="Playback speed asked for (S cycles)" Margin="0,0,4,0" />
+          <TextBlock x:Name="RateText" Width="150" VerticalAlignment="Center" FontFamily="Menlo, Consolas, monospace" FontSize="11"
+                     ToolTip.Tip="The speed playback actually runs at, over the last second: below the speed asked for when decoding falls behind (the clock waits for frames rather than skip them)" />
+        </StackPanel>
         <TextBlock x:Name="StatusText" VerticalAlignment="Center" Foreground="#C8D070" TextTrimming="CharacterEllipsis" Margin="12,0" FontSize="12" />
       </DockPanel>
     </Border>
@@ -271,6 +310,17 @@
             </ListBox.ItemTemplate>
           </ListBox>
         </DockPanel>
+      </Border>
+    </Border>
+
+    <!-- Going to a frame (Cmd+G). -->
+    <Border x:Name="GotoPanel" Grid.RowSpan="4" Background="#A0080A0C" IsVisible="False">
+      <Border Width="360" Background="#1A1D22" BorderBrush="#3A4048" BorderThickness="1" CornerRadius="6" Padding="16" HorizontalAlignment="Center" VerticalAlignment="Center">
+        <StackPanel Spacing="8">
+          <TextBlock Text="Go to frame" FontSize="16" FontWeight="SemiBold" />
+          <TextBox x:Name="GotoBox" Watermark="frame number" />
+          <TextBlock x:Name="GotoHint" FontSize="12" Foreground="#8A9098" TextWrapping="Wrap" />
+        </StackPanel>
       </Border>
     </Border>
 

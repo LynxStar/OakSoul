@@ -23,7 +23,7 @@ using OakSoul.Review.Views;
 namespace OakSoul.Review;
 
 /// <summary>A row of the notes list.</summary>
-public sealed class NoteRow(ReviewNote note, Verdict? verdict, string session)
+public sealed class NoteRow(ReviewNote note, Verdict? verdict, string session, string root)
 {
     public ReviewNote Note { get; } = note;
     public string Verdict { get; } = note.Promoted is not null && verdict is null ? "truth" : verdict?.Word ?? "note";
@@ -32,6 +32,17 @@ public sealed class NoteRow(ReviewNote note, Verdict? verdict, string session)
     public string Words { get; } = note.Text.Length == 0 ? "(no words)" : note.Text;
     public string Detail { get; } = Describe(note, verdict, session);
     public bool CanPromote { get; } = note.Promoted is null && TruthBook.Expectation(note) is not null;
+    public Bitmap? RawCrop { get; } = Load(note.RawCrop, root);
+    public Bitmap? OverlayCrop { get; } = Load(note.OverlayCrop, root);
+    public bool HasCrops => RawCrop is not null || OverlayCrop is not null;
+
+    /// <summary>A crop the note names (relative to the repository), or none when it is missing or unreadable.</summary>
+    private static Bitmap? Load(string? path, string root)
+    {
+        if (path is null) return null;
+        try { return new Bitmap(Path.GetFullPath(path, root)); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException) { return null; }
+    }
 
     private static string Describe(ReviewNote n, Verdict? v, string session)
     {
@@ -45,6 +56,15 @@ public sealed class NoteRow(ReviewNote note, Verdict? verdict, string session)
         return string.Join("  ·  ", parts);
     }
 }
+
+/// <summary>The notes of one frame in the notes list.</summary>
+public sealed record NoteGroup(string Header, List<NoteRow> Notes);
+
+/// <summary>A frame of the events list and what happened on it.</summary>
+public sealed record EventFrame(int Index, string Header, List<EventLine> Lines);
+
+/// <summary>One event of a frame: a kill, a map change, a review note or a truth entry (with its region, to focus on).</summary>
+public sealed record EventLine(int Index, string What, IBrush Brush, string Text, Focus? Focus = null);
 
 /// <summary>A row of the truth list.</summary>
 public sealed class TruthRow(TruthEntry entry)
@@ -66,13 +86,15 @@ public sealed class SessionRow(string name, string info)
 
 /// <summary>
 /// The review window: the Review tab (the frame with the overlay, the frame's readings, layers, the inspector and the
-/// note editor), the Tracks tab, the Notes and truth tab, and under them the transport and the timeline. More tabs
+/// note editor), the Tracks tab, the Events tab (every frame where something happened, with what), the Notes tab (the
+/// notes by frame with their crops, and the truth), and under them the transport and the timeline. More tabs
 /// (pipeline stages, per-pixel matches, prediction ghosts, the world map, compare mode, cost graphs) slot into the tab
 /// control; Cmd+1..9 selects tabs by position.
 /// </summary>
 public partial class MainWindow : Window
 {
     private static readonly double[] Speeds = [0.25, 1, 2];
+    private readonly Queue<(double Wall, double Time)> _rate = new();
     private static readonly string[] KindChoices = ["—", .. ReviewSession.EntityKinds, NoteExpect.Nothing];
     private static readonly string[] NotKindChoices = ["—", .. ReviewSession.EntityKinds];
 
@@ -329,25 +351,15 @@ public partial class MainWindow : Window
                 ExpectKind.SelectedItem = "mob";
         };
 
-        PrevKill.Click += (_, _) => Mark(_session?.KillMarks, -1, "kill");
-        NextKill.Click += (_, _) => Mark(_session?.KillMarks, 1, "kill");
-        PrevNote.Click += (_, _) => Mark(_session?.NoteMarks, -1, "note");
-        NextNote.Click += (_, _) => Mark(_session?.NoteMarks, 1, "note");
-        PrevFail.Click += (_, _) => Mark(_session?.FailMarks, -1, "failing truth entry");
-        NextFail.Click += (_, _) => Mark(_session?.FailMarks, 1, "failing truth entry");
-        BackSecond.Click += (_, _) => _session?.StepSeconds(-1);
-        FwdSecond.Click += (_, _) => _session?.StepSeconds(1);
-        BackKey.Click += (_, _) => _session?.StepKeyframe(-1);
-        FwdKey.Click += (_, _) => _session?.StepKeyframe(1);
-        BackFrame.Click += (_, _) => _session?.Step(-1);
-        FwdFrame.Click += (_, _) => _session?.Step(1);
+        StartButton.Click += (_, _) => Navigate(() => _session?.Seek(0));
+        EndButton.Click += (_, _) => Navigate(() => _session?.Seek(_session.Timeline.Count - 1));
+        BackFrame.Click += (_, _) => Navigate(() => _session?.Step(-1));
+        FwdFrame.Click += (_, _) => Navigate(() => _session?.Step(1));
         PlayButton.Click += (_, _) => TogglePlay();
-        JumpBox.KeyDown += (_, e) =>
+        GotoBox.KeyDown += (_, e) =>
         {
-            if (e.Key != Key.Enter) return;
-            if (_session?.Jump(JumpBox.Text ?? "") == true) Frame.Focus();
-            else Status($"not a capture sequence or a time: {JumpBox.Text}");
-            e.Handled = true;
+            if (e.Key == Key.Enter) { GoToFrame(); e.Handled = true; }
+            else if (e.Key == Key.Escape) { CloseGoto(); e.Handled = true; }
         };
 
         Tracks.Picked += (t, index) =>
@@ -393,7 +405,6 @@ public partial class MainWindow : Window
         }
         UpdateFrameInfo();
         UpdateInspector();
-        UpdatePosition();
     }
 
     private void OnSelection()
@@ -420,7 +431,6 @@ public partial class MainWindow : Window
         UpdateStream();
         UpdateFrameInfo();
         UpdateInspector();
-        UpdatePosition();
         UpdateNotes();
         UpdatePacket();
         UpdateZoom();
@@ -475,17 +485,10 @@ public partial class MainWindow : Window
         RegenerateButton.Content = s.Generating ? "Stop" : "Regenerate";
     }
 
-    private void UpdatePosition()
-    {
-        if (_session is not { } s) return;
-        var e = s.Entry;
-        PositionText.Text = $"seq {e.Sequence:D7}{(e.Filled ? " fill" : "")}  t {OverlayFrame.FormatTime(e.Time)}  {s.Cursor + 1}/{s.Timeline.Count}  {s.Mode}";
-    }
-
     private void UpdateZoom()
     {
-        ZoomText.Text = $"zoom {Frame.Zoom}×";
-        ToolTip.SetTip(ZoomText, $"{Frame.Zoom} screen pixels per game pixel ({Frame.Scale.ToString("0.##", CultureInfo.InvariantCulture)} points)");
+        ZoomText.Text = $"zoom {Frame.Zoom.ToString("0.##", CultureInfo.InvariantCulture)}×";
+        ToolTip.SetTip(ZoomText, $"{Frame.Zoom.ToString("0.##", CultureInfo.InvariantCulture)} screen pixels per game pixel ({Frame.Scale.ToString("0.##", CultureInfo.InvariantCulture)} points)");
     }
 
     private void UpdatePacket()
@@ -497,61 +500,80 @@ public partial class MainWindow : Window
         ToolTip.SetTip(PacketText, Path.Combine(s.Packets.Dir, name + ".jsonl"));
     }
 
+    // Each info panel shows a fixed number of short lines (blank where a value is absent, never wrapped), so the panels
+    // keep their size as frames advance.
+    private const int FrameLines = 12, HudLines = 8, CountLines = 7;
+
     private void UpdateFrameInfo()
     {
         if (_session is not { } s) return;
         var e = s.Entry;
         var f = s.Frame;
-        var info = new StringBuilder();
-        info.AppendLine($"{s.Name}  {s.Mode}");
-        info.AppendLine($"seq {e.Sequence:D7}{(e.Filled ? "  (fill: repeats it)" : "")}");
-        info.AppendLine($"t {OverlayFrame.FormatTime(e.Time)}  ({(f?.Time ?? e.Time).ToString("0.000", CultureInfo.InvariantCulture)} s)");
-        info.AppendLine($"pts {(f?.Pts ?? e.Pts).ToString("0.000", CultureInfo.InvariantCulture)}");
-        info.AppendLine($"pixels {(s.Video ? $"video frame {e.VideoFrame}" : "keyframe PNG")}{(Frame.Shown != s.Cursor ? " (decoding)" : "")}");
+        var info = new List<string>
+        {
+            $"frame {s.Cursor + 1} of {s.Timeline.Count}",
+            $"{s.Name}  {s.Mode}",
+            $"seq {e.Sequence:D7}{(e.Filled ? "  (fill: repeats it)" : "")}",
+            $"t {OverlayFrame.FormatTime(e.Time)}  ({(f?.Time ?? e.Time).ToString("0.000", CultureInfo.InvariantCulture)} s)",
+            $"pts {(f?.Pts ?? e.Pts).ToString("0.000", CultureInfo.InvariantCulture)}",
+            $"pixels {(s.Video ? $"video frame {e.VideoFrame}" : "keyframe PNG")}{(Frame.Shown != s.Cursor ? " (decoding)" : "")}",
+        };
         if (f is null)
-            info.Append(s.State == StreamState.Generating ? "not processed yet" : "not in the stream");
+            info.Add(s.State == StreamState.Generating ? "not processed yet" : "not in the stream");
         else
         {
             var names = f.Layer(OverlayLayers.Minimap).FirstOrDefault(i => i.Kind == "names")?.Label;
-            info.AppendLine($"map {f.MapId?.ToString(CultureInfo.InvariantCulture) ?? "?"}{(names is null ? "" : $"\n  {names}")}");
+            info.Add($"map {f.MapId?.ToString(CultureInfo.InvariantCulture) ?? "?"}");
+            info.Add($"  {names ?? "(names not read)"}");
             var cam = f.Layer(OverlayLayers.Camera).FirstOrDefault();
-            info.AppendLine(cam?.Label ?? (f.Camera is { } c ? $"cam {c.X},{c.Y}" : "no camera"));
-            if (cam is not null)
-                info.AppendLine($"  guess {Pair(cam.Ints("guess"))}  offset {Pair(cam.Ints("offset"))}\n  score {cam.Double("score")?.ToString("0.000", CultureInfo.InvariantCulture) ?? "-"}  conf {cam.Double("confidence")?.ToString("0.00", CultureInfo.InvariantCulture)}");
-            info.Append(f.Detect is { } d ? $"detector {d}" : $"detector skipped: {f.Skip}");
+            info.Add(cam?.Label ?? (f.Camera is { } c ? $"cam {c.X},{c.Y}" : "no camera"));
+            info.Add(cam is null ? "" : $"  guess {Pair(cam.Ints("guess"))}  offset {Pair(cam.Ints("offset"))}");
+            info.Add(cam is null ? "" : $"  score {cam.Double("score")?.ToString("0.000", CultureInfo.InvariantCulture) ?? "-"}  conf {cam.Double("confidence")?.ToString("0.00", CultureInfo.InvariantCulture)}");
+            info.Add(f.Detect is { } d ? $"detector {d}" : $"detector skipped: {f.Skip}");
             if (s.Stream?.ExtrasAt(s.Cursor) is { } extras)
-                foreach (var (k, v) in extras) info.Append($"\n{k} = {v}  (new field)");
+                foreach (var (k, v) in extras) info.Add($"{k} = {v}  (new field)");
         }
-        FrameInfo.Text = info.ToString();
+        FrameInfo.Text = Lines(info, FrameLines);
 
-        var hud = new StringBuilder();
+        var hud = new List<string>();
         if (f is not null)
         {
             OverlayItem? Region(string name) => f.Layer(OverlayLayers.Hud).FirstOrDefault(i => i.Kind == "region" && i.Str("name") == name);
             var id = Region("status.class_name");
-            hud.AppendLine($"{Region("status.level")?.Label ?? "Lv ?"}  {id?.Str("character") ?? "?"}{(id?.Str("job") is { } job ? $"  {job}" : "")}");
+            hud.Add($"{Region("status.level")?.Label ?? "Lv ?"}  {id?.Str("character") ?? "?"}");
+            hud.Add(id?.Str("job") ?? "");
             foreach (var name in new[] { "status.hp", "status.mp", "status.exp" })
-                if (Region(name) is { } r) hud.AppendLine($"{r.Label}{(r.Double("bar") is { } bar ? $"  bar {bar.ToString("0.000", CultureInfo.InvariantCulture)}" : "")}");
-            if (Region("buffs.row1")?.Label is { } buffs) hud.AppendLine(buffs);
-            if (Region("quickslot")?.Label is { } slots) hud.AppendLine(slots);
-            if (f.Layer(OverlayLayers.Self).FirstOrDefault(i => i.Kind == "character") is { } self)
-                hud.Append(self.Label ?? "self (no world position)").Append(self.Bool("masked") ? "  masked" : "");
+                hud.Add(Region(name) is { } r ? $"{r.Label}{(r.Double("bar") is { } bar ? $"  bar {bar.ToString("0.000", CultureInfo.InvariantCulture)}" : "")}" : "");
+            hud.Add(Region("buffs.row1")?.Label ?? "");
+            hud.Add(Region("quickslot")?.Label ?? "");
+            hud.Add(f.Layer(OverlayLayers.Self).FirstOrDefault(i => i.Kind == "character") is { } self
+                ? (self.Label ?? "self (no world position)") + (self.Bool("masked") ? "  masked" : "")
+                : "");
         }
-        CharacterInfo.Text = hud.ToString().TrimEnd();
+        CharacterInfo.Text = Lines(hud, HudLines);
 
-        var counts = new StringBuilder();
+        var counts = new List<string>();
         if (f is not null)
         {
             var ents = f.Layer(OverlayLayers.Entity).ToList();
             var mobs = ents.Where(x => x.Kind == "mob").ToList();
-            counts.AppendLine($"mob {mobs.Count}: matched {mobs.Count(m => m.Str("evidence") == "matched")}, carried ~{mobs.Count(m => m.Str("evidence") == "carried")}, unverified ?{mobs.Count(m => m.Str("evidence") == "unverified")}");
-            counts.AppendLine(string.Join("  ", ReviewSession.EntityKinds.Where(k => k != "mob").Select(k => $"{k} {ents.Count(x => x.Kind == k)}")));
-            counts.AppendLine($"tags {f.Layer(OverlayLayers.Tags).Count()}");
+            counts.Add($"mob {mobs.Count}: matched {mobs.Count(m => m.Str("evidence") == "matched")}");
+            counts.Add($"  carried ~{mobs.Count(m => m.Str("evidence") == "carried")}  unverified ?{mobs.Count(m => m.Str("evidence") == "unverified")}");
+            counts.AddRange(ReviewSession.EntityKinds.Where(k => k != "mob").Select(k => $"{k} {ents.Count(x => x.Kind == k)}").Append($"tags {f.Layer(OverlayLayers.Tags).Count()}")
+                .Chunk(3).Select(row => string.Join("  ", row)));
         }
+        while (counts.Count < CountLines - 2) counts.Add("");
         if (s.Stream is { } st)
-            counts.Append($"so far: {st.Kills.Count(k => k <= s.Cursor)} kills of {st.Kills.Count}, {st.Tracks.Count} tracks");
-        CountsInfo.Text = counts.ToString().TrimEnd();
+        {
+            counts.Add($"so far: {st.Kills.Count(k => k <= s.Cursor)} kills of {st.Kills.Count}");
+            counts.Add($"  {st.Tracks.Count} tracks");
+        }
+        CountsInfo.Text = Lines(counts, CountLines);
     }
+
+    /// <summary>The lines, padded with blank ones to at least <paramref name="count"/>.</summary>
+    private static string Lines(List<string> lines, int count) =>
+        string.Join("\n", lines.Concat(Enumerable.Repeat("", Math.Max(0, count - lines.Count))));
 
     private static string Pair(int[]? v) => v is [var a, var b] ? $"{a},{b}" : "-";
 
@@ -616,13 +638,15 @@ public partial class MainWindow : Window
     private void UpdateNotes()
     {
         if (_session is not { } s) return;
-        var notes = s.Packets.Notes.Select(n => new NoteRow(n, TruthBook.CheckNote(n, s.Stream, s.Timeline), s.Name)).ToList();
+        var notes = s.Packets.Notes.Select(n => (Index: s.NoteIndex(n), Row: new NoteRow(n, TruthBook.CheckNote(n, s.Stream, s.Timeline), s.Name, _paths.Root))).ToList();
         var entries = s.Truth.Entries;
         // The lists are rebuilt only when what they show changed (stream updates come often while a stream is read).
-        var key = string.Join("|", notes.Select(n => $"{n.Note.Id}{n.Verdict}{n.Detail}{n.Note.Text}")) + "#" + string.Join("|", entries.Select(e => $"{e.Id}{e.Verdict?.Word}{e.Verdict?.Why}"));
+        var key = string.Join("|", notes.Select(n => $"{n.Row.Note.Id}{n.Row.Verdict}{n.Row.Detail}{n.Row.Note.Text}")) + "#" + string.Join("|", entries.Select(e => $"{e.Id}{e.Verdict?.Word}{e.Verdict?.Why}"))
+                  + $"#{s.Stream?.Kills.Count}#{s.Stream?.MapChanges.Count}";
         if (key == _listsKey) return;
         _listsKey = key;
-        NotesList.ItemsSource = notes;
+        NotesList.ItemsSource = notes.GroupBy(n => n.Index).OrderBy(g => g.Key)
+            .Select(g => new NoteGroup(FrameHeader(s, g.Key), [.. g.Select(n => n.Row)])).ToList();
         var packets = s.Packets.Packets.Count;
         NotesTitle.Text = $"Review notes: {notes.Count} in {packets} packet{(packets == 1 ? "" : "s")}";
         ToolTip.SetTip(NotesTitle, s.Packets.Dir);
@@ -630,17 +654,46 @@ public partial class MainWindow : Window
         TruthTitle.Text = $"Ground truth: {entries.Count} entries, {entries.Count(e => e.Verdict?.Pass == true)} pass, " +
                           $"{entries.Count(e => e.Verdict?.Pass == false)} fail{(entries.Any(e => e.Verdict?.Pass is null) ? $", {entries.Count(e => e.Verdict?.Pass is null)} waiting for the stream" : "")}";
         ToolTip.SetTip(TruthTitle, s.Truth.Path);
+        UpdateEvents(s, notes);
+    }
+
+    private static string FrameHeader(ReviewSession s, int index)
+    {
+        var e = s.Timeline[index];
+        return $"Frame {index + 1}  ·  {OverlayFrame.FormatTime(e.Time)}  ·  seq {e.Sequence:D7}{(e.Filled ? " (fill)" : "")}";
+    }
+
+    /// <summary>Every frame where something happened (a kill, a map change, a note, a truth entry), in order.</summary>
+    private void UpdateEvents(ReviewSession s, List<(int Index, NoteRow Row)> notes)
+    {
+        var lines = new List<EventLine>();
+        if (s.Stream is { } st)
+        {
+            foreach (var k in st.Kills)
+            {
+                var exp = st.At(k)?.Layer(OverlayLayers.Hud).FirstOrDefault(i => i.Str("name") == "status.exp");
+                lines.Add(new EventLine(k, "kill", OverlayPainter.Brush(0xFF1F7A4C), $"EXP went up{(exp?.Label is { } l ? $": {l}" : "")}"));
+            }
+            foreach (var m in st.MapChanges)
+                lines.Add(new EventLine(m.Index, "map", OverlayPainter.Brush(0xFF2D5F9A), $"map {m.From?.ToString(CultureInfo.InvariantCulture) ?? "?"} → {m.To}"));
+        }
+        foreach (var (index, row) in notes)
+        {
+            var n = row.Note;
+            lines.Add(new EventLine(index, "note", OverlayPainter.Brush(0xFF8A7420), $"{n.Id}  ·  {NoteCategory.Find(n.Category).Title}  ·  {row.Words}", new Focus(n.Region, n.IsPoint, n.Id, false)));
+        }
+        foreach (var t in s.Truth.Entries)
+            lines.Add(new EventLine(s.Timeline.Nearest(t.Sequence), $"truth {t.Verdict?.Word ?? "…"}", VerdictBrush(t.Verdict?.Pass, false),
+                $"{t.Id}  ·  expect {t.ExpectText}{(t.Verdict?.Why is { Length: > 0 } why ? $"  ·  {why}" : "")}", new Focus(t.Region, t.IsPoint, t.Id, true)));
+        var frames = lines.GroupBy(l => l.Index).OrderBy(g => g.Key).Select(g => new EventFrame(g.Key, FrameHeader(s, g.Key), [.. g])).ToList();
+        EventsList.ItemsSource = frames;
+        EventsTitle.Text = $"Events: {frames.Count} frames, {lines.Count(l => l.What == "kill")} kills, {lines.Count(l => l.What == "map")} map changes, " +
+                           $"{notes.Count} notes, {s.Truth.Entries.Count} truth entries";
     }
 
     private string? _listsKey;
 
     // ---- navigation ----
-
-    private void Mark(IEnumerable<int>? marks, int direction, string what)
-    {
-        if (_session is not { } s || marks is null) return;
-        if (!s.NextMark(marks, direction)) Status($"no {(direction > 0 ? "next" : "previous")} {what}");
-    }
 
     private void SetTool(Tool tool)
     {
@@ -672,6 +725,8 @@ public partial class MainWindow : Window
         _playTime = s.Entry.Time;
         _lastTick = _clock.Elapsed;
         _playTimer.Start();
+        _rate.Clear();
+        RateText.Text = "";
         PlayButton.Content = "❚❚ Pause";
         s.Pixels.Want(s.Cursor, true);
     }
@@ -681,6 +736,7 @@ public partial class MainWindow : Window
         if (!_playing) return;
         _playing = false;
         _playTimer.Stop();
+        RateText.Text = "";
         PlayButton.Content = "▶ Play";
         if (_session is { } s) s.Pixels.Want(s.Cursor);
     }
@@ -708,7 +764,22 @@ public partial class MainWindow : Window
         }
         if (next < target) _playTime = s.Timeline[next].Time;
         s.Seek(next, playing: true);
+        ShowRate(now.TotalSeconds, s.Entry.Time);
         if (next >= s.Timeline.Count - 1) StopPlaying();
+    }
+
+    /// <summary>Shows the recording seconds played per wall second over the last second, against the speed asked for.</summary>
+    private void ShowRate(double wall, double time)
+    {
+        _rate.Enqueue((wall, time));
+        while (_rate.Count > 2 && wall - _rate.Peek().Wall > 1) _rate.Dequeue();
+        var (w0, t0) = _rate.Peek();
+        if (wall - w0 < 0.5) return;
+        var actual = (time - t0) / (wall - w0);
+        var asked = Speeds[Math.Clamp(SpeedBox.SelectedIndex, 0, Speeds.Length - 1)];
+        var behind = actual < asked * 0.9;
+        RateText.Text = $"playing {actual.ToString("0.00", CultureInfo.InvariantCulture)}x{(behind ? " (decode)" : "")}";
+        RateText.Foreground = OverlayPainter.Brush(behind ? 0xFFE0A040u : 0xFF8FC89Fu);
     }
 
     // ---- keyboard ----
@@ -721,6 +792,11 @@ public partial class MainWindow : Window
         if (ConfirmPanel.IsVisible)
         {
             if (e.Key == Key.Escape) { CloseConfirm(); e.Handled = true; }
+            return;
+        }
+        if (GotoPanel.IsVisible)
+        {
+            if (e.Key == Key.Escape) { CloseGoto(); e.Handled = true; }
             return;
         }
         if (OpenPanel.IsVisible)
@@ -746,22 +822,18 @@ public partial class MainWindow : Window
         var handled = true;
         switch (e.Key)
         {
-            case Key.Left when s is not null: Navigate(() => { if (command) s.StepSeconds(-1); else if (shift) s.StepKeyframe(-1); else s.Step(-1); }); break;
-            case Key.Right when s is not null: Navigate(() => { if (command) s.StepSeconds(1); else if (shift) s.StepKeyframe(1); else s.Step(1); }); break;
+            case Key.Left when s is not null: Navigate(() => { if (shift) s.StepSeconds(-5); else s.Step(-1); }); break;
+            case Key.Right when s is not null: Navigate(() => { if (shift) s.StepSeconds(5); else s.Step(1); }); break;
             case Key.Home when s is not null: Navigate(() => s.Seek(0)); break;
             case Key.End when s is not null: Navigate(() => s.Seek(s.Timeline.Count - 1)); break;
             case Key.Space: TogglePlay(); break;
-            case Key.K: Navigate(() => Mark(s?.KillMarks, shift ? -1 : 1, "kill")); break;
-            case Key.N: Navigate(() => Mark(s?.NoteMarks, shift ? -1 : 1, "note")); break;
-            case Key.F: Navigate(() => Mark(s?.FailMarks, shift ? -1 : 1, "failing truth entry")); break;
-            case Key.M: Navigate(() => Mark(s?.MapMarks, shift ? -1 : 1, "map change")); break;
             case Key.V: SetTool(Tool.Select); break;
             case Key.R: SetTool(Tool.Rect); break;
             case Key.P: SetTool(Tool.Point); break;
             case Key.S:
                 SpeedBox.SelectedIndex = (SpeedBox.SelectedIndex + 1) % Speeds.Length;
                 break;
-            case Key.G: JumpBox.Focus(); JumpBox.SelectAll(); break;
+            case Key.G when command && s is not null: ShowGoto(); break;
             case Key.O: ShowOpenPanel(); break;
             case Key.L: LabelsToggle.IsChecked = LabelsToggle.IsChecked != true; break;
             case Key.OemPlus or Key.Add: Frame.ZoomBy(1); break;
@@ -931,6 +1003,59 @@ public partial class MainWindow : Window
         s.FocusOn(index, focus);
         Tabs.SelectedItem = ReviewTab;
         Frame.CentreOn(focus.Region);
+    }
+
+    private void OnEventFrameTapped(object? sender, TappedEventArgs e)
+    {
+        if ((sender as Control)?.DataContext is not EventFrame f || _session is not { } s) return;
+        Navigate(() => s.Seek(f.Index));
+        Tabs.SelectedItem = ReviewTab;
+    }
+
+    private void OnEventLineTapped(object? sender, TappedEventArgs e)
+    {
+        if ((sender as Control)?.DataContext is not EventLine line || _session is not { } s) return;
+        if (line.Focus is { } focus) Go(line.Index, focus);
+        else
+        {
+            Navigate(() => s.Seek(line.Index));
+            Tabs.SelectedItem = ReviewTab;
+        }
+    }
+
+    // ---- going to a frame ----
+
+    private void ShowGoto()
+    {
+        if (_session is not { } s) return;
+        StopPlaying();
+        GotoBox.Text = "";
+        GotoHint.Text = $"1 to {s.Timeline.Count}; now on frame {s.Cursor + 1}. Enter goes, Esc cancels.";
+        GotoHint.Foreground = OverlayPainter.Brush(0xFF8A9098);
+        GotoPanel.IsVisible = true;
+        GotoBox.Focus();
+    }
+
+    private void CloseGoto()
+    {
+        GotoPanel.IsVisible = false;
+        Frame.Focus();
+    }
+
+    /// <summary>Goes to the frame number typed (1 is the first frame of the timeline), or says why not.</summary>
+    private void GoToFrame()
+    {
+        if (_session is not { } s) return;
+        var text = (GotoBox.Text ?? "").Trim();
+        if (!int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var n) || n < 1 || n > s.Timeline.Count)
+        {
+            GotoHint.Text = $"not a frame: \"{text}\" (1 to {s.Timeline.Count})";
+            GotoHint.Foreground = OverlayPainter.Brush(0xFFE07060);
+            return;
+        }
+        s.Seek(n - 1);
+        Tabs.SelectedItem = ReviewTab;
+        CloseGoto();
     }
 
     private static bool InsideButton(object? source) => (source as Visual)?.FindAncestorOfType<Button>(includeSelf: true) is not null;

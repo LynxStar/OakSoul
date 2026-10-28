@@ -15,8 +15,9 @@ namespace OakSoul.Review.Views;
 public enum Tool { Select, Rect, Point }
 
 /// <summary>
-/// The frame at an integer zoom in device pixels (each game pixel a whole number of screen pixels, nearest-neighbour,
-/// so 1x on a Retina display is the game pixel for pixel), panned with a drag, the overlay painted as vectors over it.
+/// The frame at a zoom in device pixels per game pixel, nearest-neighbour (1x on a Retina display is the game pixel for
+/// pixel; the wheel zooms smoothly, snapping to whole zooms where game pixels are even blocks), panned with a drag, the
+/// overlay painted as vectors over it.
 /// Hovering an entity outlines it; clicking selects its track; the rect and point tools draw the region of a note.
 /// The pixels and the overlay shown are always of the same frame: while a frame decodes the previous one stays up with
 /// its own overlay.
@@ -42,8 +43,10 @@ public sealed class FrameView : Control
         RenderOptions.SetBitmapInterpolationMode(this, Avalonia.Media.Imaging.BitmapInterpolationMode.None);
     }
 
+    private const double MinZoom = 0.25, MaxZoom = 16;
+
     /// <summary>Device pixels per game pixel.</summary>
-    public int Zoom { get; private set; } = 2;
+    public double Zoom { get; private set; } = 2;
 
     public Tool Tool { get; set; }
 
@@ -141,23 +144,28 @@ public sealed class FrameView : Control
 
     private double Snap(double v) => Math.Round(v * Scaling) / Scaling;
 
-    /// <summary>The largest zoom at which the whole frame fits, centred.</summary>
+    /// <summary>The zoom at which the whole frame fills the view, centred (a whole zoom when one is within a few percent).</summary>
     public void Fit()
     {
         if (_session is null || Bounds.Width <= 0) return;
         var s = Scaling;
-        Zoom = Math.Max(1, (int)Math.Floor(Math.Min(Bounds.Width * s / _session.Pixels.Width, Bounds.Height * s / _session.Pixels.Height)));
+        var fill = Math.Min(Bounds.Width * s / _session.Pixels.Width, Bounds.Height * s / _session.Pixels.Height);
+        Zoom = Math.Clamp(Math.Floor(fill) >= 1 && Math.Floor(fill) / fill > 0.96 ? Math.Floor(fill) : fill, MinZoom, MaxZoom);
         _origin = new Point(Snap((Bounds.Width - _session.Pixels.Width * Scale) / 2), Snap((Bounds.Height - _session.Pixels.Height * Scale) / 2));
         _fitted = true;
         ZoomChanged?.Invoke();
         InvalidateVisual();
     }
 
-    /// <summary>Zooms by <paramref name="steps"/> device pixels per game pixel, keeping the game pixel under <paramref name="at"/> (default the centre) in place.</summary>
-    public void ZoomBy(int steps, Point? at = null)
+    /// <summary>Zooms in (or out) by <paramref name="steps"/> quarter-octaves (19% each), keeping the game pixel under <paramref name="at"/> (default the centre) in place.</summary>
+    public void ZoomBy(double steps, Point? at = null) => ZoomTo(Zoom * Math.Pow(2, steps / 4), at);
+
+    /// <summary>Sets the zoom, snapped to a whole zoom within 3% of it, keeping the game pixel under <paramref name="at"/> (default the centre) in place.</summary>
+    public void ZoomTo(double zoom, Point? at = null)
     {
-        var next = Math.Clamp(Zoom + steps, 1, 16);
-        if (next == Zoom) return;
+        var whole = Math.Round(zoom);
+        var next = Math.Clamp(whole >= 1 && Math.Abs(zoom - whole) / whole < 0.03 ? whole : zoom, MinZoom, MaxZoom);
+        if (Math.Abs(next - Zoom) < 1e-9) return;
         var p = at ?? Bounds.Center;
         var before = Scale;
         Zoom = next;
@@ -372,9 +380,10 @@ public sealed class FrameView : Control
     protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
     {
         base.OnPointerWheelChanged(e);
-        if (e.KeyModifiers.HasFlag(KeyModifiers.Meta) || e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        // The wheel zooms (a notch is half a step, 9%; a trackpad's small deltas zoom smoothly); Shift+wheel pans.
+        if (!e.KeyModifiers.HasFlag(KeyModifiers.Shift))
         {
-            if (Math.Abs(e.Delta.Y) > 0.01) ZoomBy(e.Delta.Y > 0 ? 1 : -1, e.GetPosition(this));
+            if (Math.Abs(e.Delta.Y) > 0.001) ZoomBy(Math.Clamp(e.Delta.Y, -4, 4) / 2, e.GetPosition(this));
         }
         else
         {

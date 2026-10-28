@@ -22,6 +22,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <AvaloniaResource Include="Assets/icon.png" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="../OakSoul.Bake/OakSoul.Bake.csproj" />
   </ItemGroup>
 
