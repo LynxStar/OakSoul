@@ -44,6 +44,10 @@ public class ModelTests
         Assert.Equal(Freshness.Stale, Provenance.Check(Header("abc", "video"), null, "abc", false, "fx", null, null).Level);
         Assert.Equal(Freshness.Stale, Provenance.Check(Header("abc"), null, "abc", false, "fx", "Other", null).Level);
         Assert.Equal(Freshness.Current, Provenance.Check(Header("abc"), null, "abc", false, "fx", "lynxhope", "Mara").Level);
+        // Commits that differ only in what cannot affect a stream (the review tool, the docs) make the same streams.
+        Assert.Equal(Freshness.Current, Provenance.Check(Header("abc"), null, "def", false, "fx", null, null, (_, _) => true).Level);
+        Assert.Equal(Freshness.Stale, Provenance.Check(Header("abc"), null, "def", false, "fx", null, null, (_, _) => false).Level);
+        Assert.Equal(Freshness.Stale, Provenance.Check(Header("abc"), null, "def", false, "fx", null, null, (_, _) => null).Level);
     }
 
     [Fact]

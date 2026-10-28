@@ -14,7 +14,7 @@ public sealed record PaintOptions(IReadOnlySet<string> Layers, IReadOnlySet<stri
 
 /// <summary>
 /// Draws a frame's overlay items as vectors over the frame, so boxes, lines and labels stay sharp at any zoom: the same
-/// items, colours, label text and label placement as <see cref="FrameRenderer"/> bakes (colours and which items are
+/// items, colours and label text as <see cref="FrameRenderer"/> bakes, labels fixed to their items rather than stacked (colours and which items are
 /// labelled come from <see cref="FrameRenderer.DefaultStyle"/>, the text from the stream's labels, which
 /// <see cref="OverlayLabels"/> built), with strokes and text sized in screen pixels instead of scaled with the frame.
 /// </summary>
@@ -68,7 +68,8 @@ public static class OverlayPainter
         Point P(double x, double y) => new(origin.X + x * zoom, origin.Y + y * zoom);
         using (frameSize is { } fs ? dc.PushClip(new Rect(origin.X, origin.Y, fs.Width * zoom, fs.Height * zoom)) : default(DrawingContext.PushedState?))
             Shapes(dc, frame, zoom, o, labels, P);
-        if (labels.Count > 0) PaintLabels(dc, labels, zoom, origin, labelSize, bounds);
+        // The hovered and the selected item's labels last, on top of any they overlap.
+        if (labels.Count > 0) PaintLabels(dc, [.. labels.OrderBy(l => ReferenceEquals(l.Item, o.Hover) || (o.Selected is { } t && l.Item.Long("track") == t))], zoom, origin, labelSize, bounds);
     }
 
     private static void Shapes(DrawingContext dc, OverlayFrame frame, double zoom, PaintOptions o, List<(OverlayItem Item, uint Colour)> labels, Func<double, double, Point> P)
@@ -114,13 +115,13 @@ public static class OverlayPainter
     }
 
     /// <summary>
-    /// Labels above their item (an entity's box, a region, a portal), moved up past labels already placed so none
-    /// overlap, below the box when there is no room above, joined to the item by a line when moved; on a translucent
-    /// backing so the sprite under them still shows. Bake's placement, in screen pixels.
+    /// Labels just above their item's top-left corner (an entity's box, a region, a portal), on a translucent backing so
+    /// the sprite under them still shows, kept inside the bounds. A label never moves for another: Bake's placement stacks
+    /// overlapping labels, which in playback made them jump by a label's height from frame to frame, so here they may
+    /// overlap instead (the hover card and the inspector say what a crowded one is).
     /// </summary>
     private static void PaintLabels(DrawingContext dc, List<(OverlayItem Item, uint Colour)> labels, double zoom, Point origin, double size, Rect? bounds)
     {
-        var placed = new List<Rect>();
         var top = bounds?.Top ?? 0;
         var left = bounds?.Left ?? 0;
         var right = bounds?.Right ?? double.MaxValue;
@@ -134,17 +135,8 @@ public static class OverlayPainter
             double w = text.Width + 4, h = text.Height + 1;
             // Kept inside the bounds; a label wider than them keeps its start (the track id) in view.
             var x = Math.Max(left, Math.Min(anchor.X, right - w));
-            var y = anchor.Y - h - 1;
-            var moved = false;
-            for (var tries = 0; tries < 12 && placed.Any(l => l.Intersects(new Rect(x, y, w, h))); tries++) { y -= h; moved = true; }
-            if (y < top)
-            {
-                y = item.Rect is { } rb ? origin.Y + (rb.Y + rb.H) * zoom + 2 : anchor.Y + 2;
-                moved = true;
-            }
+            var y = Math.Max(top, anchor.Y - h - 1);
             var box = new Rect(x, y, w, h);
-            placed.Add(box);
-            if (moved) dc.DrawLine(Pen(colour, 1), new Point(x, y + h), anchor);
             dc.DrawRectangle(LabelBacking, null, box);
             dc.DrawText(text, new Point(x + 2, y));
         }

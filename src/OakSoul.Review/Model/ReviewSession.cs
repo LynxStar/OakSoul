@@ -69,6 +69,15 @@ public sealed class ReviewSession : IDisposable
     public Species Species { get; }
     public string Reviewer => _options.Reviewer;
     public string? CheckoutCommit { get; }
+
+    private readonly Dictionary<(string, string), bool?> _sameStreamCode = [];
+
+    /// <summary>Whether two commits make the same streams (asked of git once per pair).</summary>
+    private bool? SameStreamCode(string a, string b)
+    {
+        if (!_sameStreamCode.TryGetValue((a, b), out var same)) _sameStreamCode[(a, b)] = same = OverlayProvenance.SameStreamCode(Paths.Root, a, b);
+        return same;
+    }
     public string StreamPath { get; }
 
     public ReviewStream? Stream { get; private set; }
@@ -150,7 +159,7 @@ public sealed class ReviewSession : IDisposable
     {
         if (Stream is null) return;
         Stream.SetHeader(header, fields, problem);
-        Provenance = Model.Provenance.Check(header, problem, CheckoutCommit, Video, Name, _character, _pet);
+        Provenance = Model.Provenance.Check(header, problem, CheckoutCommit, Video, Name, _character, _pet, SameStreamCode);
         StreamChanged?.Invoke();
     }
 
@@ -172,7 +181,7 @@ public sealed class ReviewSession : IDisposable
         State = ok ? StreamState.Ready : StreamState.Failed;
         StatusText = message;
         if (ok && _generator is not null && Stream.Header is { } h)
-            Provenance = Model.Provenance.Check(h, Stream.HeaderProblem, CheckoutCommit, Video, Name, _character, _pet);
+            Provenance = Model.Provenance.Check(h, Stream.HeaderProblem, CheckoutCommit, Video, Name, _character, _pet, SameStreamCode);
         Truth.Evaluate(Stream, Timeline);
         StreamChanged?.Invoke();
         NotesChanged?.Invoke();

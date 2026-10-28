@@ -19,12 +19,14 @@ public enum Freshness { Current, Unknown, Stale }
 
 /// <summary>
 /// Whether a stream's header provenance matches the current code and options: the commit it was made from against the
-/// checkout's (a "+dirty" on either side makes it unknown), the replay mode, the session, the thresholds the code has
+/// checkout's (a "+dirty" on either side makes it unknown; commits that differ only in files that cannot affect a
+/// stream, <see cref="OverlayProvenance.Unaffecting"/>, count as the same), the replay mode, the session, the thresholds the code has
 /// now, the layers, and the character and pet when the tool was given them.
 /// </summary>
 public sealed record Provenance(Freshness Level, IReadOnlyList<string> Reasons)
 {
-    public static Provenance Check(OverlayHeader header, string? problem, string? checkoutCommit, bool video, string session, string? character, string? pet)
+    public static Provenance Check(OverlayHeader header, string? problem, string? checkoutCommit, bool video, string session, string? character, string? pet,
+        Func<string, string, bool?>? sameStreamCode = null)
     {
         var stale = new List<string>();
         var unknown = new List<string>();
@@ -41,7 +43,7 @@ public sealed record Provenance(Freshness Level, IReadOnlyList<string> Reasons)
         var (now, nowDirty) = Split(checkoutCommit);
         if (made is null) unknown.Add("the stream names no commit");
         else if (now is null) unknown.Add("git cannot name the checkout's commit");
-        else if (made != now) stale.Add($"made by {Short(made)}{(madeDirty ? "+dirty" : "")}, the checkout is at {Short(now)}{(nowDirty ? "+dirty" : "")}");
+        else if (made != now && sameStreamCode?.Invoke(made, now) != true) stale.Add($"made by {Short(made)}{(madeDirty ? "+dirty" : "")}, the checkout is at {Short(now)}{(nowDirty ? "+dirty" : "")}");
         else
         {
             if (madeDirty) unknown.Add($"made from uncommitted changes on {Short(made)}");
@@ -49,7 +51,8 @@ public sealed record Provenance(Freshness Level, IReadOnlyList<string> Reasons)
         }
         return stale.Count > 0 ? new Provenance(Freshness.Stale, [.. stale, .. unknown])
             : unknown.Count > 0 ? new Provenance(Freshness.Unknown, unknown)
-            : new Provenance(Freshness.Current, [$"made by {Short(made!)}, the checkout's commit"]);
+            : new Provenance(Freshness.Current, [made == now ? $"made by {Short(made!)}, the checkout's commit"
+                : $"made by {Short(made!)}; the checkout, at {Short(now!)}, changed nothing that affects a stream"]);
     }
 
     private static bool Same(double a, double b) => double.IsNaN(a) ? false : Math.Abs(a - b) < 1e-9;
