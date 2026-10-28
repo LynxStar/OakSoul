@@ -36,6 +36,7 @@ public sealed class FrameView : Control
     private (int X, int Y)? _dragFrom;
     private (int X, int Y)? _dragTo;
     private readonly LabelLayout _labels = new();
+    private static readonly Cursor Arrow = Cursor.Default, Hand = new(StandardCursorType.Hand), Cross = new(StandardCursorType.Cross), Move = new(StandardCursorType.SizeAll);
 
     public FrameView()
     {
@@ -314,7 +315,7 @@ public sealed class FrameView : Control
             _panFrom = p;
             _panOrigin = _origin;
             e.Pointer.Capture(this);
-            Cursor = new Cursor(StandardCursorType.SizeAll);
+            SetCursor(Move);
         }
     }
 
@@ -344,9 +345,18 @@ public sealed class FrameView : Control
             Hover = hover;
             InvalidateVisual();
         }
-        Cursor = Tool == Tool.Select ? (hover is null ? Cursor.Default : new Cursor(StandardCursorType.Hand)) : new Cursor(StandardCursorType.Cross);
+        SetCursor(Tool == Tool.Select ? (hover is null ? Arrow : Hand) : Cross);
         HoverChanged?.Invoke();
     }
+
+    /// <summary>Sets the pointer's cursor only when it changes: a new cursor on every pointer move makes macOS set it again each time.</summary>
+    public void SetCursor(Cursor cursor)
+    {
+        if (!ReferenceEquals(Cursor, cursor)) Cursor = cursor;
+    }
+
+    /// <summary>The cursor for a tool when nothing is hovered.</summary>
+    public static Cursor ToolCursor(Tool tool) => tool == Tool.Select ? Arrow : Cross;
 
     protected override void OnPointerExited(PointerEventArgs e)
     {
@@ -363,7 +373,7 @@ public sealed class FrameView : Control
         {
             _panFrom = null;
             e.Pointer.Capture(null);
-            Cursor = Cursor.Default;
+            SetCursor(Arrow);
             return;
         }
         if (_dragFrom is { } a && _dragTo is { } b)

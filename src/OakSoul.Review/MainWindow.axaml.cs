@@ -32,9 +32,11 @@ public sealed class NoteRow(ReviewNote note, Verdict? verdict, string session, s
     public string Words { get; } = note.Text.Length == 0 ? "(no words)" : note.Text;
     public string Detail { get; } = Describe(note, verdict, session);
     public bool CanPromote { get; } = note.Promoted is null && TruthBook.Expectation(note) is not null;
-    public Bitmap? RawCrop { get; } = Load(note.RawCrop, root);
-    public Bitmap? OverlayCrop { get; } = Load(note.OverlayCrop, root);
-    public bool HasCrops => RawCrop is not null || OverlayCrop is not null;
+    // Read from disk when the notes list first shows them, not each time the rows are rebuilt (every stream update).
+    private readonly Lazy<Bitmap?> _raw = new(() => Load(note.RawCrop, root)), _overlay = new(() => Load(note.OverlayCrop, root));
+    public Bitmap? RawCrop => _raw.Value;
+    public Bitmap? OverlayCrop => _overlay.Value;
+    public bool HasCrops { get; } = note.RawCrop is not null || note.OverlayCrop is not null;
 
     /// <summary>A crop the note names (relative to the repository), or none when it is missing or unreadable.</summary>
     private static Bitmap? Load(string? path, string root)
@@ -717,7 +719,7 @@ public partial class MainWindow : Window
         SelectTool.IsChecked = tool == Tool.Select;
         RectTool.IsChecked = tool == Tool.Rect;
         PointTool.IsChecked = tool == Tool.Point;
-        Frame.Cursor = tool == Tool.Select ? Cursor.Default : new Cursor(StandardCursorType.Cross);
+        Frame.SetCursor(FrameView.ToolCursor(tool));
     }
 
     private void SelectTab(int index)
