@@ -59,6 +59,18 @@ public static class Truth
         return fail == 0 ? 0 : 1;
     }
 
+    /// <summary>
+    /// Checks one entry (a parsed line) against the frame of the stream it names, or null when the stream lacks that frame:
+    /// pass or fail, why, and the entry's place as <c>bake truth</c> prints them. The review tool's check.
+    /// </summary>
+    public static (bool Ok, string Why, string Place) CheckEntry(OverlayFrame? frame, JsonElement entry)
+    {
+        var place = Place(entry);
+        if (frame is null) return (false, "the frame is not in the stream", place.Text);
+        var (ok, why) = Check(frame, place, entry.GetProperty("expect"));
+        return (ok, why, place.Text);
+    }
+
     private sealed record Location(int X, int Y, int W, int H, bool IsPoint, int Near)
     {
         public string Text => IsPoint ? $"point {X},{Y}" : $"rect {X},{Y},{W},{H}";

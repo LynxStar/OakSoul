@@ -1,0 +1,293 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:views="using:OakSoul.Review.Views"
+        xmlns:local="using:OakSoul.Review"
+        x:Class="OakSoul.Review.MainWindow"
+        Title="OakSoul review"
+        Width="1640" Height="1010" MinWidth="1100" MinHeight="640"
+        Background="#101114">
+  <Grid RowDefinitions="Auto,*,Auto,Auto">
+
+    <!-- The open recording, its stream and the packet notes go to. -->
+    <Border Grid.Row="0" Background="#181A1E" Padding="8,6" BorderBrush="#2A2E34" BorderThickness="0,0,0,1">
+      <Grid ColumnDefinitions="Auto,*,Auto">
+        <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+          <Button x:Name="OpenButton" Content="Open…" ToolTip.Tip="Open another recording (O)" />
+          <TextBlock x:Name="SessionTitle" FontWeight="SemiBold" FontSize="15" VerticalAlignment="Center" Text="no recording" />
+          <RadioButton x:Name="KeyframesMode" GroupName="mode" Content="Keyframes" ToolTip.Tip="Every keyframe PNG (every 15th captured frame) and the keyframe stream" />
+          <RadioButton x:Name="VideoMode" GroupName="mode" Content="Video" ToolTip.Tip="Every frame of the lossless video and the video stream" />
+        </StackPanel>
+        <DockPanel Grid.Column="1" Margin="16,0" VerticalAlignment="Center">
+          <Border x:Name="StreamBadge" DockPanel.Dock="Left" CornerRadius="3" Padding="6,1" VerticalAlignment="Center" Background="#444" Margin="0,0,8,0">
+            <TextBlock x:Name="StreamBadgeText" FontSize="11" FontWeight="SemiBold" Text="no stream" />
+          </Border>
+          <Button x:Name="RegenerateButton" DockPanel.Dock="Right" Content="Regenerate" Margin="8,0,0,0" ToolTip.Tip="Run the current watcher over the recording again (OakSoul.Bake regenerate) in the background" />
+          <ProgressBar x:Name="StreamProgress" DockPanel.Dock="Right" Width="150" Minimum="0" Maximum="1" IsVisible="False" VerticalAlignment="Center" Margin="8,0,0,0" />
+          <TextBlock x:Name="StreamText" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+        </DockPanel>
+        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+          <TextBlock x:Name="PacketText" VerticalAlignment="Center" Foreground="#C8B460" />
+          <Button x:Name="NewPacketButton" Content="New packet" ToolTip.Tip="The next note starts a new review packet (a new review round)" />
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <TabControl Grid.Row="1" x:Name="Tabs" Padding="0" Margin="0">
+
+      <TabItem Header="Review" x:Name="ReviewTab">
+        <Grid ColumnDefinitions="260,*,360">
+          <ScrollViewer Grid.Column="0" Background="#15171A">
+            <StackPanel Margin="6">
+              <Border Classes="panel">
+                <StackPanel>
+                  <TextBlock Classes="panelTitle" Text="Frame" />
+                  <SelectableTextBlock x:Name="FrameInfo" FontFamily="Menlo, Consolas, monospace" FontSize="12" TextWrapping="Wrap" />
+                </StackPanel>
+              </Border>
+              <Border Classes="panel">
+                <StackPanel>
+                  <TextBlock Classes="panelTitle" Text="Character and HUD" />
+                  <SelectableTextBlock x:Name="CharacterInfo" FontFamily="Menlo, Consolas, monospace" FontSize="12" TextWrapping="Wrap" />
+                </StackPanel>
+              </Border>
+              <Border Classes="panel">
+                <StackPanel>
+                  <TextBlock Classes="panelTitle" Text="Entities" />
+                  <SelectableTextBlock x:Name="CountsInfo" FontFamily="Menlo, Consolas, monospace" FontSize="12" TextWrapping="Wrap" />
+                </StackPanel>
+              </Border>
+              <Border Classes="panel">
+                <StackPanel Spacing="1">
+                  <TextBlock Classes="panelTitle" Text="Layers" />
+                  <StackPanel x:Name="LayerToggles" Spacing="0" />
+                  <TextBlock Classes="panelTitle" Text="Entity kinds" />
+                  <StackPanel x:Name="KindToggles" Spacing="0" />
+                  <TextBlock Classes="panelTitle" Text="Marks" />
+                  <CheckBox x:Name="LabelsToggle" Content="Labels (L)" IsChecked="True" />
+                  <CheckBox x:Name="NotesToggle" Content="Review notes (yellow)" IsChecked="True" />
+                  <CheckBox x:Name="TruthToggle" Content="Truth entries (green pass, red fail)" IsChecked="True" />
+                </StackPanel>
+              </Border>
+            </StackPanel>
+          </ScrollViewer>
+
+          <Grid Grid.Column="1">
+            <views:FrameView x:Name="Frame" />
+            <StackPanel Orientation="Horizontal" Spacing="2" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="8">
+              <ToggleButton x:Name="SelectTool" Content="Select (V)" IsChecked="True" ToolTip.Tip="Hover for details, click an entity to inspect its track, drag to pan" />
+              <ToggleButton x:Name="RectTool" Content="Rect (R)" ToolTip.Tip="Drag a rectangle on the frame for a note" />
+              <ToggleButton x:Name="PointTool" Content="Point (P)" ToolTip.Tip="Click a point on the frame for a note (something missed)" />
+            </StackPanel>
+            <Border HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="8" Background="#C0101114" CornerRadius="4" Padding="4,2">
+              <StackPanel Orientation="Horizontal" Spacing="4">
+                <Button x:Name="ZoomOut" Content="−" Width="28" ToolTip.Tip="Zoom out (−)" />
+                <TextBlock x:Name="ZoomText" VerticalAlignment="Center" MinWidth="70" TextAlignment="Center" FontSize="12" />
+                <Button x:Name="ZoomIn" Content="+" Width="28" ToolTip.Tip="Zoom in (+, or Cmd+wheel)" />
+                <Button x:Name="ZoomFit" Content="Fit" ToolTip.Tip="Largest zoom that fits (0)" />
+              </StackPanel>
+            </Border>
+            <Border HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="8" Background="#C0101114" CornerRadius="4" Padding="6,2" IsHitTestVisible="False">
+              <TextBlock x:Name="PointerText" FontFamily="Menlo, Consolas, monospace" FontSize="11" Foreground="#B0B8C0" />
+            </Border>
+            <Canvas IsHitTestVisible="False" ClipToBounds="True">
+              <Border x:Name="HoverCard" IsVisible="False" Background="#E8101216" BorderBrush="#556070" BorderThickness="1" CornerRadius="4" Padding="8,6" MaxWidth="560">
+                <StackPanel Spacing="2">
+                  <TextBlock x:Name="HoverTitle" FontWeight="SemiBold" TextWrapping="Wrap" />
+                  <TextBlock x:Name="HoverText" FontFamily="Menlo, Consolas, monospace" FontSize="11" TextWrapping="Wrap" Foreground="#C8D0D8" />
+                </StackPanel>
+              </Border>
+            </Canvas>
+          </Grid>
+
+          <ScrollViewer Grid.Column="2" Background="#15171A">
+            <StackPanel Margin="6">
+              <Border x:Name="Editor" Classes="panel" IsVisible="False" BorderBrush="#C8A830">
+                <StackPanel Spacing="4">
+                  <TextBlock Classes="panelTitle" Text="New note" Foreground="#FFD84A" />
+                  <TextBlock x:Name="EditorRegion" FontFamily="Menlo, Consolas, monospace" FontSize="11" Foreground="#A0A8B0" TextWrapping="Wrap" />
+                  <TextBlock Text="Category (keys 1–7)" FontSize="12" />
+                  <WrapPanel x:Name="CategoryButtons" />
+                  <TextBlock Text="What it really is (optional; makes the note promotable to truth)" FontSize="12" TextWrapping="Wrap" Margin="0,4,0,0" />
+                  <Grid ColumnDefinitions="56,*" RowDefinitions="Auto,Auto,Auto,Auto">
+                    <TextBlock Grid.Row="0" Text="Kind" VerticalAlignment="Center" />
+                    <ComboBox Grid.Row="0" Grid.Column="1" x:Name="ExpectKind" HorizontalAlignment="Stretch" Margin="0,2" />
+                    <TextBlock Grid.Row="1" Text="Name" VerticalAlignment="Center" />
+                    <AutoCompleteBox Grid.Row="1" Grid.Column="1" x:Name="ExpectName" Margin="0,2" FilterMode="Contains" MinimumPrefixLength="0" Watermark="species or name" />
+                    <TextBlock Grid.Row="2" Text="State" VerticalAlignment="Center" />
+                    <AutoCompleteBox Grid.Row="2" Grid.Column="1" x:Name="ExpectState" Margin="0,2" FilterMode="Contains" MinimumPrefixLength="0" Watermark="e.g. dying" />
+                    <TextBlock Grid.Row="3" Text="Not" VerticalAlignment="Center" />
+                    <ComboBox Grid.Row="3" Grid.Column="1" x:Name="ExpectNotKind" HorizontalAlignment="Stretch" Margin="0,2" />
+                  </Grid>
+                  <TextBlock Text="Note, in your words" FontSize="12" Margin="0,4,0,0" />
+                  <TextBox x:Name="NoteText" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="80" Watermark="what is wrong here (Cmd+Enter saves, Esc cancels)" />
+                  <TextBlock x:Name="EditorUnder" FontFamily="Menlo, Consolas, monospace" FontSize="11" Foreground="#A0A8B0" TextWrapping="Wrap" />
+                  <StackPanel Orientation="Horizontal" Spacing="6">
+                    <Button x:Name="SaveNoteButton" Content="Save (⌘↵)" />
+                    <Button x:Name="CancelNoteButton" Content="Cancel (Esc)" />
+                  </StackPanel>
+                  <TextBlock x:Name="EditorPacket" FontSize="11" Foreground="#8A9098" TextWrapping="Wrap" />
+                </StackPanel>
+              </Border>
+              <Border Classes="panel">
+                <StackPanel Spacing="4">
+                  <TextBlock Classes="panelTitle" Text="Inspector" />
+                  <TextBlock x:Name="InspectorTitle" FontWeight="SemiBold" TextWrapping="Wrap" Text="click an entity to inspect its track" Foreground="#A0A8B0" />
+                  <views:TrackStrip x:Name="Strip" />
+                  <StackPanel x:Name="StripLegend" Orientation="Horizontal" Spacing="8" />
+                  <SelectableTextBlock x:Name="InspectorText" FontFamily="Menlo, Consolas, monospace" FontSize="11.5" TextWrapping="Wrap" />
+                </StackPanel>
+              </Border>
+            </StackPanel>
+          </ScrollViewer>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="Tracks" x:Name="TracksTab">
+        <DockPanel>
+          <WrapPanel DockPanel.Dock="Top" Margin="8,4" Orientation="Horizontal">
+            <TextBlock Text="Kinds" VerticalAlignment="Center" Margin="0,0,6,0" />
+            <StackPanel x:Name="TrackKindToggles" Orientation="Horizontal" Spacing="2" Margin="0,0,16,0" />
+            <TextBlock Text="At least" VerticalAlignment="Center" Margin="0,0,6,0" />
+            <NumericUpDown x:Name="MinFrames" Minimum="1" Maximum="10000" Value="1" Increment="1" FormatString="0" Width="110" Margin="0,0,4,0" />
+            <TextBlock Text="frames" VerticalAlignment="Center" Margin="0,0,16,0" />
+            <TextBlock Text="Order" VerticalAlignment="Center" Margin="0,0,6,0" />
+            <ComboBox x:Name="TrackOrderBox" Width="150" Margin="0,0,16,0" />
+            <StackPanel x:Name="EvidenceLegend" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center" />
+          </WrapPanel>
+          <TextBlock DockPanel.Dock="Bottom" x:Name="TracksStatus" FontFamily="Menlo, Consolas, monospace" FontSize="11" Foreground="#A0A8B0" Margin="8,3" />
+          <views:TracksView x:Name="Tracks" />
+        </DockPanel>
+      </TabItem>
+
+      <TabItem Header="Notes and truth" x:Name="NotesTab">
+        <Grid ColumnDefinitions="*,*">
+          <DockPanel Grid.Column="0" Margin="6">
+            <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
+              <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="8">
+                <Button x:Name="PromoteAllButton" Content="Promote to truth…" ToolTip.Tip="Turn every note with an expectation (and not yet promoted) into ground-truth entries" />
+                <Button x:Name="ReloadButton" Content="Reload" ToolTip.Tip="Read the packets and truth file again" />
+              </StackPanel>
+              <TextBlock x:Name="NotesTitle" Classes="panelTitle" Text="Review notes" VerticalAlignment="Center" Margin="0" TextTrimming="CharacterEllipsis" />
+            </DockPanel>
+            <ScrollViewer>
+              <ItemsControl x:Name="NotesList">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="local:NoteRow">
+                    <Border Background="#1A1D22" BorderBrush="#2C3138" BorderThickness="1" CornerRadius="4" Padding="8,6" Margin="0,0,0,4" Cursor="Hand" Tapped="OnNoteTapped">
+                      <Grid ColumnDefinitions="52,*,Auto">
+                        <Border Grid.Column="0" Background="{Binding VerdictBrush}" CornerRadius="3" Padding="4,1" VerticalAlignment="Top">
+                          <TextBlock Text="{Binding Verdict}" FontSize="11" FontWeight="SemiBold" HorizontalAlignment="Center" />
+                        </Border>
+                        <StackPanel Grid.Column="1" Margin="8,0" Spacing="2">
+                          <TextBlock Text="{Binding Heading}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                          <TextBlock Text="{Binding Words}" TextWrapping="Wrap" />
+                          <TextBlock Text="{Binding Detail}" FontFamily="Menlo, Consolas, monospace" FontSize="11" Foreground="#9AA2AA" TextWrapping="Wrap" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="2" Spacing="3" VerticalAlignment="Top">
+                          <Button Content="Promote…" IsVisible="{Binding CanPromote}" Click="OnPromoteNote" FontSize="11" />
+                          <Button Content="Delete" Click="OnDeleteNote" FontSize="11" />
+                        </StackPanel>
+                      </Grid>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </ScrollViewer>
+          </DockPanel>
+          <DockPanel Grid.Column="1" Margin="6">
+            <TextBlock DockPanel.Dock="Top" x:Name="TruthTitle" Classes="panelTitle" Text="Ground truth" Margin="0,6,0,10" TextTrimming="CharacterEllipsis" />
+            <ScrollViewer>
+              <ItemsControl x:Name="TruthList">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="local:TruthRow">
+                    <Border Background="#1A1D22" BorderBrush="#2C3138" BorderThickness="1" CornerRadius="4" Padding="8,6" Margin="0,0,0,4" Cursor="Hand" Tapped="OnTruthTapped">
+                      <Grid ColumnDefinitions="52,*">
+                        <Border Grid.Column="0" Background="{Binding VerdictBrush}" CornerRadius="3" Padding="4,1" VerticalAlignment="Top">
+                          <TextBlock Text="{Binding Verdict}" FontSize="11" FontWeight="SemiBold" HorizontalAlignment="Center" />
+                        </Border>
+                        <StackPanel Grid.Column="1" Margin="8,0" Spacing="2">
+                          <TextBlock Text="{Binding Heading}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                          <TextBlock Text="{Binding Why}" FontFamily="Menlo, Consolas, monospace" FontSize="11" TextWrapping="Wrap" />
+                          <TextBlock Text="{Binding Words}" TextWrapping="Wrap" Foreground="#9AA2AA" FontSize="12" />
+                        </StackPanel>
+                      </Grid>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </ScrollViewer>
+          </DockPanel>
+        </Grid>
+      </TabItem>
+    </TabControl>
+
+    <!-- Transport. -->
+    <Border Grid.Row="2" Background="#181A1E" Padding="8,4" BorderBrush="#2A2E34" BorderThickness="0,1,0,0">
+      <DockPanel>
+        <WrapPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center">
+          <Button x:Name="PrevKill" Content="◀ kill" ToolTip.Tip="Previous kill, an EXP gain (Shift+K)" Margin="0,0,2,0" />
+          <Button x:Name="NextKill" Content="kill ▶" ToolTip.Tip="Next kill (K)" Margin="0,0,8,0" />
+          <Button x:Name="PrevNote" Content="◀ note" ToolTip.Tip="Previous review note (Shift+N)" Margin="0,0,2,0" />
+          <Button x:Name="NextNote" Content="note ▶" ToolTip.Tip="Next review note (N)" Margin="0,0,8,0" />
+          <Button x:Name="PrevFail" Content="◀ fail" ToolTip.Tip="Previous failing truth entry (Shift+F)" Margin="0,0,2,0" />
+          <Button x:Name="NextFail" Content="fail ▶" ToolTip.Tip="Next failing truth entry (F)" Margin="0,0,16,0" />
+          <Button x:Name="BackSecond" Content="−1 s" ToolTip.Tip="Back one second (Cmd+←)" Margin="0,0,2,0" />
+          <Button x:Name="BackKey" Content="−1 kf" ToolTip.Tip="Back one keyframe, 15 frames (Shift+←)" Margin="0,0,2,0" />
+          <Button x:Name="BackFrame" Content="−1" ToolTip.Tip="Back one frame (←)" Margin="0,0,2,0" />
+          <Button x:Name="PlayButton" Content="▶ Play" Width="78" ToolTip.Tip="Play or pause (Space)" Margin="0,0,2,0" />
+          <Button x:Name="FwdFrame" Content="+1" ToolTip.Tip="Forward one frame (→)" Margin="0,0,2,0" />
+          <Button x:Name="FwdKey" Content="+1 kf" ToolTip.Tip="Forward one keyframe, 15 frames (Shift+→)" Margin="0,0,2,0" />
+          <Button x:Name="FwdSecond" Content="+1 s" ToolTip.Tip="Forward one second (Cmd+→)" Margin="0,0,8,0" />
+          <ComboBox x:Name="SpeedBox" Width="84" ToolTip.Tip="Playback speed (S cycles)" Margin="0,0,8,0" />
+          <TextBox x:Name="JumpBox" Width="170" Watermark="seq or m:ss, Enter (G)" />
+        </WrapPanel>
+        <TextBlock x:Name="PositionText" DockPanel.Dock="Right" FontFamily="Menlo, Consolas, monospace" FontSize="12" VerticalAlignment="Center" Margin="12,0,0,0" />
+        <TextBlock x:Name="StatusText" VerticalAlignment="Center" Foreground="#C8D070" TextTrimming="CharacterEllipsis" Margin="12,0" FontSize="12" />
+      </DockPanel>
+    </Border>
+
+    <views:TimelineView Grid.Row="3" x:Name="TimelineBar" />
+
+    <!-- Opening a recording. -->
+    <Border x:Name="OpenPanel" Grid.RowSpan="4" Background="#D0080A0C" IsVisible="False">
+      <Border Width="720" MaxHeight="640" Background="#1A1D22" BorderBrush="#3A4048" BorderThickness="1" CornerRadius="6" Padding="16" HorizontalAlignment="Center" VerticalAlignment="Center">
+        <DockPanel>
+          <TextBlock DockPanel.Dock="Top" Text="Open a recording" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,4" />
+          <TextBlock DockPanel.Dock="Top" x:Name="OpenRoot" Foreground="#8A9098" FontSize="12" Margin="0,0,0,10" TextWrapping="Wrap" />
+          <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Spacing="10" Margin="0,12,0,0" HorizontalAlignment="Right">
+            <RadioButton x:Name="OpenKeyframes" GroupName="openmode" Content="Keyframes" IsChecked="True" />
+            <RadioButton x:Name="OpenVideo" GroupName="openmode" Content="Video" />
+            <Button x:Name="OpenCancel" Content="Cancel" />
+            <Button x:Name="OpenConfirm" Content="Open" Classes="accent" />
+          </StackPanel>
+          <ListBox x:Name="SessionList">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="local:SessionRow">
+                <StackPanel Spacing="1" Margin="2">
+                  <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                  <TextBlock Text="{Binding Info}" FontSize="12" Foreground="#9AA2AA" TextWrapping="Wrap" />
+                </StackPanel>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </DockPanel>
+      </Border>
+    </Border>
+
+    <!-- Confirming a promotion to truth or a deletion. -->
+    <Border x:Name="ConfirmPanel" Grid.RowSpan="4" Background="#D0080A0C" IsVisible="False">
+      <Border Width="980" MaxHeight="760" Background="#1A1D22" BorderBrush="#3A4048" BorderThickness="1" CornerRadius="6" Padding="16" HorizontalAlignment="Center" VerticalAlignment="Center">
+        <DockPanel>
+          <TextBlock DockPanel.Dock="Top" x:Name="ConfirmTitle" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,8" TextWrapping="Wrap" />
+          <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Spacing="10" Margin="0,12,0,0" HorizontalAlignment="Right">
+            <Button x:Name="ConfirmCancel" Content="Cancel" />
+            <Button x:Name="ConfirmButton" Content="Confirm" Classes="accent" />
+          </StackPanel>
+          <ScrollViewer>
+            <SelectableTextBlock x:Name="ConfirmText" FontFamily="Menlo, Consolas, monospace" FontSize="11.5" TextWrapping="Wrap" />
+          </ScrollViewer>
+        </DockPanel>
+      </Border>
+    </Border>
+  </Grid>
+</Window>
