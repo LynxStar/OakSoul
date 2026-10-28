@@ -58,29 +58,31 @@
                   <SelectableTextBlock x:Name="CountsInfo" FontFamily="Menlo, Consolas, monospace" FontSize="12" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
                 </StackPanel>
               </Border>
-              <Border Classes="panel">
-                <StackPanel Spacing="1">
-                  <TextBlock Classes="panelTitle" Text="Layers" />
-                  <StackPanel x:Name="LayerToggles" Spacing="0" />
-                  <TextBlock Classes="panelTitle" Text="Entity kinds" />
-                  <StackPanel x:Name="KindToggles" Spacing="0" />
-                  <TextBlock Classes="panelTitle" Text="Marks" />
-                  <CheckBox x:Name="LabelsToggle" Content="Labels (L)" IsChecked="True" />
-                  <CheckBox x:Name="NotesToggle" Content="Review notes (yellow)" IsChecked="True" />
-                  <CheckBox x:Name="TruthToggle" Content="Truth entries (green pass, red fail)" IsChecked="True" />
-                </StackPanel>
-              </Border>
             </StackPanel>
           </ScrollViewer>
 
-          <Grid Grid.Column="1">
+          <DockPanel Grid.Column="1">
+          <!-- Over the frame: which frame this is, the panels and the note tool, and the legend, whose chips switch what
+               the overlay draws. -->
+          <Border DockPanel.Dock="Top" Background="#181A1E" BorderBrush="#2A2E34" BorderThickness="0,0,0,1" Padding="6,4">
+            <DockPanel>
+              <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Spacing="6" VerticalAlignment="Top">
+                <ToggleButton x:Name="LeftToggle" Content="◧ Info ([)" ToolTip.Tip="Show or hide the left panel: the frame's readings, the HUD and the entity counts" />
+                <TextBlock x:Name="FrameText" FontFamily="Menlo, Consolas, monospace" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center" MinWidth="250" Margin="6,0"
+                           ToolTip.Tip="The frame on screen, of the timeline's frames (Cmd+G goes to one), and its time" />
+                <ToggleButton x:Name="NoteTool" Content="Note (N)" ToolTip.Tip="Drag a rectangle on the frame (or click a point, for something missed) and write a note about it; Esc cancels" />
+              </StackPanel>
+              <ToggleButton DockPanel.Dock="Right" x:Name="RightToggle" Content="Inspector (]) ◨" VerticalAlignment="Top"
+                            ToolTip.Tip="Show or hide the right panel: the inspector (click an entity for its full record and a strip of where its track was seen) and the note editor" />
+              <WrapPanel x:Name="LegendChips" Orientation="Horizontal" Margin="12,0" VerticalAlignment="Center">
+                <ToggleButton x:Name="LabelsToggle" Classes="chip" Content="labels (L)" IsChecked="True" ToolTip.Tip="The overlay's labels" />
+                <ToggleButton x:Name="NotesToggle" Classes="chip" Content="notes" IsChecked="True" ToolTip.Tip="Your review notes on this frame (yellow)" />
+                <ToggleButton x:Name="TruthToggle" Classes="chip" Content="truth" IsChecked="True" ToolTip.Tip="Ground-truth entries on this frame (green pass, red fail)" Margin="0,0,10,0" />
+              </WrapPanel>
+            </DockPanel>
+          </Border>
+          <Grid>
             <views:FrameView x:Name="Frame" />
-            <StackPanel Orientation="Horizontal" Spacing="2" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="8">
-              <ToggleButton x:Name="LeftToggle" Content="◧ Info ([)" Margin="0,0,6,0" ToolTip.Tip="Show or hide the left panel: the frame's readings, the HUD, entity counts, and the layer and kind switches" />
-              <ToggleButton x:Name="NoteTool" Content="Note (N)" ToolTip.Tip="Drag a rectangle on the frame (or click a point, for something missed) and write a note about it; Esc cancels" />
-            </StackPanel>
-            <ToggleButton x:Name="RightToggle" Content="Inspector (]) ◨" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="8"
-                          ToolTip.Tip="Show or hide the right panel: the inspector (click an entity for its full record and a strip of where its track was seen) and the note editor" />
             <Border HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="8" Background="#C0101114" CornerRadius="4" Padding="4,2">
               <StackPanel Orientation="Horizontal" Spacing="4">
                 <Button x:Name="ZoomOut" Content="−" Width="28" ToolTip.Tip="Zoom out (−)" />
@@ -101,6 +103,7 @@
               </Border>
             </Canvas>
           </Grid>
+          </DockPanel>
 
           <ScrollViewer x:Name="RightPanel" Grid.Column="2" Background="#15171A" IsVisible="False">
             <StackPanel Margin="6">

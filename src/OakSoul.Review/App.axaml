@@ -31,6 +31,22 @@
     <Style Selector="Button, ToggleButton, RadioButton, CheckBox">
       <Setter Property="Focusable" Value="False" />
     </Style>
+    <!-- The legend's chips: on, the item is drawn; off, dimmed. -->
+    <Style Selector="ToggleButton.chip">
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="Padding" Value="6,2" />
+      <Setter Property="Margin" Value="0,1,3,1" />
+      <Setter Property="MinHeight" Value="0" />
+      <Setter Property="Background" Value="#1E2228" />
+      <Setter Property="Opacity" Value="0.45" />
+    </Style>
+    <Style Selector="ToggleButton.chip:checked">
+      <Setter Property="Opacity" Value="1" />
+    </Style>
+    <Style Selector="ToggleButton.chip:checked /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="#2C3A4C" />
+      <Setter Property="Foreground" Value="#E8EEF4" />
+    </Style>
     <Style Selector="Button.tool:checked">
       <Setter Property="Background" Value="#3A5A80" />
     </Style>

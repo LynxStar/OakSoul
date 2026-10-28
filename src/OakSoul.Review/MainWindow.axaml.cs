@@ -102,7 +102,7 @@ public partial class MainWindow : Window
     private readonly RepoPaths _paths;
     private readonly DispatcherTimer _playTimer;
     private readonly Stopwatch _clock = Stopwatch.StartNew();
-    private readonly Dictionary<string, CheckBox> _layerBoxes = [], _kindBoxes = [];
+    private readonly Dictionary<string, ToggleButton> _layerBoxes = [], _kindBoxes = [];
     private ReviewSession? _session;
     private bool _playing, _refreshQueued;
     private TimeSpan _lastTick;
@@ -223,25 +223,19 @@ public partial class MainWindow : Window
 
     private void BuildToggles()
     {
-        foreach (var layer in OverlayLayers.All)
-        {
-            var box = new CheckBox { Content = layer.Name, IsChecked = true };
-            ToolTip.SetTip(box, layer.Description);
-            box.IsCheckedChanged += (_, _) => Toggle(_session?.Layers, layer.Name, box.IsChecked == true);
-            _layerBoxes[layer.Name] = box;
-            LayerToggles.Children.Add(box);
-        }
+        // The legend over the frame: a chip per entity kind (in its colour), per layer, then the marks; a click switches it.
+        var at = 0;
         foreach (var kind in ReviewSession.EntityKinds)
         {
-            var box = new CheckBox
+            var box = new ToggleButton
             {
-                IsChecked = true,
-                Content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Children = { Swatch(FrameRenderer.KindColour(kind)), new TextBlock { Text = OverlayLabels.Title(kind) } } },
+                IsChecked = true, Classes = { "chip" },
+                Content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, Children = { Swatch(FrameRenderer.KindColour(kind), 8, 8), new TextBlock { Text = kind } } },
             };
             ToolTip.SetTip(box, OverlayLayers.Find(OverlayLayers.Entity)!.Kinds.First(k => k.Kind == kind).Meaning);
             box.IsCheckedChanged += (_, _) => Toggle(_session?.Kinds, kind, box.IsChecked == true);
             _kindBoxes[kind] = box;
-            KindToggles.Children.Add(box);
+            LegendChips.Children.Insert(at++, box);
 
             var track = new ToggleButton
             {
@@ -255,6 +249,16 @@ public partial class MainWindow : Window
             };
             TrackKindToggles.Children.Add(track);
         }
+        ((Layoutable)LegendChips.Children[at - 1]).Margin = new Thickness(0, 1, 10, 1);
+        foreach (var layer in OverlayLayers.All)
+        {
+            var box = new ToggleButton { Content = layer.Name, IsChecked = true, Classes = { "chip" } };
+            ToolTip.SetTip(box, layer.Description);
+            box.IsCheckedChanged += (_, _) => Toggle(_session?.Layers, layer.Name, box.IsChecked == true);
+            _layerBoxes[layer.Name] = box;
+            LegendChips.Children.Insert(at++, box);
+        }
+        ((Layoutable)LegendChips.Children[at - 1]).Margin = new Thickness(0, 1, 10, 1);
         LabelsToggle.IsCheckedChanged += (_, _) => { if (_session is { } s) { s.Labels = LabelsToggle.IsChecked == true; s.ViewUpdated(); } };
         NotesToggle.IsCheckedChanged += (_, _) => { if (_session is { } s) { s.ShowNotes = NotesToggle.IsChecked == true; s.ViewUpdated(); } };
         TruthToggle.IsCheckedChanged += (_, _) => { if (_session is { } s) { s.ShowTruth = TruthToggle.IsChecked == true; s.ViewUpdated(); } };
@@ -499,6 +503,7 @@ public partial class MainWindow : Window
     private void UpdateFrameInfo()
     {
         if (_session is not { } s) return;
+        FrameText.Text = $"Frame {s.Cursor + 1} / {s.Timeline.Count}  {OverlayFrame.FormatTime(s.Entry.Time)}";
         var e = s.Entry;
         var f = s.Frame;
         var info = new List<string>

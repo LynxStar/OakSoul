@@ -130,11 +130,32 @@ public static class OverlayPainter
     private static void PaintLabels(DrawingContext dc, List<(OverlayItem Item, uint Colour)> labels, double zoom, Point origin,
         PaintOptions o, LabelLayout layout, int frameIndex)
     {
+        var placed = LayoutLabels(labels, layout, frameIndex);
+        bool OnTop(OverlayItem item) => ReferenceEquals(item, o.Hover) || (o.Selected is { } t && item.Long("track") == t);
+        using (dc.PushTransform(Matrix.CreateScale(zoom, zoom) * Matrix.CreateTranslation(origin.X, origin.Y)))
+            foreach (var (box, anchor, level, text, colour, _) in placed.OrderBy(p => OnTop(p.Item)))
+            {
+                if (level > 0) dc.DrawLine(Pen(colour, 1), new Point(box.X, box.Bottom), anchor);
+                dc.DrawRectangle(LabelBacking, null, box);
+                dc.DrawText(text, new Point(box.X + 1, box.Y));
+            }
+    }
+
+    /// <summary>The labelled items of a frame as <see cref="Paint"/> labels them, in drawing order.</summary>
+    internal static List<(OverlayItem Item, uint Colour)> Labelled(OverlayFrame frame, PaintOptions o) =>
+        [.. OverlayLayers.Names.SelectMany(layer => frame.Items.Where(i => i.Layer == layer && Visible(i, o)))
+            .Select(i => (Item: i, Style: FrameRenderer.DefaultStyle(i, 2)))
+            .Where(x => o.Labels && x.Style.Labelled && x.Item.Label is { Length: > 0 })
+            .Select(x => (x.Item, x.Style.Colour))];
+
+    /// <summary>Where each label stands, in game pixels (see <see cref="PaintLabels"/>).</summary>
+    internal static List<(Rect Box, Point Anchor, int Level, FormattedText Text, uint Colour, OverlayItem Item)> LayoutLabels(
+        List<(OverlayItem Item, uint Colour)> labels, LabelLayout layout, int frameIndex)
+    {
         var ordered = labels
             .Select(l => (l.Item, l.Colour, Key: LabelLayout.Key(l.Item), Track: l.Item.Layer == OverlayLayers.Entity ? l.Item.Long("track") ?? long.MaxValue : -1))
             .OrderBy(l => l.Track).ToList();
         var levels = layout.Begin(frameIndex);
-        // Everything below is in game pixels.
         var placed = new List<(Rect Box, Point Anchor, int Level, FormattedText Text, uint Colour, OverlayItem Item)>();
         foreach (var (item, colour, key, _) in ordered)
         {
@@ -149,14 +170,7 @@ public static class OverlayPainter
             var level = levels.Placed(key, Free);
             placed.Add((At(level), anchor, level, text, colour, item));
         }
-        bool OnTop(OverlayItem item) => ReferenceEquals(item, o.Hover) || (o.Selected is { } t && item.Long("track") == t);
-        using (dc.PushTransform(Matrix.CreateScale(zoom, zoom) * Matrix.CreateTranslation(origin.X, origin.Y)))
-            foreach (var (box, anchor, level, text, colour, _) in placed.OrderBy(p => OnTop(p.Item)))
-            {
-                if (level > 0) dc.DrawLine(Pen(colour, 1), new Point(box.X, box.Bottom), anchor);
-                dc.DrawRectangle(LabelBacking, null, box);
-                dc.DrawText(text, new Point(box.X + 1, box.Y));
-            }
+        return placed;
     }
 
     /// <summary>The entity under a game pixel (the smallest box containing it), among the visible ones.</summary>
