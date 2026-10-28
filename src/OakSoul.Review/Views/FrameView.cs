@@ -35,6 +35,7 @@ public sealed class FrameView : Control
     private Point _panOrigin;
     private (int X, int Y)? _dragFrom;
     private (int X, int Y)? _dragTo;
+    private readonly LabelLayout _labels = new();
 
     public FrameView()
     {
@@ -228,7 +229,7 @@ public sealed class FrameView : Control
             dc.FillRectangle(Unprocessed, frameRect);
             Caption(dc, s.State == StreamState.Generating ? "not processed yet: the watcher has not reached this frame" : "no stream for this frame", frameRect.Center, 0xFFD0D0D0);
         }
-        else OverlayPainter.Paint(dc, frame, scale, _origin, Options(s), 11, new Rect(Bounds.Size), new Size(s.Pixels.Width, s.Pixels.Height));
+        else OverlayPainter.Paint(dc, frame, scale, _origin, Options(s), 11, new Rect(Bounds.Size), new Size(s.Pixels.Width, s.Pixels.Height), _labels, _shown);
 
         if (s.ShowNotes)
             foreach (var note in s.Packets.Notes.Where(n => s.NoteIndex(n) == index))

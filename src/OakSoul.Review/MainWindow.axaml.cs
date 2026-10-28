@@ -451,7 +451,7 @@ public partial class MainWindow : Window
             _ => s.Provenance?.Level switch
             {
                 Freshness.Current => ("current", 0xFF1F7A4Cu),
-                Freshness.Unknown => ("provenance unknown", 0xFF8A6A1Au),
+                Freshness.Unknown => ("uncommitted code", 0xFF8A6A1Au),
                 Freshness.Stale => ("stale", 0xFF9A2D2Du),
                 _ => ("reading", 0xFF55595Fu),
             },

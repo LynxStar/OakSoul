@@ -14,7 +14,7 @@ public sealed record PaintOptions(IReadOnlySet<string> Layers, IReadOnlySet<stri
 
 /// <summary>
 /// Draws a frame's overlay items as vectors over the frame, so boxes, lines and labels stay sharp at any zoom: the same
-/// items, colours and label text as <see cref="FrameRenderer"/> bakes, labels fixed to their items rather than stacked (colours and which items are
+/// items, colours and label text as <see cref="FrameRenderer"/> bakes, labels stacked in a fixed order that holds from frame to frame (colours and which items are
 /// labelled come from <see cref="FrameRenderer.DefaultStyle"/>, the text from the stream's labels, which
 /// <see cref="OverlayLabels"/> built), with strokes and text sized in screen pixels instead of scaled with the frame.
 /// </summary>
@@ -62,14 +62,14 @@ public static class OverlayPainter
     /// frame (<paramref name="frameSize"/> game pixels, when given); labels may sit in the margin around it, within
     /// <paramref name="bounds"/>.
     /// </summary>
-    public static void Paint(DrawingContext dc, OverlayFrame frame, double zoom, Point origin, PaintOptions o, double labelSize = 11, Rect? bounds = null, Size? frameSize = null)
+    public static void Paint(DrawingContext dc, OverlayFrame frame, double zoom, Point origin, PaintOptions o, double labelSize = 11, Rect? bounds = null, Size? frameSize = null,
+        LabelLayout? layout = null, int frameIndex = -1)
     {
         var labels = new List<(OverlayItem Item, uint Colour)>();
         Point P(double x, double y) => new(origin.X + x * zoom, origin.Y + y * zoom);
         using (frameSize is { } fs ? dc.PushClip(new Rect(origin.X, origin.Y, fs.Width * zoom, fs.Height * zoom)) : default(DrawingContext.PushedState?))
             Shapes(dc, frame, zoom, o, labels, P);
-        // The hovered and the selected item's labels last, on top of any they overlap.
-        if (labels.Count > 0) PaintLabels(dc, [.. labels.OrderBy(l => ReferenceEquals(l.Item, o.Hover) || (o.Selected is { } t && l.Item.Long("track") == t))], zoom, origin, labelSize, bounds);
+        if (labels.Count > 0) PaintLabels(dc, labels, zoom, origin, labelSize, bounds, o, layout ?? new LabelLayout(), frameIndex);
     }
 
     private static void Shapes(DrawingContext dc, OverlayFrame frame, double zoom, PaintOptions o, List<(OverlayItem Item, uint Colour)> labels, Func<double, double, Point> P)
@@ -115,17 +115,26 @@ public static class OverlayPainter
     }
 
     /// <summary>
-    /// Labels just above their item's top-left corner (an entity's box, a region, a portal), on a translucent backing so
-    /// the sprite under them still shows, kept inside the bounds. A label never moves for another: Bake's placement stacks
-    /// overlapping labels, which in playback made them jump by a label's height from frame to frame, so here they may
-    /// overlap instead (the hover card and the inspector say what a crowded one is).
+    /// Labels above their item's top-left corner (an entity's box, a region, a portal), on a translucent backing so the
+    /// sprite under them still shows, kept inside the bounds. Overlapping labels stack in one fixed order, the same every
+    /// frame: the HUD's and the map's first, then entities by track, the oldest nearest its box; a label raised by the
+    /// stack is joined to its item by a line. <paramref name="layout"/> carries each label's level from frame to frame:
+    /// a raised label keeps its level while that is free and drops only once the level below has been free for
+    /// <see cref="LabelLayout.Settle"/> frames, so labels hold still in playback instead of jumping as overlaps come and
+    /// go. The hovered and the selected item's labels are drawn last, over any they overlap; that never moves them.
     /// </summary>
-    private static void PaintLabels(DrawingContext dc, List<(OverlayItem Item, uint Colour)> labels, double zoom, Point origin, double size, Rect? bounds)
+    private static void PaintLabels(DrawingContext dc, List<(OverlayItem Item, uint Colour)> labels, double zoom, Point origin, double size, Rect? bounds,
+        PaintOptions o, LabelLayout layout, int frameIndex)
     {
         var top = bounds?.Top ?? 0;
         var left = bounds?.Left ?? 0;
         var right = bounds?.Right ?? double.MaxValue;
-        foreach (var (item, colour) in labels)
+        var ordered = labels
+            .Select(l => (l.Item, l.Colour, Key: LabelLayout.Key(l.Item), Track: l.Item.Layer == OverlayLayers.Entity ? l.Item.Long("track") ?? long.MaxValue : -1))
+            .OrderBy(l => l.Track).ToList();
+        var levels = layout.Begin(frameIndex);
+        var placed = new List<(Rect Box, Point Anchor, int Level, FormattedText Text, uint Colour, OverlayItem Item)>();
+        foreach (var (item, colour, key, _) in ordered)
         {
             var text = new FormattedText(item.Label!, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, LabelFace, size, Brush(colour));
             var anchor = item.Rect is { } rr ? new Point(origin.X + rr.X * zoom, origin.Y + rr.Y * zoom)
@@ -135,10 +144,17 @@ public static class OverlayPainter
             double w = text.Width + 4, h = text.Height + 1;
             // Kept inside the bounds; a label wider than them keeps its start (the track id) in view.
             var x = Math.Max(left, Math.Min(anchor.X, right - w));
-            var y = Math.Max(top, anchor.Y - h - 1);
-            var box = new Rect(x, y, w, h);
+            Rect At(int level) => new(x, Math.Max(top, anchor.Y - h - 1 - level * h), w, h);
+            bool Free(int level) => !placed.Any(p => p.Box.Intersects(At(level)));
+            var level = levels.Placed(key, Free);
+            placed.Add((At(level), anchor, level, text, colour, item));
+        }
+        bool OnTop(OverlayItem item) => ReferenceEquals(item, o.Hover) || (o.Selected is { } t && item.Long("track") == t);
+        foreach (var (box, anchor, level, text, colour, _) in placed.OrderBy(p => OnTop(p.Item)))
+        {
+            if (level > 0) dc.DrawLine(Pen(colour, 1), new Point(box.X, box.Bottom), anchor);
             dc.DrawRectangle(LabelBacking, null, box);
-            dc.DrawText(text, new Point(x + 2, y));
+            dc.DrawText(text, new Point(box.X + 2, box.Y));
         }
     }
 
@@ -158,4 +174,57 @@ public static class OverlayPainter
         Model.Evidence.Present => (FrameRenderer.KindColour(kind) & 0x00FFFFFF) | 0xA0000000,
         _ => 0x00000000,
     };
+}
+
+/// <summary>
+/// Where each label stood (its level: 0 just above its item, 1 a label's height higher, and so on), carried from one
+/// frame to the next so a raised label stays raised rather than jumping. A frame painted again (hover, zoom) reuses its
+/// own levels; a jump of more than a few frames starts afresh.
+/// </summary>
+public sealed class LabelLayout
+{
+    /// <summary>Frames a lower level must stay free before a raised label drops to it (a quarter second of video).</summary>
+    public const int Settle = 8;
+
+    /// <summary>The most frames a step may move for the levels to carry on (playback at 2x shows every other frame or so).</summary>
+    private const int Continuous = 5;
+
+    private const int MaxLevel = 12;
+    private int _frame = -1;
+    private Dictionary<string, (int Level, int Free)> _last = [], _now = [];
+    private bool _repaint;
+
+    /// <summary>A label's identity across frames: an entity's track, else its layer, kind and region name.</summary>
+    public static string Key(OverlayItem item) =>
+        item.Long("track") is { } t ? $"t{t}" : $"{item.Layer}/{item.Kind}/{item.Str("name") ?? item.Label}";
+
+    internal LabelLayout Begin(int frame)
+    {
+        _repaint = frame >= 0 && frame == _frame;
+        if (!_repaint)
+        {
+            if (frame < 0 || _frame < 0 || Math.Abs(frame - _frame) > Continuous) _now.Clear();
+            (_last, _now) = (_now, _last);
+            _now.Clear();
+            _frame = frame;
+        }
+        return this;
+    }
+
+    /// <summary>The level of a label, given which levels are free of the labels placed before it.</summary>
+    internal int Placed(string key, Func<int, bool> free)
+    {
+        if (_repaint && _now.TryGetValue(key, out var same)) return same.Level;
+        var lowest = Enumerable.Range(0, MaxLevel).FirstOrDefault(free, MaxLevel);
+        var (level, waited) = (lowest, 0);
+        if (_last.TryGetValue(key, out var before) && before.Level > lowest && free(before.Level))
+        {
+            // Raised last frame and still free there: drop only once the lower level has stayed free a while.
+            waited = before.Free + 1;
+            level = waited >= Settle ? lowest : before.Level;
+            if (waited >= Settle) waited = 0;
+        }
+        _now[key] = (level, waited);
+        return level;
+    }
 }

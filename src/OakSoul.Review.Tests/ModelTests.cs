@@ -51,6 +51,22 @@ public class ModelTests
     }
 
     [Fact]
+    public void RaisedLabelsHoldTheirLevelUntilTheSpaceBelowHasStayedFree()
+    {
+        var layout = new OakSoul.Review.Views.LabelLayout();
+        // Frame 0: level 0 is taken (by an older track's label), so this one goes up a level.
+        Assert.Equal(1, layout.Begin(0).Placed("t9", level => level >= 1));
+        // Painted again (hover, zoom): the same level, whatever is free now.
+        Assert.Equal(1, layout.Begin(0).Placed("t9", _ => true));
+        // The overlap is gone: it holds for a while, then settles down.
+        for (var f = 1; f < OakSoul.Review.Views.LabelLayout.Settle; f++)
+            Assert.Equal(1, layout.Begin(f).Placed("t9", _ => true));
+        Assert.Equal(0, layout.Begin(OakSoul.Review.Views.LabelLayout.Settle).Placed("t9", _ => true));
+        // A seek starts afresh.
+        Assert.Equal(0, layout.Begin(500).Placed("t9", _ => true));
+    }
+
+    [Fact]
     public void NotesAppendAndPromoteInTruthsFormat()
     {
         var dir = Path.Combine(Path.GetTempPath(), "oaksoul-review-" + Guid.NewGuid().ToString("N"));
