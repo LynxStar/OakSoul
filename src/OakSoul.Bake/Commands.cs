@@ -18,7 +18,8 @@ public static class Commands
         var stream = o.Out ?? session.DefaultStream(o.Video);
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(stream))!);
         var log = Path.Combine(Path.GetDirectoryName(stream) ?? ".", Path.GetFileName(stream).Replace(".jsonl.gz", "").Replace(".jsonl", "") + ".watch.log");
-        string[] watchArgs = ["--recording", session.Recording, .. o.Video ? Array.Empty<string>() : ["--keyframes"], "--speed", "0", "--overlay-out", stream];
+        string[] watchArgs = ["--recording", session.Recording, .. o.Video ? Array.Empty<string>() : ["--keyframes"], "--speed", "0", "--overlay-out", stream,
+            .. o.CharacterName is { } name ? new[] { "--name", name } : [], .. o.Pet is { } pet ? new[] { "--pet", pet } : []];
         Console.WriteLine($"regenerate: OakSoul.Watch {string.Join(' ', watchArgs)}");
         var sw = Stopwatch.StartNew();
         var stdout = Console.Out;

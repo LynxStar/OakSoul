@@ -109,8 +109,10 @@ public sealed class OverlayFrame
 }
 
 /// <summary>The stream's first line: what produced it, from which recording, and with which thresholds and layers.</summary>
+/// <param name="Name">The own character's name (the watcher's --name).</param>
+/// <param name="Pet">The own pet's name (the watcher's --pet), or null for a character without a pet.</param>
 public sealed record OverlayHeader(string Schema, string Producer, string? Commit, string? Session, string? Recording, string? Replay, string Source,
-    int FrameWidth, int FrameHeight, string? Name, double SpriteThreshold, double DropThreshold, double CoinThreshold, IReadOnlyList<string> Layers)
+    int FrameWidth, int FrameHeight, string? Name, double SpriteThreshold, double DropThreshold, double CoinThreshold, IReadOnlyList<string> Layers, string? Pet = null)
 {
     /// <summary>The schema this code writes and reads. Bump the number on any incompatible change.</summary>
     public const string CurrentSchema = "oaksoul.overlay/1";

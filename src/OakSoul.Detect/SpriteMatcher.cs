@@ -266,6 +266,10 @@ public sealed class SpriteMatcher
         _patch.Fill(frame, frameWidth, mask, r.Item1 - 1, r.Item2 - 1, r.Item3 + 1, r.Item4 + 1, Background);
     }
 
+    /// <summary>Prepares the screen patch for an explicit screen region (inclusive), for searches placing frames by their origin (<see cref="FootholdSearch"/>).</summary>
+    public void PrepareRegion(ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, int x0, int y0, int x1, int y1) =>
+        _patch.Fill(frame, frameWidth, mask, x0, y0, x1, y1, Background);
+
     /// <summary>
     /// Tries the frames in order on the prepared candidate and returns the best of the first species to pass
     /// <see cref="Threshold"/>, or null: once a frame passes, the remaining frames of its species are scored too, since a
@@ -307,8 +311,9 @@ public sealed class SpriteMatcher
     /// prepared patch. With <paramref name="needed"/> &gt; 0 the coarse pass may reject the frame outright and the full
     /// counts stop once that fraction is out of reach (the score is then only a bound below it).
     /// </summary>
+    /// <param name="minComparable">Share of the frame's pixels that must be comparable (default <see cref="MinComparable"/>).</param>
     public SpriteMatch? Best(CaptureRect box, PointD? feet, MobSpecies species, SpriteFrame f, double needed, int searchX = SearchX, int searchY = SearchY,
-        Align align = Align.Centre)
+        Align align = Align.Centre, double minComparable = MinComparable)
     {
         if (f.PixelX.Length == 0) return null;
         FramesScored++;
@@ -324,7 +329,7 @@ public sealed class SpriteMatcher
             };
             top0 = box.Y + box.Height - 1 - f.Y1;
         }
-        return Search(species, f, left0, top0, needed, searchX, searchY);
+        return Search(species, f, left0, top0, needed, searchX, searchY, minComparable);
     }
 
     /// <summary>
@@ -379,7 +384,7 @@ public sealed class SpriteMatcher
     }
 
 
-    private SpriteMatch? Search(MobSpecies species, SpriteFrame f, int left0, int top0, double needed, int searchX, int searchY)
+    private SpriteMatch? Search(MobSpecies species, SpriteFrame f, int left0, int top0, double needed, int searchX, int searchY, double minComparable = MinComparable)
     {
         var n = Math.Min(f.PixelX.Length, MaxPixels);
         var patch = _patch;
@@ -443,13 +448,13 @@ public sealed class SpriteMatcher
         if (secondKey >= 0)
         {
             var other = Score(f, n, secondX, secondY, needed);
-            if (Rank(other, n) > Rank(best, n)) { best = other; bestX = secondX; bestY = secondY; }
+            if (Rank(other, n, minComparable) > Rank(best, n, minComparable)) { best = other; bestX = secondX; bestY = secondY; }
         }
-        if (best.Compared < MinComparable * n) return null;
+        if (best.Compared < minComparable * n) return null;
         return new SpriteMatch(species, f, bestX, bestY, best.Matches, best.Compared, best.Tint, best.Fog, Fogged: best.Fogged);
     }
 
-    private static double Rank((int Matches, int Compared, SpriteTint, int, int) r, int n) => r.Compared < MinComparable * n ? -1 : (double)r.Matches / r.Compared;
+    private static double Rank((int Matches, int Compared, SpriteTint, int, int) r, int n, double minComparable) => r.Compared < minComparable * n ? -1 : (double)r.Matches / r.Compared;
 
     /// <summary>
     /// Scores the first <paramref name="n"/> opaque pixels at one placement under each tint: a pixel agrees when it equals

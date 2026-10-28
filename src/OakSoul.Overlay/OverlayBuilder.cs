@@ -46,7 +46,7 @@ public static class OverlayBuilder
         if (x.Tags is { } tags) Tags(items, tags, x.Layout);
         Self(items, x, place);
         if (x.Entities is { } result)
-            foreach (var e in result.Entities) items.Add(Entity(e));
+            foreach (var e in result.Entities) items.Add(Entity(e, x.Time));
         return new OverlayFrame
         {
             Sequence = x.Sequence, Pts = x.Pts, Filled = x.Filled, Time = Rd(x.Time, 3),
@@ -214,11 +214,14 @@ public static class OverlayBuilder
         _ => "drawn",
     };
 
-    public static OverlayItem Entity(DetectedEntity e)
+    /// <param name="time">The frame's time into the session, for the carried identity's label ("last 1.00 at 23.0").</param>
+    public static OverlayItem Entity(DetectedEntity e, double time = 0)
     {
         var kind = e.Kind.ToString().ToLowerInvariant();
         var item = new OverlayItem(OverlayLayers.Entity, kind)
-            .Set("rect", Rc(e.Box)).Set("feet", P(e.Feet)).Set("track", e.TrackId);
+            .Set("rect", Rc(e.DisplayBox)).Set("feet", P(e.Feet)).Set("track", e.TrackId);
+        // An identified mob's rect is its hitbox; the blob it was seen as is kept apart.
+        if (e.Hitbox is not null) item.Set("box", e.HitboxFromClient ? "hitbox" : "sprite").Set("blob", e.Pixels > 0 ? Rc(e.Box) : null);
         var id = e.Identity;
         var sprite = e.Sprite;
         var verified = id is not null && id.Verified && sprite is { } s0 && s0.Species.Id == id.MobId;
@@ -226,7 +229,13 @@ public static class OverlayBuilder
         if (id is not null)
         {
             item.Set("mob", id.MobId.ToString("D7", System.Globalization.CultureInfo.InvariantCulture)).Set("anim", id.Anim).Set("frame", id.FrameIndex)
-                .Set("facing", id.Facing > 0 ? "R" : "L").Set("score", D2(id.Score)).Set("evidence", id.Verified ? "matched" : "carried").Set("sightings", id.Sightings);
+                .Set("facing", id.Facing > 0 ? "R" : "L");
+            // A carried identity shows the pose and score of its last match, which is not a score of this frame.
+            if (id.Verified) item.Set("score", D2(id.Score));
+            else item.Set("lastScore", D2(id.Score)).Set("lastMatchedSeq", id.LastMatchedSequence).Set("carriedFor", Rd(id.CarriedFor, 2))
+                .Set("lastMatchedAt", Rd(Math.Max(0, time - id.CarriedFor), 1));
+            item.Set("evidence", id.Verified ? "matched" : "carried").Set("sightings", id.Sightings);
+            if (e.State == MobState.Dying) item.Set("state", "dying");
         }
         else if (e.Kind == EntityKind.Mob) item.Set("evidence", "unverified");
         if (verified && sprite is { } m)
@@ -239,9 +248,13 @@ public static class OverlayBuilder
         }
         else if (sprite is { } other)
             item.Set("match", $"{other.Species.IdText} {other.Species.Name} {other.Frame.Anim}/{other.Frame.Index}{(other.Frame.Facing > 0 ? "R" : "L")} {other.Score:0.00}");
+        if (e.Swept) item.Set("sweep", true);
         if (e.Drop is { } d)
             item.Set("item", d.ItemId).Set("category", d.IsMeso ? "meso" : d.Category).Set("score", D2(d.Score)).Set("evidence", "matched").Set("agree", new[] { d.Matches, d.Compared });
         else if (e.Kind == EntityKind.Drop) item.Set("evidence", "unverified");
+        if (e.Damage is { } dm)
+            item.Set("value", dm.Value).Set("digits", dm.Digits).Set("direction", dm.DirectionText).Set("critical", dm.Critical ? true : null)
+                .Set("set", dm.Family).Set("complete", dm.Complete).Set("score", D2(dm.Score)).Set("alpha", D2(dm.Alpha));
         item.Set("world", P(e.World)).Set("foothold", e.FootholdId).Set("surface", e.FootholdDistance is { } fd ? Rd(fd, 1) : null)
             .Set("age", e.Age).Set("confidence", D2(e.Confidence)).Set("velocity", P(e.Velocity)).Set("pixels", e.Pixels > 0 ? e.Pixels : null)
             .Set("hpBar", e.HpBar ? true : null);

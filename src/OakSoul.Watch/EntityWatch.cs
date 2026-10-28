@@ -20,7 +20,9 @@ public sealed class EntityWatch
     private readonly string _backgrounds;
     private readonly MobLibrary? _mobLibrary;
     private readonly DropMatcher? _drops;
+    private readonly DamageReader? _damage;
     private readonly bool _diagnostics;
+    private bool _petWarned;
     private readonly EntityTracker _tracker = new();
     private readonly Dictionary<int, EntityDetector?> _detectors = [];
     private readonly Dictionary<int, MapMobSet> _mobSets = [];
@@ -39,8 +41,9 @@ public sealed class EntityWatch
     /// <param name="sprites">The sprites exported by OakSoul.SpriteExport --items (data/sprites), for drop icons.</param>
     /// <param name="diagnostics">Score every candidate against every species too, for the report's score distributions.</param>
     public EntityWatch(HudLayout layout, string backgrounds, SessionTimes times, string? sheetDir, long? totalFrames,
-        string? mobInfo = null, string? sprites = null, bool diagnostics = false)
+        string? mobInfo = null, string? sprites = null, bool diagnostics = false, string? petName = null)
     {
+        _tracker.Names.PetName = petName;
         _layout = layout;
         _backgrounds = backgrounds;
         _diagnostics = diagnostics;
@@ -48,6 +51,9 @@ public sealed class EntityWatch
         Console.WriteLine(_mobLibrary is null ? $"entities: no mob data at {mobInfo} (run OakSoul.MobExport --sprites); sprites not verified" : $"entities: mob data from {mobInfo}");
         _drops = sprites is null ? null : DropMatcher.Load(sprites);
         Console.WriteLine(_drops is null ? $"entities: no item sprites at {sprites}; drops not identified" : $"entities: {_drops.Count} drop icons ({_drops.MesoIcons} meso) from {sprites}");
+        _damage = sprites is null ? null : DamageReader.Load(sprites);
+        Console.WriteLine(_damage is null ? $"entities: no damage digits at {sprites}/effect (run OakSoul.SpriteExport --effects); damage numbers stay effects"
+            : $"entities: damage digits {string.Join(", ", _damage.FamilyNames)} ({_damage.GlyphCount} glyphs) from {sprites}/effect");
         _times = times;
         _sheetDir = sheetDir;
         if (sheetDir is not null)
@@ -67,7 +73,12 @@ public sealed class EntityWatch
     /// the tag's soles (null without a registration or a tag).
     /// </summary>
     public sealed record Row(int MapId, EntityFrame Result, long? Exp, PointD? Own, bool OwnTag, PointD? OwnRaw = null, PointD? OwnSnapped = null,
-        PointD? OwnRefined = null, WorldSource Source = WorldSource.None);
+        PointD? OwnRefined = null, WorldSource Source = WorldSource.None)
+    {
+        /// <summary>The frame's capture sequence and the HP the status bar read, for the report's damage cross-check.</summary>
+        public long Sequence { get; init; }
+        public long? Hp { get; init; }
+    }
 
     public List<Row> Rows { get; } = [];
     public EntityDetector? Detector => _detector;
@@ -79,6 +90,7 @@ public sealed class EntityWatch
     public Dictionary<int, FootholdIndex> Footholds { get; } = [];
     public MobLibrary? MobLibrary => _mobLibrary;
     public DropMatcher? Drops => _drops;
+    public DamageReader? Damage => _damage;
     public List<string> SheetPaths { get; } = [];
 
     /// <summary>Frames not given to the detector because they are not the game's own pixels, by reason.</summary>
@@ -137,7 +149,7 @@ public sealed class EntityWatch
                     mobs = _mobSets[mapId] = MapMobSet.Build(map, index, _mobLibrary);
                     Console.WriteLine($"entities: map {mapId} mob templates: {(mobs.Entries.Count == 0 ? "none" : string.Join(", ", mobs.Entries.Select(e => $"{e.Species.Name} x{e.Spawns} ({e.Species.Mobility.ToString().ToLowerInvariant()}, {e.Species.Frames.Count} frames, floors {string.Join("/", e.Floors)})")))}{(mobs.Missing.Count > 0 ? $"; no data for {string.Join(", ", mobs.Missing)}" : "")}");
                 }
-                _detector = mosaic is null ? null : new EntityDetector(mosaic, _layout, _tracker, mobs, _drops) { SpriteDiagnostics = _diagnostics };
+                _detector = mosaic is null ? null : new EntityDetector(mosaic, _layout, _tracker, mobs, _drops, _damage) { SpriteDiagnostics = _diagnostics };
                 _detectors[mapId] = _detector;
                 Console.WriteLine(mosaic is null ? $"entities: no background for map {mapId} in {_backgrounds} (build it with --build-background)"
                     : $"entities: background {mapId} loaded from {_backgrounds} ({mosaic.Width}x{mosaic.Height}, {mosaic.Frames} frames)");
@@ -154,7 +166,8 @@ public sealed class EntityWatch
         var time = _times.TimeOf(frame);
         // The detector counts frames by their position in the replay (Frame.Index), which is unique even where the recorder
         // filled an idle gap by repeating a captured frame (a filled video frame carries the sequence of the frame it repeats).
-        var ctx = new DetectionContext(frame.Index, time, map, index, place.Camera, place.Source == WorldSource.DotAndTag, tag?.Tag, place.Position, panel);
+        var ctx = new DetectionContext(frame.Index, time, map, index, place.Camera, place.Source == WorldSource.DotAndTag, tag?.Tag, place.Position, panel,
+            frame.Sequence, status.ExpValue?.Total);
         _sequences[frame.Index] = frame.Sequence;
         _detector.DebugDir = _debugDir is not null && _debugFrames.Contains(frame.Index) ? _debugDir : null;
         var result = _detector.Detect(frame.Pixels, frame.Width, ctx);
@@ -168,7 +181,15 @@ public sealed class EntityWatch
             refined = world.Refine(new PointD(cam.X, cam.Y), tagFeet);
             if (tagFeet is not null) ownRefined = refined.Position;
         }
-        Rows.Add(new Row(mapId, result, status.ExpValue?.Total, refined.Position, tag is not null, place.RawPosition, place.Position, ownRefined, place.Source));
+        Rows.Add(new Row(mapId, result, status.ExpValue?.Total, refined.Position, tag is not null, place.RawPosition, place.Position, ownRefined, place.Source)
+        {
+            Sequence = frame.Sequence, Hp = status.HpValue?.Current,
+        });
+        if (!_petWarned && _tracker.Names.PetMismatch is { } mismatch)
+        {
+            _petWarned = true;
+            Console.WriteLine($"{stamp}  warning: {mismatch}");
+        }
         if (_detector.DebugDir is not null) Console.WriteLine($"{stamp}  debug frame {frame.Index} (sequence {frame.Sequence}): {result.Note} reg {result.Registration?.Score:0.000} cam {result.Camera} {result.Milliseconds:0.0} ms");
         // Sheet frames are picked by position in the replay and captioned with their capture sequence.
         if (_sheetDir is not null && _sheetPicks.Contains(frame.Index) && _tiles.Count < SheetFrames)

@@ -14,27 +14,38 @@ public static class OverlayLabels
 
     /// <summary>
     /// "#116 Dark Stump move/3 R 0.97" for a mob matched in this frame (" frozen", " steam" when tinted, " vs Axe Stump 0.90"
-    /// when the contest's rival came close); "~" after the score when the identity is carried by the track; "#116 Mob? Lv23
+    /// when the contest's rival came close, " dying"); "#28 Dark Stump ~carried 1.5 s (last move/0 R 1.00 at 23.0)" when the
+    /// identity is carried by the track (its last match's pose, score and time, not a score of this frame); "#116 Mob? Lv23
     /// Dark Axe Stump" for a mob nothing verified; "#12 meso 09000000 1.00" for an identified drop, "#12 Drop?" otherwise;
-    /// "#7 Pet Mara", "#9 Player KOOKAW", "#3 Effect" for the rest.
+    /// "#173 dmg 287 dealt", "#174 dmg 119 taken fading 0.79" for damage numbers; "#7 Pet Mara", "#9 Player KOOKAW", "#3
+    /// Effect" for the rest.
     /// </summary>
     public static string Entity(OverlayItem e)
     {
         var track = e.Long("track");
         var kind = Title(e.Kind);
         var evidence = e.Str("evidence");
+        var dying = e.Str("state") == "dying" ? " dying" : "";
         if (e.Kind == "mob" && e.Str("mob") is not null)
         {
+            if (evidence == "carried")
+            {
+                var last = e.Double("lastScore") ?? 0;
+                return $"#{track} {e.Str("name")} ~carried {(e.Double("carriedFor") ?? 0).ToString("0.0", CultureInfo.InvariantCulture)} s (last {e.Str("anim")}/{e.Long("frame")} {e.Str("facing")} {last.ToString("0.00", CultureInfo.InvariantCulture)}" +
+                       $" at {(e.Double("lastMatchedAt") ?? 0).ToString("0.0", CultureInfo.InvariantCulture)}){dying}";
+            }
             var score = e.Double("score") ?? 0;
             var text = $"#{track} {e.Str("name")} {e.Str("anim")}/{e.Long("frame")} {e.Str("facing")} {score.ToString("0.00", CultureInfo.InvariantCulture)}";
-            if (evidence == "carried") text += "~";
             if (e.Str("tint") is { } tint && tint != "drawn") text += " " + tint;
             if (e.Str("rivalName") is { } rival && e.Double("rivalScore") is { } rs && rs >= score - CloseRival)
                 text += $" vs {rival} {rs.ToString("0.00", CultureInfo.InvariantCulture)}";
-            return text;
+            return text + dying;
         }
         if (e.Kind == "drop")
             return e.Str("item") is { } item ? $"#{track} {(e.Str("category") == "meso" ? "meso" : "item")} {item} {(e.Double("score") ?? 0).ToString("0.00", CultureInfo.InvariantCulture)}" : $"#{track} Drop?";
+        if (e.Kind == "damage")
+            return $"#{track} dmg {(e.Bool("complete") ? "" : "?")}{e.Str("digits")} {e.Str("direction")}{(e.Bool("critical") ? " crit" : "")}" +
+                   $"{(e.Double("alpha") is { } a && a < 0.95 ? $" fading {a.ToString("0.00", CultureInfo.InvariantCulture)}" : "")}";
         return $"#{track} {kind}{(e.Kind == "mob" ? "?" : "")}{NameText(e)}";
     }
 
@@ -45,6 +56,7 @@ public static class OverlayLabels
         if (e.Kind == "mob" && e.Str("mob") is not null)
             return $"#{track} {e.Str("name")} {e.Str("anim")}/{e.Long("frame")}{e.Str("facing")}{(e.Str("evidence") == "carried" ? "~" : "")}";
         if (e.Kind == "drop" && e.Str("item") is { } item) return $"#{track} {(item.StartsWith("0900000", StringComparison.Ordinal) ? "meso" : "item")} {item}";
+        if (e.Kind == "damage") return $"#{track} dmg {(e.Bool("complete") ? "" : "?")}{e.Str("digits")} {e.Str("direction")}";
         return $"#{track} {Title(e.Kind)}{(e.Kind == "mob" ? "?" : "")}{SheetName(e)}";
     }
 

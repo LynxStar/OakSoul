@@ -88,6 +88,47 @@ internal sealed partial class ExportRun(string client, string outDir)
     }
 
     /// <summary>
+    /// Effect/_Canvas BasicEff.img: the damage number digit sets (<c>NoRed0</c>, <c>NoRed1</c>, <c>NoViolet0</c>, ...; a set
+    /// ending in 1 or 3 holds the larger first digit) and their other canvases (Miss, guard, the critical bubble), as
+    /// <c>effect/BasicEff/&lt;set&gt;/&lt;name&gt;.png</c>, plus <c>effect/damage-digits.json</c> with every canvas's origin
+    /// from the property archive (Effect/Effect_000.wz), where the canvases themselves are only outlinks.
+    /// </summary>
+    public void ExportEffects()
+    {
+        Export("effect", Program.ArchiveParts(Path.Combine(client, "Effect", "_Canvas")), (img, node) =>
+        {
+            if (img.Name != "BasicEff.img") return null;
+            var parts = node.Path.Split('/');
+            return parts is [var set, var name] && set.StartsWith("No", StringComparison.Ordinal) ? $"effect/BasicEff/{set}/{name}.png" : null;
+        });
+        // Origins live in the property archive; the canvases there are 1x1 outlinks to the _Canvas archive.
+        var sets = new SortedDictionary<string, SortedDictionary<string, DigitInfo>>(StringComparer.Ordinal);
+        foreach (string path in Program.ArchiveParts(Path.Combine(client, "Effect")))
+        {
+            using var file = WzFile.Open(path);
+            var basic = file.Root.EnumerateImages().FirstOrDefault(i => i.Name == "BasicEff.img");
+            if (basic is null) continue;
+            foreach (var set in basic.Root.Children.Where(c => c.Name.StartsWith("No", StringComparison.Ordinal)))
+                foreach (var n in set.Children.Where(n => n.Type == WzNodeType.Canvas))
+                {
+                    var file2 = $"effect/BasicEff/{set.Name}/{n.Name}.png";
+                    if (!File.Exists(Path.Combine(outDir, file2))) continue;
+                    var origin = n["origin"] is { Type: WzNodeType.Vector } o ? o.Vector : (0, 0);
+                    if (!sets.TryGetValue(set.Name, out var digits)) sets[set.Name] = digits = new(StringComparer.Ordinal);
+                    digits[n.Name] = new DigitInfo(file2, origin.Item1, origin.Item2);
+                }
+            basic.Unload();
+        }
+        Directory.CreateDirectory(Path.Combine(outDir, "effect"));
+        var json = Path.Combine(outDir, "effect", "damage-digits.json");
+        File.WriteAllText(json, JsonSerializer.Serialize(new { source = "Effect/BasicEff.img", sets }, Program.JsonOptions));
+        Console.WriteLine($"Wrote {json} ({sets.Count} sets)");
+    }
+
+    /// <summary>One canvas of a damage number set: its PNG and origin.</summary>
+    internal sealed record DigitInfo(string File, int OriginX, int OriginY);
+
+    /// <summary>
     /// Decodes and writes every canvas for which <paramref name="target"/> returns a relative output path.
     /// Images are processed in parallel and unloaded afterwards.
     /// </summary>

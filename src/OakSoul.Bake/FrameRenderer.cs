@@ -37,6 +37,7 @@ public static class FrameRenderer
         "pet" => EntityDetector.KindColour(EntityKind.Pet),
         "drop" => EntityDetector.KindColour(EntityKind.Drop),
         "effect" => EntityDetector.KindColour(EntityKind.Effect),
+        "damage" => EntityDetector.KindColour(EntityKind.Damage),
         _ => EntityDetector.KindColour(EntityKind.Unknown),
     };
 
@@ -45,11 +46,14 @@ public static class FrameRenderer
         OverlayLayers.Entity => new ItemStyle(KindColour(item.Kind), Math.Max(1, scale)),
         OverlayLayers.Tags => new ItemStyle(Cyan, Math.Max(1, scale / 2 + scale % 2), Labelled: false),
         OverlayLayers.Self => new ItemStyle(White, item.Kind == "tag" ? 1 : Math.Max(1, scale)),
-        OverlayLayers.World => new ItemStyle(item.Kind switch { "foothold" => Foothold, "portal" => Portal, _ => Rope }, 1, item.Kind == "portal"),
+        OverlayLayers.World => new ItemStyle(item.Kind switch { "foothold" => Foothold, "portal" => Portal, _ => Rope }, WorldLine(scale), item.Kind == "portal"),
         OverlayLayers.Minimap => new ItemStyle(item.Kind == "dot" ? DotColour(item.Str("dot")) : MinimapLine, 1, item.Kind == "names"),
         OverlayLayers.Hud => new ItemStyle(HudGrey, 1, item.Kind == "region"),
         _ => new ItemStyle(White, 1, false),
     };
+
+    /// <summary>Width of footholds, ropes and ladders in output pixels: 5 at the default 2x (2.5 per game pixel, rounded).</summary>
+    public static int WorldLine(int scale) => Math.Max(1, (5 * scale + 1) / 2);
 
     private static uint DotColour(string? dot) => dot switch
     {
@@ -146,9 +150,11 @@ public static class FrameRenderer
     public static void DrawLine(Canvas c, int x0, int y0, int x1, int y1, uint col, int thickness = 1)
     {
         int dx = Math.Abs(x1 - x0), dy = -Math.Abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1, err = dx + dy;
+        // A thick line is centred on the thin one: rows above and below a mostly horizontal line, columns beside a steep one.
+        var first = -(thickness - 1) / 2;
         for (var n = 0; n < 20000; n++)
         {
-            for (var t = 0; t < thickness; t++) c.Set(x0 + (dx >= -dy ? 0 : t), y0 + (dx >= -dy ? t : 0), col);
+            for (var t = first; t < first + thickness; t++) c.Set(x0 + (dx >= -dy ? 0 : t), y0 + (dx >= -dy ? t : 0), col);
             if (x0 == x1 && y0 == y1) break;
             var e2 = 2 * err;
             if (e2 >= dy) { err += dy; x0 += sx; }
@@ -166,7 +172,7 @@ public static class FrameRenderer
         var ents = f.Layer(OverlayLayers.Entity).ToList();
         var mobs = ents.Where(e => e.Kind == "mob").ToList();
         var counts = $"mob {mobs.Count} (matched {mobs.Count(m => m.Str("evidence") == "matched")}, carried ~{mobs.Count(m => m.Str("evidence") == "carried")}, unverified ?{mobs.Count(m => m.Str("evidence") == "unverified")})" +
-                     string.Concat(new[] { "player", "pet", "drop", "effect", "unknown" }.Select(k => $"  {k} {ents.Count(e => e.Kind == k)}"));
+                     string.Concat(new[] { "player", "pet", "drop", "effect", "damage", "unknown" }.Select(k => $"  {k} {ents.Count(e => e.Kind == k)}"));
         var hud = string.Join("  ", f.Layer(OverlayLayers.Hud).Where(i => i.Kind == "region" && i.Str("name") is "status.level" or "status.hp" or "status.mp" or "status.exp").Select(i => i.Label));
         lines.Add(($"{counts}    {hud}", Dim));
         var canvas = new Canvas(width, 6 + (lines.Count + 1) * (LineHeight * ts) + 2, HeaderBack);
@@ -185,11 +191,11 @@ public static class FrameRenderer
             c.Text(x + 12 * ts, y, name, White, ts, null);
             x += 12 * ts + Canvas.TextWidth(name, ts) + 8 * ts;
         }
-        foreach (var k in new[] { "mob", "player", "pet", "drop", "effect", "unknown" }) Swatch(OverlayLabels.Title(k), KindColour(k));
+        foreach (var k in new[] { "mob", "player", "pet", "drop", "effect", "damage", "unknown" }) Swatch(OverlayLabels.Title(k), KindColour(k));
         Swatch("tag box", Cyan);
         Swatch("own character", White);
         if (layers.Contains(OverlayLayers.World)) { Swatch("foothold", Foothold); Swatch("rope/ladder", Rope); Swatch("portal", Portal); }
-        c.Text(x, y, "#track name anim/frame facing score; ~ carried by the track, ? unverified, vs rival species; + feet", Dim, ts, null);
+        c.Text(x, y, "mob box: client hitbox (lt/rb); #track name anim/frame facing score; ~carried (last match); ? unverified; + feet", Dim, ts, null);
     }
 
     /// <summary>Every entity, one line each, in its kind's colour: the label, then where it is and why it is what it is.</summary>
@@ -209,13 +215,17 @@ public static class FrameRenderer
         foreach (var e in entities)
         {
             var parts = new List<string> { $"{e.Kind,-7} {e.Label}" };
-            if (e.Rect is { } r) parts.Add($"rect {r.X},{r.Y},{r.W},{r.H}");
+            if (e.Rect is { } r) parts.Add($"{(e.Str("box") is { } bx ? bx : "rect")} {r.X},{r.Y},{r.W},{r.H}");
+            if (e.Ints("blob") is [var bx0, var by0, var bw, var bh]) parts.Add($"blob {bx0},{by0},{bw},{bh}");
             if (e.Point("feet") is { } p) parts.Add($"feet {p.X},{p.Y}");
             if (e.Point("world") is { } w) parts.Add($"world {w.X},{w.Y}");
             if (e.Long("foothold") is { } fh) parts.Add($"fh{fh}");
             parts.Add($"age {e.Long("age")}");
             parts.Add($"conf {e.Double("confidence")?.ToString("0.00", CultureInfo.InvariantCulture)}");
-            if (e.Str("evidence") is { } ev) parts.Add(ev);
+            if (e.Str("evidence") is { } ev) parts.Add(ev == "carried" ? $"carried {(e.Double("carriedFor") ?? 0).ToString("0.0", CultureInfo.InvariantCulture)} s since seq {e.Long("lastMatchedSeq")}" : ev);
+            if (e.Str("state") is { } st) parts.Add(st);
+            if (e.Bool("sweep")) parts.Add("found along the foothold");
+            if (e.Str("set") is { } set) parts.Add($"{set} {e.Str("digits")} a {e.Double("alpha")?.ToString("0.00", CultureInfo.InvariantCulture)}");
             if (e.Str("basis") is { } b) parts.Add($"by {b}");
             if (e.Ints("agree") is [var m, var n]) parts.Add($"{m}/{n} px");
             if (e.Str("rivalName") is { } rn) parts.Add($"rival {rn} {e.Double("rivalScore")?.ToString("0.00", CultureInfo.InvariantCulture)}");

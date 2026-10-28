@@ -14,11 +14,25 @@ public sealed class TagNames
     /// <summary>A mob name counts once read this often with a level, so a single garbled read does not become a name.</summary>
     public const int MobSightings = 2;
 
-    /// <summary>A plain name read this often next to the own character is the pet's.</summary>
+    /// <summary>A plain name read this often next to the own character, while the pet's own name never was, is reported once as a mismatch.</summary>
     public const int PetSightings = 3;
 
     public string? OwnName { get; set; }
-    public string? PetName { get; private set; }
+
+    /// <summary>
+    /// The own pet's name, given by the operator (the watcher's <c>--pet</c>, default Mara; null for a character without a
+    /// pet), never learned: a character has at most one pet. OCR only checks it (<see cref="PetMismatch"/>).
+    /// </summary>
+    public string? PetName { get; set; }
+
+    /// <summary>
+    /// Set once when a plain name other than the own and the pet's was read next to the own character
+    /// <see cref="PetSightings"/> times before the pet's name was ever read there: the pet may be named differently than
+    /// configured. The watcher prints it once, as it does a status bar that reads another name.
+    /// </summary>
+    public string? PetMismatch { get; private set; }
+
+    private bool _petSeen;
 
     public IEnumerable<string> MobNames => _mobs.Where(m => m.Value >= MobSightings).Select(m => m.Key);
 
@@ -42,10 +56,22 @@ public sealed class TagNames
     /// <summary>The level most often read with a known mob name.</summary>
     public int? LevelOf(string name) => _levels.TryGetValue(name, out var l) && l.Count > 0 ? l.MaxBy(e => e.Value).Key : null;
 
+    /// <summary>Counts a plain name read next to the own character, for the <see cref="PetMismatch"/> check only.</summary>
     public void SawPlainNearOwn(string name)
     {
+        if (IsPet(name)) { _petSeen = true; return; }
+        if (OwnName is { } own && Distance(Normalize(name), Normalize(own)) <= 1) return;
         var n = _plainNearOwn[name] = _plainNearOwn.GetValueOrDefault(name) + 1;
-        if (PetName is null && n >= PetSightings && !string.Equals(name, OwnName, StringComparison.OrdinalIgnoreCase)) PetName = name;
+        if (PetMismatch is null && !_petSeen && n >= PetSightings)
+            PetMismatch = PetName is null ? $"the tag beside the character reads '{name}', and no pet is configured (--pet)" : $"the tag beside the character reads '{name}', expected the pet '{PetName}'";
+    }
+
+    /// <summary>Whether a tag read is the pet's tag alone: the pet's name without a level badge (the own name stripped).</summary>
+    public bool IsPetTag(string? text)
+    {
+        if (PetName is null || string.IsNullOrWhiteSpace(text)) return false;
+        var (level, name) = TagDetector.Parse(text);
+        return level is null && name is not null && IsPet(name);
     }
 
     /// <summary>

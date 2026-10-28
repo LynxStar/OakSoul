@@ -23,6 +23,8 @@ internal static partial class Program
                                                    -> item/<category>/<id>/iconRaw_<n>.png, icon.png
           --skills       skill icons               -> skill/<skillId>/icon.png
           --maps         minimap canvases          -> minimap/<mapId>.png
+          --effects      damage number digits (Effect BasicEff.img No*: NoRed0, NoViolet1, ...)
+                                                   -> effect/BasicEff/<set>/<digit>.png, effect/damage-digits.json
           --all          all of the above (the default when no selector is given)
           --verify       decode every canvas in every _Canvas archive without writing anything, and report
                          counts per pixel format and any failures
@@ -43,7 +45,7 @@ internal static partial class Program
     {
         string client = DefaultClient;
         string? outDir = null;
-        bool mobs = false, items = false, skills = false, maps = false, verify = false;
+        bool mobs = false, items = false, skills = false, maps = false, effects = false, verify = false;
         try
         {
             for (int i = 0; i < args.Length; i++)
@@ -57,7 +59,8 @@ internal static partial class Program
                     case "--items": items = true; break;
                     case "--skills": skills = true; break;
                     case "--maps": maps = true; break;
-                    case "--all": mobs = items = skills = maps = true; break;
+                    case "--effects": effects = true; break;
+                    case "--all": mobs = items = skills = maps = effects = true; break;
                     case "--verify": verify = true; break;
                     case "-h" or "--help": Console.WriteLine(Usage); return 0;
                     default:
@@ -84,8 +87,8 @@ internal static partial class Program
         if (verify)
             return Verify(client);
 
-        if (!(mobs || items || skills || maps))
-            mobs = items = skills = maps = true;
+        if (!(mobs || items || skills || maps || effects))
+            mobs = items = skills = maps = effects = true;
 
         outDir = Path.GetFullPath(outDir ?? Path.Combine(RepoRoot(), "data", "sprites"));
         if (IsUnder(outDir, client))
@@ -104,6 +107,8 @@ internal static partial class Program
             run.ExportSkills();
         if (maps)
             run.ExportMinimaps();
+        if (effects)
+            run.ExportEffects();
 
         run.WriteContactSheets();
         run.WriteManifest();

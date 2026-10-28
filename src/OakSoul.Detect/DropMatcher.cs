@@ -42,6 +42,17 @@ public sealed class DropMatcher
     public const int MinIconPixels = 100;
 
     private readonly List<(string Id, string Category, MobSpecies Holder, SpriteFrame Frame)> _icons = [];
+
+    /// <summary>Per icon (same order as the icons), the colours of its opaque pixels, for the cut-box pass.</summary>
+    private readonly List<HashSet<int>> _colours = [];
+
+    /// <summary>
+    /// A drop's box may be smaller than its icon by up to this much: lying on background the mosaic cannot vouch for, or
+    /// beside another drop, it loses columns (on fx-combat-exact's frames 721 to 751 the Leaf, 04000011, showed as a 23x21
+    /// blob of its 27x23 icon). When no icon fits the box, a second pass tries the icons up to this much larger that hold
+    /// most of the box's commonest colours, over a window that covers the shift a cut causes.
+    /// </summary>
+    public const int CutSlack = 8, CutSearchX = 5, CutSearchY = 4, CutColours = 6, CutColoursHeld = 4;
     private readonly SpriteMatcher _matcher = new() { AllowFreeze = false };
 
     /// <summary>The map's mosaic and the frame's camera (see <see cref="SpriteMatcher.Background"/>), set per frame by the detector.</summary>
@@ -80,6 +91,7 @@ public sealed class DropMatcher
         var ordered = matcher._icons.OrderBy(i => i.Id.StartsWith("0900000", StringComparison.Ordinal) ? 0 : 1).ToList();
         matcher._icons.Clear();
         matcher._icons.AddRange(ordered);
+        foreach (var icon in matcher._icons) matcher._colours.Add(icon.Frame.PixelPacked.ToHashSet());
         return matcher;
     }
 
@@ -115,6 +127,40 @@ public sealed class DropMatcher
             if (best is null || m.Score > best.Score) best = new DropMatch(id, category, f.Index, m.Left, m.Top, m.Matches, m.Compared);
             if (best.Score >= 0.99) break;
         }
+        return best ?? MatchCut(frame, frameWidth, mask, box, prepared);
+    }
+
+    /// <summary>The cut-box pass (see <see cref="CutSlack"/>).</summary>
+    private DropMatch? MatchCut(ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, CaptureRect box, bool prepared)
+    {
+        // The box's commonest colours (its background included; an icon holding most of them is worth scoring).
+        var counts = new Dictionary<int, int>();
+        for (var y = box.Y; y < box.Y + box.Height; y++)
+            for (var x = box.X; x < box.X + box.Width; x++)
+            {
+                if ((uint)x >= (uint)frameWidth || y < 0 || (y + 1) * frameWidth * 4 > frame.Length) continue;
+                var o = (y * frameWidth + x) * 4;
+                var c = frame[o] | frame[o + 1] << 8 | frame[o + 2] << 16;
+                counts[c] = counts.GetValueOrDefault(c) + 1;
+            }
+        var common = counts.OrderByDescending(c => c.Value).Take(CutColours).Select(c => c.Key).ToList();
+        DropMatch? best = null;
+        for (var i = 0; i < _icons.Count; i++)
+        {
+            var (id, category, holder, f) = _icons[i];
+            int dw = f.ExtentWidth - box.Width, dh = f.ExtentHeight - box.Height;
+            if (dw > CutSlack || dh > CutSlack || dw < -SizeSlack || dh < -SizeSlack || (dw <= SizeSlack && dh <= SizeSlack && dw >= -SizeSlack && dh >= -SizeSlack)) continue;
+            var held = 0;
+            foreach (var c in common) if (_colours[i].Contains(c)) held++;
+            if (held < Math.Min(CutColoursHeld, common.Count)) continue;
+            if (!prepared) { _matcher.Prepare(frame, frameWidth, mask, box, null); prepared = true; }
+            CutTried++;
+            if (_matcher.Best(box, null, holder, f, Threshold, CutSearchX, CutSearchY) is not { } m || m.Score < Threshold) continue;
+            if (best is null || m.Score > best.Score) best = new DropMatch(id, category, f.Index, m.Left, m.Top, m.Matches, m.Compared);
+        }
         return best;
     }
+
+    /// <summary>Icons scored by the cut-box pass since construction.</summary>
+    public long CutTried { get; private set; }
 }

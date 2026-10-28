@@ -5,9 +5,10 @@ using OakSoul.Overlay;
 // OakSoul.Bake: bake the overlay stream over a recording's frames, for reviewing what the pipeline saw frame by frame.
 // Recordings only: nothing is captured, attached to or drawn on screen. Run from the repository root.
 //
-//   regenerate SESSION [--video] [--out PATH]
+//   regenerate SESSION [--video] [--out PATH] [--character NAME] [--pet NAME|none]
 //       run the current watcher pipeline over the recording's keyframes (or, with --video, its lossless video) and write a
-//       fresh stream to data/overlays/SESSION/overlay.jsonl.gz (overlay-video.jsonl.gz); the watcher's log goes next to it
+//       fresh stream to data/overlays/SESSION/overlay.jsonl.gz (overlay-video.jsonl.gz); the watcher's log goes next to it;
+//       --character and --pet are passed on as the watcher's --name and --pet (defaults LynxHope and Mara)
 //   render SESSION SELECTION [--stream PATH] [--layers a,b | --hide a,b] [--scale N] [--out DIR] [--name NAME] [--no-sheet]
 //       one PNG per selected frame, <seq>_<m-ss.s>.png, in data/bake/SESSION/NAME/ (default name from the selection), plus a
 //       contact sheet of the selection and items.txt (the list below for every frame); frames from the keyframe PNG when one
@@ -21,6 +22,8 @@ using OakSoul.Overlay;
 //       rank windows of S seconds (default 15) by what goes on in them: mob detections, kills (EXP gains), drops, the pet near mobs
 //   check SESSION [--stream PATH]
 //       validate a stream: JSON round trip, the layer registry, and the join with frames.jsonl (sequence and pts)
+//   truth SESSION [--stream PATH] [--truth FILE]
+//       compare a stream with the reviewed ground truth (default truth/SESSION.jsonl): pass or fail per entry, and totals
 //   layers                      print the layer registry (as OakSoul.Watch --list-layers)
 //   diff A B                    agreed, not in this round (see DiffSeam)
 //
@@ -53,6 +56,7 @@ static async Task<int> Run(string[] args)
         case "sheets": return Commands.EntitySheets(session, o);
         case "windows": return Commands.Windows(session, o);
         case "check": return Commands.Check(session, o);
+        case "truth": return Truth.Run(session, o);
         default: Console.Error.WriteLine($"unknown command {command}"); Usage(); return 2;
     }
 }
@@ -61,12 +65,13 @@ static void Usage()
 {
     Console.Error.WriteLine("""
         usage: OakSoul.Bake COMMAND SESSION [options]   (run from the repository root)
-          regenerate SESSION [--video] [--out PATH]
+          regenerate SESSION [--video] [--out PATH] [--character NAME] [--pet NAME|none]
           render SESSION (--frame N | --frames LIST | --from M:SS --seconds S | --all) [--stream PATH] [--layers a,b | --hide a,b] [--scale N] [--out DIR] [--name NAME] [--no-sheet] [--video-pixels]
           list SESSION (selection) [--stream PATH] [--layers a,b | --hide a,b]
           sheets SESSION [--stream PATH] [--out DIR]
           windows SESSION [--seconds S] [--stream PATH]
           check SESSION [--stream PATH]
+          truth SESSION [--stream PATH] [--truth FILE]
           layers
         SESSION is a folder name under recordings/ or a session folder; streams default to data/overlays/SESSION/overlay.jsonl.gz.
         """);
@@ -79,7 +84,7 @@ namespace OakSoul.Bake
     {
         public List<string> Positional { get; } = [];
         public bool Video, All, NoSheet, VideoPixels;
-        public string? Stream, Out, Name, From;
+        public string? Stream, Out, Name, From, CharacterName, Pet, Truth;
         public double? Seconds;
         public int Scale = 2;
         public List<(long First, long Last)> Frames { get; } = [];
@@ -100,6 +105,9 @@ namespace OakSoul.Bake
                     case "--stream": o.Stream = Next(); break;
                     case "--out": o.Out = Next(); break;
                     case "--name": o.Name = Next(); break;
+                    case "--character": o.CharacterName = Next(); break;
+                    case "--pet": o.Pet = Next(); break;
+                    case "--truth": o.Truth = Next(); break;
                     case "--from": o.From = Next(); break;
                     case "--seconds": o.Seconds = double.Parse(Next(), CultureInfo.InvariantCulture); break;
                     case "--scale": o.Scale = int.Parse(Next(), CultureInfo.InvariantCulture); break;

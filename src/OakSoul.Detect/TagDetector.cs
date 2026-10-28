@@ -65,6 +65,24 @@ public sealed partial class TagDetector
 
     private readonly List<CacheEntry> _cache = [];
 
+    /// <summary>
+    /// The pet's tag as binarized text bits, learned from the first tag box read as the pet's name alone (the name is given,
+    /// so this happens the first time the pet's tag shows by itself). Tags drawn side by side are found as one box ("Mara
+    /// wild Boar" on fx-combat-exact's frame 751); <see cref="SplitPet"/> finds the pet's tag inside such a box by these bits
+    /// and cuts the box at the tag's edges, so each part is read on its own.
+    /// </summary>
+    private (bool[] Bits, int Width, int Height, int Ones)? _petTag;
+
+    /// <summary>Whether a read is the pet's name alone (set by the detector from the tracker's names).</summary>
+    public Func<string?, bool>? IsPetText { get; set; }
+
+    /// <summary>Tag boxes split around the pet's tag since construction.</summary>
+    public int PetSplits { get; private set; }
+
+    /// <summary>Rows the pet's tag may sit above or below a box it was found in.</summary>
+    public const int SplitRows = 6;
+
+
     /// <summary>Debug: <c>OAKSOUL_TAG_DUMP=dir</c> writes every crop sent to OCR, as captured, for trying OCR settings offline.</summary>
     private static readonly string? DumpDir = Environment.GetEnvironmentVariable("OAKSOUL_TAG_DUMP");
 
@@ -219,6 +237,73 @@ public sealed partial class TagDetector
     /// player and pet tags (Slivan, Black Kitty) all three read alike.
     /// </summary>
     public void Read(List<TagBox> boxes, ReadOnlySpan<byte> frame, int frameWidth, CaptureRect viewport, bool ocr = true)
+    {
+        ReadBoxes(boxes, frame, frameWidth, viewport, ocr);
+        if (_petTag is null && IsPetText is { } isPet)
+            foreach (var b in boxes)
+                if (isPet(b.Text) && b.Width <= 80)
+                {
+                    var bits = Bits(frame, frameWidth, viewport, b);
+                    _petTag = (bits, b.Width, b.Height, bits.Count(v => v));
+                    break;
+                }
+    }
+
+    /// <summary>
+    /// Cuts boxes wider than the pet's tag that hold it (its text bits within <see cref="FuzzyBits"/> at some column offset,
+    /// a row up or down allowed) into the pet's tag and the parts beside it at least <see cref="MinWidth"/> wide.
+    /// </summary>
+    public void SplitPet(List<TagBox> boxes, ReadOnlySpan<byte> frame, int frameWidth, CaptureRect viewport)
+    {
+        if (_petTag is not { } t) return;
+        for (var i = 0; i < boxes.Count; i++)
+        {
+            var b = boxes[i];
+            if (b.Width < t.Width + MinWidth || Math.Abs(b.Height - t.Height) > 3) continue;
+            var bits = Bits(frame, frameWidth, viewport, b);
+            // Two tags side by side need not share a top: the pet's may sit a few rows above or below the box found.
+            var best = (Diff: int.MaxValue, Dx: 0, Dy: 0, Ones: 1);
+            for (var dy = -SplitRows; dy <= SplitRows; dy++)
+            {
+                int y0 = Math.Max(0, -dy), y1 = Math.Min(t.Height, b.Height - dy), onesIn = 0;
+                for (var y = y0; y < y1; y++)
+                    for (var x = 0; x < t.Width; x++) if (t.Bits[y * t.Width + x]) onesIn++;
+                if (onesIn < 0.8 * t.Ones) continue;
+                for (var dx = 0; dx + t.Width <= b.Width; dx++)
+                {
+                    var diff = 0;
+                    for (var y = y0; y < y1; y++)
+                        for (var x = 0; x < t.Width; x++)
+                            if (t.Bits[y * t.Width + x] != bits[(y + dy) * b.Width + dx + x]) diff++;
+                    if ((double)diff / onesIn < (double)best.Diff / best.Ones) best = (diff, dx, dy, onesIn);
+                }
+            }
+            if (best.Diff > FuzzyBits * best.Ones) continue;
+            int px0 = b.X0 + best.Dx, px1 = px0 + t.Width - 1, py0 = Math.Max(0, b.Y0 + best.Dy);
+            var parts = new List<TagBox> { Box(px0, py0, px1, Math.Min(viewport.Height - 1, py0 + t.Height - 1), frame, frameWidth, viewport) };
+            // The neighbour tag's box starts a column or two past the pet's.
+            if (px0 - 2 - b.X0 + 1 >= MinWidth) parts.Add(Box(b.X0, b.Y0, px0 - 2, b.Y1, frame, frameWidth, viewport));
+            if (b.X1 - (px1 + 2) + 1 >= MinWidth) parts.Add(Box(px1 + 2, b.Y0, b.X1, b.Y1, frame, frameWidth, viewport));
+            boxes.RemoveAt(i);
+            boxes.InsertRange(i, parts);
+            i += parts.Count - 1;
+            PetSplits++;
+        }
+    }
+
+    private static TagBox Box(int x0, int y0, int x1, int y1, ReadOnlySpan<byte> frame, int frameWidth, CaptureRect viewport)
+    {
+        var text = 0;
+        for (var y = y0; y <= y1; y++)
+            for (var x = x0; x <= x1; x++)
+            {
+                var o = ((y + viewport.Y) * frameWidth + x + viewport.X) * 4;
+                if ((frame[o] + 2 * frame[o + 1] + frame[o + 2]) >> 2 >= ForegroundExtractor.TextLuma) text++;
+            }
+        return new TagBox(x0, y0, x1, y1, (double)text / ((x1 - x0 + 1) * (y1 - y0 + 1)), Fingerprint(frame, frameWidth, viewport, x0, y0, x1, y1));
+    }
+
+    private void ReadBoxes(List<TagBox> boxes, ReadOnlySpan<byte> frame, int frameWidth, CaptureRect viewport, bool ocr)
     {
         foreach (var b in boxes)
         {

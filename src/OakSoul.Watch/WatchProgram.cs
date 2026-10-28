@@ -20,6 +20,8 @@ public static class WatchProgram
     //   --list | --window-id N | --pid N --title "T" | --app "Name" --title "T"      live capture
     //   --recording DIR [--keyframes] [--speed X]                                      replay a recorder session
     //   --name NAME (default LynxHope): the character's name, given by the operator; the status bar is only checked against it
+    //   --pet NAME (default Mara; none for a character without a pet): the character's one pet, given by the operator; its tag
+    //     locates it, and the tag beside the character is only checked against it
     //   --crop-top N (28 for a windowed client)   --fps N (default 30)   --seconds S (default 0 = until the end or Ctrl-C)
     //   --scale N: live capture at N times the point size, decimated to the game's own pixels (default: the window's backing scale)
     //   --maps DIR (default data/maps): map metadata for world positions   --world-report: print the world-model validation at the end
@@ -39,6 +41,7 @@ public static class WatchProgram
         var buildBackground = false; var entities = false; var entityReport = false;
         int? captureScale = null;
         var ownName = "LynxHope";
+        string? petName = "Mara";
         for (var i = 0; i < args.Length; i++)
         {
             string Next() => i + 1 < args.Length ? args[++i] : throw new ArgumentException($"{args[i]} needs a value");
@@ -67,6 +70,7 @@ public static class WatchProgram
                 case "--sprites": spritesPath = Next(); break;
                 case "--scale": captureScale = int.Parse(Next()); break;
                 case "--name": ownName = Next(); break;
+                case "--pet": petName = Next(); break;
                 case "--overlay-out": overlayPath = Next(); entities = true; break;
                 case "--list-layers": OverlayLayers.Print(Console.Out); return 0;
                 default: Console.Error.WriteLine($"unknown option {args[i]}"); return 2;
@@ -76,6 +80,7 @@ public static class WatchProgram
         if (captureScale is < 1 or > 4) { Console.Error.WriteLine("error: --scale must be between 1 and 4"); return 2; }
         if (ownName.Trim().Length < 3) { Console.Error.WriteLine("error: --name must be at least 3 characters"); return 2; }
         ownName = ownName.Trim();
+        petName = petName?.Trim() is { Length: > 0 } pn && !string.Equals(pn, "none", StringComparison.OrdinalIgnoreCase) ? pn : null;
 
         ScreenCapture.Initialize();
         IFrameSource source;
@@ -113,6 +118,7 @@ public static class WatchProgram
         }
         Console.WriteLine($"source   {source.Description}");
         Console.WriteLine($"name     {ownName}");
+        Console.WriteLine($"pet      {petName ?? "none"}");
 
         var layout = HudLayout.Native1366x768;
         // Keyframe replay is one frame per second, so a stability gate of one frame; live and video keep three.
@@ -145,7 +151,7 @@ public static class WatchProgram
         spritesPath ??= Path.Combine(Directory.GetCurrentDirectory(), "data", "sprites");
         var entityWatch = entities && world is not null ? new EntityWatch(layout, backgroundsPath, sessionTimes, sheetDir,
             recording is not null && keyframes && Directory.Exists(Path.Combine(recording, "keyframes")) ? Directory.GetFiles(Path.Combine(recording, "keyframes"), "*.png").Length : null,
-            mobInfoPath, spritesPath, diagnostics: entityReport) : null;
+            mobInfoPath, spritesPath, diagnostics: entityReport, petName: petName) : null;
         if (entities && world is null) Console.WriteLine("entities off: no map metadata");
 
         // A replayed frame is stamped with its time into the session (its capture pts less the session's first), which is
@@ -166,7 +172,7 @@ public static class WatchProgram
             OverlayProvenance.GitCommit(Directory.GetCurrentDirectory()), recording is null ? null : Path.GetFileName(Path.TrimEndingDirectorySeparator(recording)),
             recording is null ? null : OverlayProvenance.RelativePath(recording), recording is null ? "live" : keyframes ? "keyframes" : "video",
             recording is null ? source.Description : $"{OverlayProvenance.RelativePath(recording)} ({(keyframes ? "keyframes" : replay!.LosslessVideo ? "lossless video" : "lossy video")})",
-            layout.FrameWidth, layout.FrameHeight, ownName, SpriteMatcher.Threshold, DropMatcher.Threshold, DropMatcher.Threshold, OverlayLayers.Names));
+            layout.FrameWidth, layout.FrameHeight, ownName, SpriteMatcher.Threshold, DropMatcher.Threshold, DropMatcher.Threshold, OverlayLayers.Names, petName));
         var overlayMs = new List<double>();
         State? last = null;
         long frames = 0;

@@ -43,6 +43,18 @@ public sealed class SpriteFrame
     public int ExtentHeight => Y1 - Y0 + 1;
 
     /// <summary>
+    /// The client's body rectangle of this frame (<c>lt</c> and <c>rb</c> in its frame data), relative to the origin in
+    /// sprite pixels: left and top inclusive, right and bottom exclusive (Dark Stump move/0: lt -31,-51, rb 31,0, the
+    /// 62x51 body standing on the origin). Mirrored about the origin pixel for a right-facing frame, as the pixels are.
+    /// Null where the frame has none (the die frames): <see cref="Body"/> then falls back to the visible extent.
+    /// </summary>
+    public (int Left, int Top, int Right, int Bottom)? ClientBody { get; init; }
+
+    /// <summary>The body rectangle relative to the origin: the client's (<see cref="ClientBody"/>), else the visible extent.</summary>
+    public (int Left, int Top, int Right, int Bottom) Body =>
+        ClientBody ?? (X0 - OriginX, Y0 - OriginY, X1 + 1 - OriginX, Y1 + 1 - OriginY);
+
+    /// <summary>
     /// Every fully opaque pixel (<see cref="SolidAlpha"/>) with its colour as stored, ordered so that any prefix is spread
     /// over the whole sprite (a stride coprime with the count), which lets a score stop early. On a pixel-exact frame
     /// these are the pixels the screen must show where the mob is not covered.
@@ -67,9 +79,15 @@ public sealed class SpriteFrame
 
     public override string ToString() => $"{Anim}_{Index}{(Facing > 0 ? " right" : " left")} {Width}x{Height} origin {OriginX},{OriginY}";
 
-    /// <summary>Builds a frame from straight-alpha BGRA pixels, mirrored when <paramref name="facing"/> is +1.</summary>
-    public static SpriteFrame Create(string anim, int index, int facing, byte[] bgra, int width, int height, int originX, int originY, int delayMs)
+    /// <summary>
+    /// Builds a frame from straight-alpha BGRA pixels, mirrored when <paramref name="facing"/> is +1; <paramref name="body"/>
+    /// is the client's lt/rb (left-facing, as stored), mirrored with the pixels.
+    /// </summary>
+    public static SpriteFrame Create(string anim, int index, int facing, byte[] bgra, int width, int height, int originX, int originY, int delayMs,
+        (int Left, int Top, int Right, int Bottom)? body = null)
     {
+        // Mirroring negates every pixel's offset from the origin pixel, so columns [l, r) become [1 - r, 1 - l).
+        if (body is { } b0 && facing > 0) body = (1 - b0.Right, b0.Top, 1 - b0.Left, b0.Bottom);
         var px = bgra;
         if (facing > 0)
         {
@@ -106,7 +124,7 @@ public sealed class SpriteFrame
         return new SpriteFrame
         {
             Anim = anim, Index = index, Facing = facing, Width = width, Height = height, OriginX = originX, OriginY = originY, DelayMs = delayMs,
-            X0 = x0, Y0 = y0, X1 = x1, Y1 = y1,
+            X0 = x0, Y0 = y0, X1 = x1, Y1 = y1, ClientBody = body,
             PixelX = qx, PixelY = qy, PixelB = qb, PixelG = qg, PixelR = qr, PixelPacked = packed, PixelFrozen = frozen, PixelFoggable = foggable, Bgra = px,
         };
     }
@@ -137,6 +155,19 @@ public sealed class MobSpecies
     public int Level { get; init; }
     public int Exp { get; init; }
     public MobMobility Mobility { get; init; }
+
+    /// <summary>The client's movement speed field (data/mobinfo <c>movement.fields.speed</c>, else <c>info.speed</c>): a percentage on a base walk, -70 to 0 on Deep Valley I.</summary>
+    public int Speed { get; init; }
+
+    /// <summary>
+    /// Walking speed in world units per second, from <see cref="Speed"/>: 1.2 x (100 + speed). Measured on fx-combat-exact's
+    /// keyframes (median of matched move-to-move steps): speed -50 (Axe Stump, Red Snail, Dark Axe Stump) 45 to 59, -70 (Dark
+    /// Stump) 35, 0 (the boars) 109 to 126.
+    /// </summary>
+    public double WalkSpeed => WalkUnitsPerPercent * Math.Max(10, 100 + Speed);
+
+    public const double WalkUnitsPerPercent = 1.2;
+
     /// <summary>The mob whose frames this one shows (itself, or the target of its link).</summary>
     public int SpriteId { get; init; }
     public IReadOnlyList<SpriteFrame> Frames { get; init; } = [];
@@ -180,6 +211,8 @@ public sealed class MobLibrary
             var root = doc.RootElement;
             var info = root.GetProperty("info");
             var mobility = root.TryGetProperty("movement", out var mv) && mv.TryGetProperty("mobility", out var m) ? m.GetString() : null;
+            var speed = mv.ValueKind == JsonValueKind.Object && mv.TryGetProperty("fields", out var fields) && fields.ValueKind == JsonValueKind.Object && fields.TryGetProperty("speed", out _)
+                ? Int(fields, "speed") : Int(info, "speed");
             // A linked mob shows its target's frames; follow the links to a mob whose sprites were exported.
             var spriteId = id;
             for (var hop = 0; hop < 4 && !System.IO.Directory.Exists(SpriteDir(spriteId)); hop++)
@@ -195,6 +228,7 @@ public sealed class MobLibrary
                 Level = Int(info, "level"),
                 Exp = Int(info, "exp"),
                 Mobility = mobility switch { "jump" => MobMobility.Jump, "fly" => MobMobility.Fly, "static" => MobMobility.Static, _ => MobMobility.Floor },
+                Speed = speed,
                 SpriteId = spriteId,
                 Frames = FramesOf(spriteId),
             };
@@ -237,8 +271,11 @@ public sealed class MobLibrary
                         var png = Path.Combine(dir, $"{anim.Name}_{index}.png");
                         if (!File.Exists(png) || !f.TryGetProperty("origin", out var origin)) continue;
                         var (bgra, w, h) = Png.ReadBgra(png);
+                        (int, int, int, int)? body = f.TryGetProperty("props", out var props) && props.ValueKind == JsonValueKind.Object
+                            && props.TryGetProperty("lt", out var lt) && props.TryGetProperty("rb", out var rb) && lt.ValueKind == JsonValueKind.Object && rb.ValueKind == JsonValueKind.Object
+                            ? (Int(lt, "x"), Int(lt, "y"), Int(rb, "x"), Int(rb, "y")) : null;
                         foreach (var facing in new[] { -1, 1 })
-                            list.Add(SpriteFrame.Create(anim.Name, index, facing, bgra, w, h, Int(origin, "x"), Int(origin, "y"), Int(f, "delay")));
+                            list.Add(SpriteFrame.Create(anim.Name, index, facing, bgra, w, h, Int(origin, "x"), Int(origin, "y"), Int(f, "delay"), body));
                     }
                 }
         }

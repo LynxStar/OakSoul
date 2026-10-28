@@ -16,9 +16,14 @@ public enum EntityKind
     Pet,
     /// <summary>An item or meso drop: small, lying on a foothold, not moving, looking the same frame after frame.</summary>
     Drop,
-    /// <summary>Damage numbers, skill effects, the cursor and other brief or floating overlays.</summary>
+    /// <summary>Skill effects, the cursor and other brief or floating overlays (damage numbers that were read are <see cref="Damage"/>).</summary>
     Effect,
+    /// <summary>A damage number read digit by digit from the client's own digit sprites (<see cref="DamageReader"/>): dealt or taken.</summary>
+    Damage,
 }
+
+/// <summary>What a mob track is doing: alive, or dying (its die pose matched, or a kill credited by an EXP gain).</summary>
+public enum MobState : byte { Alive, Dying }
 
 /// <summary>
 /// One entity in one frame. Screen coordinates are native frame pixels; world coordinates are map units (y down).
@@ -33,6 +38,28 @@ public sealed record DetectedEntity(
     int Age, long FirstFrame, double FirstTime, PointD Velocity, int Pixels, bool HpBar,
     MobIdentity? Identity = null, SpriteMatch? Sprite = null, DropMatch? Drop = null, double? BoxFootholdDistance = null)
 {
+    /// <summary>
+    /// For a mob with an identity: the client's body rectangle (its frame's lt/rb, the box it collides with) of the matched
+    /// frame, or for a carried identity the track's last frame, placed with its origin on the feet; <see cref="Box"/> stays
+    /// the foreground blob's extent. Null for everything else.
+    /// </summary>
+    public CaptureRect? Hitbox { get; init; }
+
+    /// <summary>Whether <see cref="Hitbox"/> is the client's lt/rb (true) or, for a frame without one (the die frames), the sprite's visible extent.</summary>
+    public bool HitboxFromClient { get; init; }
+
+    /// <summary>Dying: the die pose matched (now, or last on the track), or an EXP gain credited the kill to this track.</summary>
+    public MobState State { get; init; }
+
+    /// <summary>A damage number read on this entity, when it is one.</summary>
+    public DamageMatch? Damage { get; init; }
+
+    /// <summary>Found by the direct search along a foothold rather than from its foreground blob alone.</summary>
+    public bool Swept { get; init; }
+
+    /// <summary>The box drawn for the entity: the hitbox for an identified mob, the damage number's digits, else <see cref="Box"/>.</summary>
+    public CaptureRect DisplayBox => Hitbox ?? Box;
+
     public override string ToString() =>
         $"#{TrackId} {Kind} {Confidence:0.00} {Box.Width}x{Box.Height}+{Box.X}+{Box.Y} world {World} {(FootholdId is { } f ? $"fh{f}" : "air")}{(Tag is null ? "" : $" '{Tag}'")}{(Identity is null ? "" : $" {Identity}")} age {Age}";
 }
@@ -44,6 +71,12 @@ public sealed record DetectedEntity(
 /// </summary>
 public sealed record MobIdentity(int MobId, string Name, int Facing, string Anim, int FrameIndex, double Score, bool Verified, int Sightings)
 {
+    /// <summary>Capture sequence of the frame the track's species last matched (this frame when <see cref="Verified"/>).</summary>
+    public long LastMatchedSequence { get; init; }
+
+    /// <summary>Seconds since that match (0 when verified in this frame): how long the identity has been carried.</summary>
+    public double CarriedFor { get; init; }
+
     public override string ToString() => $"{Name} {Anim}/{FrameIndex}{(Facing > 0 ? "R" : "L")}{(Verified ? "" : "~")}";
 }
 

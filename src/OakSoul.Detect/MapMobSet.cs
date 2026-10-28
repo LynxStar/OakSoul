@@ -79,6 +79,41 @@ public sealed class MapMobSet
     }
 
     /// <summary>
+    /// The species a tag read names, by the rule the tracker breaks a track on (a tag naming another species than the track
+    /// carries ends it there): <see cref="Named"/>, else the species whose name's last word the read's last word is, give or
+    /// take one letter, for words of four letters or more ("loar", a "Boar" whose start was covered, names Wild Boar and
+    /// Fire Boar). Empty when the read names none.
+    /// </summary>
+    public IReadOnlyList<Entry> NamedLoose(string? name)
+    {
+        var named = Named(name);
+        if (named.Count > 0 || string.IsNullOrWhiteSpace(name)) return named;
+        var last = LastWord(name);
+        if (last.Length < 4) return [];
+        return Entries.Where(e => LastWord(e.Species.Name) is { Length: >= 4 } w && EditDistance(last, w) <= 1).ToList();
+    }
+
+    private static string LastWord(string s)
+    {
+        var words = s.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return words.Length == 0 ? "" : new string(words[^1].ToLowerInvariant().Where(char.IsLetter).ToArray());
+    }
+
+    private static int EditDistance(string a, string b)
+    {
+        var prev = new int[b.Length + 1];
+        var cur = new int[b.Length + 1];
+        for (var j = 0; j <= b.Length; j++) prev[j] = j;
+        for (var i = 1; i <= a.Length; i++)
+        {
+            cur[0] = i;
+            for (var j = 1; j <= b.Length; j++) cur[j] = Math.Min(Math.Min(cur[j - 1] + 1, prev[j] + 1), prev[j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1));
+            (prev, cur) = (cur, prev);
+        }
+        return prev[b.Length];
+    }
+
+    /// <summary>
     /// The species to try for a candidate, in order.
     /// <list type="bullet">
     /// <item>A tag read on the candidate's track names the species: only those (<paramref name="named"/>).</item>

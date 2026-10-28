@@ -11,8 +11,10 @@ namespace OakSoul.Detect;
 /// <param name="OwnTag">The own name tag, when the locator found it.</param>
 /// <param name="OwnWorld">The own character's world position (soles), for masking it when the tag is hidden.</param>
 /// <param name="MinimapPanel">The minimap panel as read, masked out of the world.</param>
+/// <param name="Sequence">The frame's capture sequence (the detector counts frames by <paramref name="Frame"/>, its position in the replay).</param>
+/// <param name="Exp">The EXP total the status bar shows, when read: a gain equal to one species' client exp credits that kill to a track.</param>
 public sealed record DetectionContext(long Frame, double Time, MapData Map, FootholdIndex Footholds, PointD? Camera, bool CameraMeasured,
-    CaptureRect? OwnTag, PointD? OwnWorld, CaptureRect? MinimapPanel);
+    CaptureRect? OwnTag, PointD? OwnWorld, CaptureRect? MinimapPanel, long Sequence = 0, long? Exp = null);
 
 /// <summary>
 /// Detects and tracks entities in pixel-exact native frames of one map (the game's own pixels: exact capture, live, from
@@ -111,12 +113,16 @@ public sealed class EntityDetector
     private readonly MapMobSet? _mobs;
     private readonly DropMatcher? _drops;
     private readonly SpriteMatcher _matcher = new();
+    private readonly DamageReader? _damage;
+    private FootholdSearch? _search;
     private PointD? _ownWorld;
+    private long? _lastExp;
 
     /// <param name="tracker">A tracker shared across maps (it is flushed on a map change by the caller), or null for a new one.</param>
     /// <param name="mobs">The map's mob templates; without them candidates are not verified against sprites.</param>
     /// <param name="drops">Drop icons; without them drops are classified by appearance only.</param>
-    public EntityDetector(BackgroundMosaic mosaic, HudLayout layout, EntityTracker? tracker = null, MapMobSet? mobs = null, DropMatcher? drops = null)
+    /// <param name="damage">The damage number digits; without them damage numbers stay effects.</param>
+    public EntityDetector(BackgroundMosaic mosaic, HudLayout layout, EntityTracker? tracker = null, MapMobSet? mobs = null, DropMatcher? drops = null, DamageReader? damage = null)
     {
         _mosaic = mosaic;
         _mask = new ScreenMask(layout);
@@ -124,7 +130,28 @@ public sealed class EntityDetector
         _tracker.MapId = mosaic.MapId;
         _mobs = mobs;
         _drops = drops;
+        _damage = damage;
     }
+
+    /// <summary>Mobs found by the foothold search: new ones where no blob was (over parallax background), and blobs no box alignment matched.</summary>
+    public int SweepFinds { get; private set; }
+    public int SweepAttached { get; private set; }
+    public double SweepMs { get; private set; }
+    public double SweepUnderMs { get; private set; }
+    public List<double> SweepScores { get; } = [];
+    public FootholdSearch? Search => _search;
+
+    /// <summary>Foreground blobs of the own character that stuck out of its fixed box, dropped (see <see cref="OwnReach"/>).</summary>
+    public int OwnSlivers { get; private set; }
+
+    /// <summary>Damage numbers read, and the time spent reading them.</summary>
+    public int DamageNumbers { get; private set; }
+    public double DamageMs { get; private set; }
+    public DamageReader? Damage => _damage;
+
+    /// <summary>EXP gains seen, and those equal to one species' client exp (credited by the tracker when a track of that species qualifies).</summary>
+    public int ExpGains { get; private set; }
+    public int ExpGainsLabelled { get; private set; }
 
     public MapMobSet? Mobs => _mobs;
     public SpriteMatcher Matcher => _matcher;
@@ -230,6 +257,8 @@ public sealed class EntityDetector
         var tDiff = sw.Elapsed.TotalMilliseconds;
         var vp = _mask.Viewport;
         var tags = _tags.Find(_fg, frame, frameWidth, vp);
+        _tags.IsPetText ??= _tracker.Names.IsPetTag;
+        _tags.SplitPet(tags, frame, frameWidth, vp);
         foreach (var t in tags) _fg.Clear(t.X0 - 1, t.Y0 - 1, t.X1 + 1, t.Y1 + 1);
         var tTags = sw.Elapsed.TotalMilliseconds;
         // Blobs made mostly of darkened or brightened background (a parallax layer or the waterfall seen against the
@@ -303,11 +332,20 @@ public sealed class EntityDetector
         }
 
         var tCand = sw.Elapsed.TotalMilliseconds - ocrMs;
+        if (_mobs is not null) _search ??= new FootholdSearch(_mosaic, ctx.Map, ctx.Footholds, _mobs);
+        foreach (var c in candidates) c.Floor ??= FloorFor(c, ctx);
+        DetachPetTags(candidates, ctx, camX, camY, ownWorld);
+        _sweepsThisFrame = 0;
+        // Larger blobs first: the per-frame budget of searches under unmatched blobs goes to the likeliest mobs.
+        candidates.Sort((a, b) => b.Pixels.CompareTo(a.Pixels));
         // A tag alone that is the pet's marks the pet (hidden, or over background the mosaic cannot vouch for): no sprite is tried.
         if (_mobs is not null)
             for (var i = 0; i < candidates.Count; i++)
                 if (!(candidates[i].Pixels == 0 && _tracker.Names.IsCharacterTag(candidates[i].Tag?.Text))
                     && Identify(candidates[i], frame, frameWidth, ctx, camX, camY) is { } rest) candidates.Add(rest);
+        if (_mobs is not null) SearchGaps(candidates, frame, frameWidth, ctx, camX, camY, own);
+        if (_mobs is not null) OneSpritePerMob(candidates);
+        if (_mobs is not null) DropExplainedBlobs(candidates);
         if (_mobs is not null) CapBySpawns(candidates, ctx.Frame);
         var tSprites = sw.Elapsed.TotalMilliseconds - ocrMs;
         if (_drops is not null)
@@ -315,6 +353,8 @@ public sealed class EntityDetector
                 if (c.Sprite is null && c.Pixels > 0 && !c.TouchesOwn && c.SurfaceDistance is { } sd && Math.Abs(sd) <= DropSurfaceUnits)
                     c.Drop = _drops.Match(frame, frameWidth, _mask, c.Box);
         MoveCharacterTags(candidates, ctx, camX, camY, ownWorld);
+        if (own is { } ownBox) LastOwnBox = own = DropOwnSlivers(candidates, ownBox);
+        if (_damage is not null) ReadDamage(candidates, frame, frameWidth, ctx, camX, camY, own);
         var tDrops = sw.Elapsed.TotalMilliseconds - ocrMs;
         // Diagnostics are timed apart and left out of the frame's cost.
         var diagMs = 0.0;
@@ -331,7 +371,14 @@ public sealed class EntityDetector
         }
 
         _tracker.SpeciesCap = _mobs is null ? null : CapOf;
-        var entities = _tracker.Update(candidates, ctx.Frame, ctx.Time);
+        if (_mobs is not null)
+        {
+            _tracker.Species ??= id => _mobs.ById(id)?.Species;
+            _tracker.TagSpecies ??= text => _mobs.NamedLoose(TagDetector.Parse(text).Name ?? text).Select(e => e.Species.Id).ToList();
+        }
+        var entities = _tracker.Update(candidates, ctx.Frame, ctx.Time, ctx.Sequence);
+        CreditKill(entities, ctx, ownWorld);
+        if (_mobs is not null) PlaceHitboxes(entities, ctx, camX, camY);
         if (SpriteDiagnostics)
             for (var i = Diagnostics.Count - 1; i >= 0 && Diagnostics[i].Frame == ctx.Frame; i--)
                 if (Diagnostics[i].Source is { } src && candidates.IndexOf(src) is var k and >= 0) Diagnostics[i].Kind = entities[k].Kind;
@@ -379,9 +426,14 @@ public sealed class EntityDetector
             if (level is not null && name is not null) tagName = _tracker.Names.MatchMob(name) ?? name;
             else if (name is not null && _tracker.Names.MatchMob(name) is { } known) tagName = known;
         }
-        tagName ??= hint?.TagName;
         var named = _mobs!.Named(tagName);
-        return (floor, named.Count, _mobs.Order(floor, c.World.Y, hint?.MobId, named), hint?.LastSprite);
+        var order = _mobs.Order(floor, c.World.Y, hint?.MobId, named);
+        // A name only the likely track's tags showed puts its species first but rules out none: the likely track is a
+        // guess (the nearest within the gate), and next to a tagged mob it can be that mob's while the candidate is another.
+        if (named.Count == 0 && hint?.TagName is { } hinted)
+            foreach (var e in _mobs.Named(hinted).Reverse())
+                if (order.Remove(e)) order.Insert(hint.MobId is { } id && order.Count > 0 && order[0].Species.Id == id ? 1 : 0, e);
+        return (floor, named.Count, order, hint?.LastSprite);
     }
 
     /// <summary>
@@ -435,8 +487,18 @@ public sealed class EntityDetector
             c.Pixels = Math.Max(1, _fg.CountIn(mine.X - vp.X, mine.Y - vp.Y, mine.X + mine.Width - 1 - vp.X, mine.Y + mine.Height - 1 - vp.Y));
             c.Box = mine;
         }
+        // No frame fits the box: the box may be cut (by the own character's mask, an effect drawn over the mob, unreliable
+        // background), so the mob is searched along the foothold under it, feet on the line.
+        if (match is null && blob && rest is null && c.Pixels >= SweepMinPixels && _sweepsThisFrame++ < MaxSweepsPerFrame
+            && SweepUnder(c, frame, frameWidth, ctx, camX, camY, order) is { } swept)
+        {
+            match = swept;
+            feetOnly = swept.Feet;
+            c.Swept = true;
+            SweepAttached++;
+        }
         if (match is not { } m) return rest;
-        m = Contest(c, m, order, last, feetOnly);
+        m = Contest(c, m, order, last, feetOnly, c.Swept ? (FootholdSearch.RefineX, FootholdSearch.RefineY) : null);
         c.Sprite = m;
         var feet = m.Feet;
         c.Feet = feet;
@@ -444,7 +506,369 @@ public sealed class EntityDetector
         var nearest = ctx.Footholds.Nearest(c.World, 40);
         c.SurfaceDistance = nearest?.Distance;
         c.Foothold = nearest is { } n && Math.Abs(n.Distance) <= EntityTracker.OnFootholdUnits ? nearest : null;
+        c.Floor = FloorFor(c, ctx);
         return rest;
+    }
+
+    /// <summary>The floor (foothold chain component) a candidate stands on or just above (<see cref="FloorUnits"/>), if any.</summary>
+    private static int? FloorFor(Candidate c, DetectionContext ctx) =>
+        (c.Foothold ?? ctx.Footholds.Nearest(c.World, FloorUnits)) is { } h ? ctx.Footholds.FloorOf(h.Foothold.Id) : null;
+
+    /// <summary>
+    /// Two matches whose feet are this close and whose extents cover half the larger one are one mob (two mobs side by side
+    /// are a body width apart). A small mob in front of a large one (a Red Snail before a Dark Axe Stump on the top platform,
+    /// feet 11 apart on frame 751) covers too little of it and both are kept.
+    /// </summary>
+    public const int SameMobX = 12, SameMobY = 8;
+
+    public static bool SameMob(SpriteMatch a, SpriteMatch b) =>
+        Math.Abs(a.Feet.X - b.Feet.X) <= SameMobX && Math.Abs(a.Feet.Y - b.Feet.Y) <= SameMobY && FootholdSearch.OverlapOfLarger(a, b) >= 0.5;
+
+    /// <summary>
+    /// Two candidates whose matched sprites stand in one place (<see cref="SameMob"/>) show one mob: a blob with the
+    /// mob and the pet run together matched a weak pose while the search under a piece of it found the exact one. The
+    /// better match keeps the sprite; the other candidate is left to be whatever else it is.
+    /// </summary>
+    private void OneSpritePerMob(List<Candidate> candidates)
+    {
+        var matched = candidates.Where(c => c.Sprite is not null).OrderByDescending(c => c.Sprite!.Value.Score).ThenByDescending(c => c.Sprite!.Value.Compared).ToList();
+        for (var i = 0; i < matched.Count; i++)
+        {
+            if (matched[i].Sprite is not { } keep) continue;
+            for (var j = i + 1; j < matched.Count; j++)
+                if (matched[j].Sprite is { } other && SameMob(keep, other))
+                {
+                    matched[j].Sprite = null;
+                    matched[j].Swept = false;
+                    if (matched[j].Pixels == 0) candidates.Remove(matched[j]);
+                    DuplicateSprites++;
+                }
+        }
+    }
+
+    /// <summary>
+    /// An unverified blob whose foreground lies mostly (<see cref="ExplainedShare"/>) inside the silhouettes of mobs matched
+    /// elsewhere and the pet's box is those run together (the pet beside a Wild Boar, 106x47 on fx-combat-exact's frame 751,
+    /// once the boar was found exactly under a piece of it): it is dropped rather than shown as a box spanning both.
+    /// </summary>
+    private void DropExplainedBlobs(List<Candidate> candidates)
+    {
+        var sprites = candidates.Where(c => c.Sprite is not null).Select(c => c.Sprite!.Value).ToList();
+        var pets = candidates.Where(c => c.Pixels == 0 && _tracker.Names.IsPetTag(c.Tag?.Text)).Select(c => c.Box).ToList();
+        if (sprites.Count == 0) return;
+        var vp = _mask.Viewport;
+        var mask = _fg.Mask;
+        int w = _fg.Width, h = _fg.Height;
+        for (var i = candidates.Count - 1; i >= 0; i--)
+        {
+            var c = candidates[i];
+            if (c.Sprite is not null || c.Drop is not null || c.Damage is not null || c.Tag is not null || c.Pixels <= 0) continue;
+            int total = 0, inside = 0;
+            for (var y = c.Box.Y; y < c.Box.Y + c.Box.Height; y++)
+            {
+                var vy = y - vp.Y;
+                if ((uint)vy >= (uint)h) continue;
+                for (var x = c.Box.X; x < c.Box.X + c.Box.Width; x++)
+                {
+                    var vx = x - vp.X;
+                    if ((uint)vx >= (uint)w || mask[vy * w + vx] == 0) continue;
+                    total++;
+                    var covered = pets.Any(p => x >= p.X && x < p.X + p.Width && y >= p.Y && y < p.Y + p.Height);
+                    foreach (var m in sprites)
+                    {
+                        if (covered) break;
+                        int tx = x - m.Left, ty = y - m.Top;
+                        covered = (uint)tx < (uint)m.Frame.Width && (uint)ty < (uint)m.Frame.Height && m.Frame.Bgra[(ty * m.Frame.Width + tx) * 4 + 3] >= SpriteFrame.VisibleAlpha;
+                    }
+                    if (covered) inside++;
+                }
+            }
+            if (total > 0 && inside >= ExplainedShare * total && sprites.Any(m => Covers(m, c.Box) > 0))
+            {
+                candidates.RemoveAt(i);
+                ExplainedBlobs++;
+            }
+        }
+    }
+
+    public const double ExplainedShare = 0.6;
+
+    /// <summary>Blobs dropped by <see cref="DropExplainedBlobs"/> since construction.</summary>
+    public int ExplainedBlobs { get; private set; }
+
+    /// <summary>Sprites dropped by <see cref="OneSpritePerMob"/> since construction.</summary>
+    public int DuplicateSprites { get; private set; }
+
+    /// <summary>
+    /// Largest blob the pet's tag may name as the pet (Mara is about 40x45). A larger blob under the pet's tag is the pet run
+    /// into a mob beside it (the pet and a Wild Boar, 106x47, on fx-combat-exact's frame 751; the pet and a frozen Dark Axe
+    /// Stump, 63x81, on frame 2626): the tag then marks the pet alone, at the tag, and the blob is tried as a mob without it.
+    /// </summary>
+    public const int PetMaxWidth = 60, PetMaxHeight = 64;
+
+    /// <summary>Pet tags taken off blobs too large for the pet since construction.</summary>
+    public int PetTagsDetached { get; private set; }
+
+    private void DetachPetTags(List<Candidate> candidates, DetectionContext ctx, int camX, int camY, PointD? ownWorld)
+    {
+        var vp = _mask.Viewport;
+        for (var i = candidates.Count - 1; i >= 0; i--)
+        {
+            var c = candidates[i];
+            if (c.Pixels <= 0 || c.Tag is not { } t || !_tracker.Names.IsPetTag(t.Text) || (c.Box.Width <= PetMaxWidth && c.Box.Height <= PetMaxHeight)) continue;
+            c.Tag = null;
+            PetTagsDetached++;
+            Place(c, new PointD(c.Box.X + (c.Box.Width - 1) / 2.0, c.Box.Y + c.Box.Height), ctx, camX, camY);
+            var feet = new PointD(t.CentreX + vp.X, t.Y0 - 2 + vp.Y);
+            candidates.Add(MakeCandidate(ctx, camX, camY, new CaptureRect((int)feet.X - 20, (int)feet.Y - 45, 40, 45), feet, 0, t, false, false, null, ownWorld));
+        }
+    }
+
+    /// <summary>Unmatched blobs with fewer foreground pixels than this are not searched for along their foothold.</summary>
+    public const int SweepMinPixels = 150;
+
+    /// <summary>Unmatched blobs searched along their foothold per frame at most, largest first: Ant Tunnel IV's cave makes dozens of effect blobs.</summary>
+    public const int MaxSweepsPerFrame = 6;
+
+    private int _sweepsThisFrame;
+
+    /// <summary>Columns searched beyond an unmatched blob's box on either side, and rows below its bottom a foothold may lie.</summary>
+    public const int SweepMargin = 40, SweepBelow = 30, SweepAbove = 16;
+
+    /// <summary>
+    /// Searches the footholds under an unmatched blob (surfaces from <see cref="SweepAbove"/> rows above its bottom to
+    /// <see cref="SweepBelow"/> below) column by column for the plan's species (<see cref="FootholdSearch"/>); a found sprite
+    /// must cover a third of the box. On fx-combat-exact's frame 781 the dying Wild Boar's blob was cut by the own
+    /// character's box on its left and joined an ice shard on its right, so no frame fitted the box; die1/0 at its feet
+    /// agrees on 60% of its pixels (the player and the shards cover the rest).
+    /// </summary>
+    private SpriteMatch? SweepUnder(Candidate c, ReadOnlySpan<byte> frame, int frameWidth, DetectionContext ctx, int camX, int camY, List<MapMobSet.Entry> order)
+    {
+        if (_search is null) return null;
+        var t0 = Stopwatch.GetTimestamp();
+        var species = order.Select(e => e.Species).Where(sp => sp.Mobility != MobMobility.Fly).ToList();
+        int bottom = c.Box.Y + c.Box.Height - 1, sx0 = c.Box.X - SweepMargin, sx1 = c.Box.X + c.Box.Width - 1 + SweepMargin;
+        var hits = new List<(MobSpecies, SpriteFrame, int, int)>();
+        foreach (var fh in _search.Under(ctx.Map, camX, camY, sx0, sx1, bottom - SweepAbove, bottom + SweepBelow))
+            _search.Probe(frame, frameWidth, _mask, fh, camX, camY, sx0, sx1, species, [], hits);
+        SpriteMatch? best = null;
+        if (hits.Count > 0)
+            foreach (var m in _search.Score(_matcher, hits, FootholdSearch.Threshold, frame, frameWidth, _mask))
+                if (Covers(m, c.Box) >= 1 / 3.0 && (best is null || m.Score > best.Value.Score)) best = m;
+        // The contest that follows places other species around the find: their patch.
+        if (best is { } found) _matcher.PrepareRegion(frame, frameWidth, _mask, (int)found.Feet.X - 100, (int)found.Feet.Y - 150, (int)found.Feet.X + 100, (int)found.Feet.Y + 12);
+        var ms = Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
+        SweepMs += ms;
+        SweepUnderMs += ms;
+        if (best is { } b) SweepScores.Add(b.Score);
+        return best;
+    }
+
+    /// <summary>The share of a box that a match's visible extent covers.</summary>
+    private static double Covers(SpriteMatch m, CaptureRect box)
+    {
+        int x0 = Math.Max(box.X, m.Left + m.Frame.X0), x1 = Math.Min(box.X + box.Width - 1, m.Left + m.Frame.X1);
+        int y0 = Math.Max(box.Y, m.Top + m.Frame.Y0), y1 = Math.Min(box.Y + box.Height - 1, m.Top + m.Frame.Y1);
+        return x1 < x0 || y1 < y0 ? 0 : (double)(x1 - x0 + 1) * (y1 - y0 + 1) / Math.Max(1, box.Width * box.Height);
+    }
+
+    /// <summary>
+    /// The direct search over parallax background (<see cref="FootholdSearch.Gaps"/>): every visible stretch of a foothold
+    /// whose band above the mosaic cannot vouch for is searched column by column for the species that can stand on its
+    /// floor, skipping the columns of mobs already matched and of the own character. A find over an unmatched blob verifies
+    /// that blob; elsewhere it is a new candidate with no blob (the differencing could not see it). The species contest
+    /// settles recolours as for any match.
+    /// </summary>
+    private void SearchGaps(List<Candidate> candidates, ReadOnlySpan<byte> frame, int frameWidth, DetectionContext ctx, int camX, int camY, CaptureRect? own)
+    {
+        if (_search is null) return;
+        var t0 = Stopwatch.GetTimestamp();
+        var vp = _mask.Viewport;
+        var finds = new List<SpriteMatch>();
+        foreach (var (fh, floor, sx0, sx1) in _search.Gaps(camX, camY, vp))
+        {
+            int lineTop = Math.Min(fh.Y1, fh.Y2) - camY, lineBottom = Math.Max(fh.Y1, fh.Y2) - camY;
+            // Columns of the own character (mobs already matched are found again and dropped as the same mob).
+            var skip = new List<(int, int)>();
+            if (own is { } ob && ob.Y + ob.Height >= lineTop - FootholdSearch.BandRows && ob.Y <= lineBottom) skip.Add((ob.X, ob.X + ob.Width - 1));
+            var species = _search.SpeciesFor(floor, (fh.Y1 + fh.Y2) / 2.0);
+            if (species.Count == 0) continue;
+            var hits = new List<(MobSpecies, SpriteFrame, int, int)>();
+            _search.Probe(frame, frameWidth, _mask, fh, camX, camY, sx0, sx1, species, skip, hits);
+            if (hits.Count == 0) continue;
+            foreach (var m in _search.Score(_matcher, hits, FootholdSearch.Threshold, frame, frameWidth, _mask))
+            {
+                if (finds.Any(f => SameMob(f, m))) continue;
+                if (candidates.Any(c => c.Sprite is { } cs && SameMob(cs, m))) continue;
+                finds.Add(m);
+                // An unmatched blob it covers becomes this mob; otherwise a new candidate without a blob.
+                var holder = candidates.FirstOrDefault(c => c.Sprite is null && c.Drop is null && c.Pixels > 0 && !_tracker.Names.IsCharacterTag(c.Tag?.Text) && Covers(m, c.Box) >= 0.5);
+                var cand = holder ?? MakeCandidate(ctx, camX, camY, new CaptureRect(m.Left + m.Frame.X0, m.Top + m.Frame.Y0, m.Frame.ExtentWidth, m.Frame.ExtentHeight),
+                    m.Feet, 0, null, false, false, null, _ownWorld);
+                var hint = _tracker.Hint(cand, ctx.Time);
+                var order = _mobs!.Order(floor, camY + m.Feet.Y, hint?.MobId, null);
+                _matcher.PrepareRegion(frame, frameWidth, _mask, (int)m.Feet.X - 100, (int)m.Feet.Y - 150, (int)m.Feet.X + 100, (int)m.Feet.Y + 12);
+                var settled = Contest(cand, m, order, hint?.LastSprite, m.Feet, (FootholdSearch.RefineX, FootholdSearch.RefineY));
+                cand.Sprite = settled;
+                cand.Swept = true;
+                Place(cand, settled.Feet, ctx, camX, camY);
+                cand.Floor = FloorFor(cand, ctx);
+                if (holder is null) { candidates.Add(cand); SweepFinds++; } else SweepAttached++;
+                SweepScores.Add(settled.Score);
+            }
+        }
+        SweepMs += Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
+    }
+
+    /// <summary>
+    /// How far beyond the own character's fixed box (80x96 around its tag) a blob touching it may reach and still be part
+    /// of the character: the hat, the staff or a sleeve sticking out (on fx-combat-exact's frame 751 the right side of the
+    /// face and hat, 16x38 beyond the box's right edge, became a separate blob that took up the pet's track). A mob beside
+    /// the character reaches further (the smallest, a snail, is 35 wide) or is verified by its sprite.
+    /// </summary>
+    public const int OwnReach = 24;
+
+    /// <summary>
+    /// Drops the blobs of the own character that stick out of its box (touching it, within <see cref="OwnReach"/>, verified
+    /// as nothing, without a tag) and returns the box grown over them: the character's actual extent.
+    /// </summary>
+    private CaptureRect DropOwnSlivers(List<Candidate> candidates, CaptureRect own)
+    {
+        int x0 = own.X, y0 = own.Y, x1 = own.X + own.Width, y1 = own.Y + own.Height;
+        for (var i = candidates.Count - 1; i >= 0; i--)
+        {
+            var c = candidates[i];
+            if (!c.TouchesOwn || c.Sprite is not null || c.Drop is not null || c.Tag is not null || c.Pixels <= 0) continue;
+            var b = c.Box;
+            if (b.X < own.X - OwnReach || b.X + b.Width > own.X + own.Width + OwnReach || b.Y < own.Y - OwnReach || b.Y + b.Height > own.Y + own.Height + OwnReach) continue;
+            candidates.RemoveAt(i);
+            OwnSlivers++;
+            x0 = Math.Min(x0, b.X); y0 = Math.Min(y0, b.Y); x1 = Math.Max(x1, b.X + b.Width); y1 = Math.Max(y1, b.Y + b.Height);
+        }
+        return new CaptureRect(x0, y0, x1 - x0, y1 - y0);
+    }
+
+    /// <summary>
+    /// Damage numbers rise from where a hit landed, over the mob hit or over the own character, so they are read in regions
+    /// around the candidates nothing verified (effects, unknown blobs) and above the own character (<see cref="DamageReader"/>).
+    /// A number read becomes a candidate of its own, and the blobs inside its box are taken into it.
+    /// </summary>
+    private void ReadDamage(List<Candidate> candidates, ReadOnlySpan<byte> frame, int frameWidth, DetectionContext ctx, int camX, int camY, CaptureRect? own)
+    {
+        var t0 = Stopwatch.GetTimestamp();
+        var regions = new List<CaptureRect>();
+        foreach (var c in candidates)
+            if (c.Sprite is null && c.Drop is null && c.Pixels > 0 && c.Tag is null)
+                regions.Add(new CaptureRect(c.Box.X - DamageMarginX, c.Box.Y - DamageMarginUp, c.Box.Width + 2 * DamageMarginX, c.Box.Height + DamageMarginUp + DamageMarginDown));
+        if (own is { } ob) regions.Add(new CaptureRect(ob.X - 32, ob.Y - 96, ob.Width + 64, 120));
+        // Overlapping regions are merged while the union stays small enough to read in one go.
+        for (var merged = true; merged;)
+        {
+            merged = false;
+            for (var i = 0; i < regions.Count && !merged; i++)
+                for (var j = i + 1; j < regions.Count && !merged; j++)
+                {
+                    CaptureRect a = regions[i], b = regions[j];
+                    if (a.X > b.X + b.Width || b.X > a.X + a.Width || a.Y > b.Y + b.Height || b.Y > a.Y + a.Height) continue;
+                    int x0 = Math.Min(a.X, b.X), y0 = Math.Min(a.Y, b.Y), x1 = Math.Max(a.X + a.Width, b.X + b.Width), y1 = Math.Max(a.Y + a.Height, b.Y + b.Height);
+                    if (x1 - x0 > DamageRegionMax || y1 - y0 > DamageRegionMax) continue;
+                    regions[i] = new CaptureRect(x0, y0, x1 - x0, y1 - y0);
+                    regions.RemoveAt(j);
+                    merged = true;
+                }
+        }
+        // Bounded: the regions nearest the own character first (its hits and the hits it takes are where numbers rise).
+        if (own is { } oc)
+            regions = regions.OrderBy(r => Math.Abs(r.X + r.Width / 2 - (oc.X + oc.Width / 2)) + Math.Abs(r.Y + r.Height / 2 - (oc.Y + oc.Height / 2))).ToList();
+        if (regions.Count > MaxDamageRegions) regions.RemoveRange(MaxDamageRegions, regions.Count - MaxDamageRegions);
+        var numbers = new List<DamageMatch>();
+        foreach (var r in regions)
+            foreach (var d in _damage!.Read(frame, frameWidth, _mask, r))
+                if (!numbers.Any(n => n.Family == d.Family && n.Digits == d.Digits && Math.Abs(n.Box.X - d.Box.X) <= 2 && Math.Abs(n.Box.Y - d.Box.Y) <= 2)) numbers.Add(d);
+        foreach (var d in numbers)
+        {
+            var box = d.Box;
+            var pixels = 0;
+            for (var i = candidates.Count - 1; i >= 0; i--)
+            {
+                var c = candidates[i];
+                if (c.Sprite is not null || c.Drop is not null || c.Tag is not null || c.Pixels <= 0 || c.Damage is not null) continue;
+                double cx = c.Box.X + c.Box.Width / 2.0, cy = c.Box.Y + c.Box.Height / 2.0;
+                if (cx < box.X - 4 || cx > box.X + box.Width + 4 || cy < box.Y - 4 || cy > box.Y + box.Height + 4) continue;
+                pixels += c.Pixels;
+                candidates.RemoveAt(i);
+            }
+            var feet = new PointD(box.X + box.Width / 2.0, box.Y + box.Height);
+            var cand = MakeCandidate(ctx, camX, camY, box, feet, pixels, null, false, false, null, _ownWorld);
+            cand.Damage = d;
+            candidates.Add(cand);
+            DamageNumbers++;
+        }
+        DamageMs += Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
+    }
+
+    /// <summary>Damage reading regions around a candidate: this far to either side, up (numbers rise) and down.</summary>
+    public const int DamageMarginX = 40, DamageMarginUp = 56, DamageMarginDown = 12, DamageRegionMax = 220;
+
+    /// <summary>Damage regions read per frame at most (after merging): the cost stays bounded where effects swarm (Ant Tunnel IV's cave).</summary>
+    public const int MaxDamageRegions = 8;
+
+    /// <summary>
+    /// An EXP gain equal to one species' client exp (every gain on fx-combat-exact but three was) credits that kill to a
+    /// live track of the species (<see cref="EntityTracker.Kill"/>); the track's entity in this frame is dying.
+    /// </summary>
+    private void CreditKill(List<DetectedEntity> entities, DetectionContext ctx, PointD? ownWorld)
+    {
+        if (ctx.Exp is not { } exp) return;
+        var previous = _lastExp;
+        _lastExp = exp;
+        if (previous is not { } prev || exp <= prev || _mobs is null) return;
+        ExpGains++;
+        var gain = exp - prev;
+        if (_mobs.Entries.Where(e => e.Species.Exp == gain).ToList() is not [var species]) return;
+        ExpGainsLabelled++;
+        if (_tracker.Kill(species.Species.Id, ownWorld, ctx.Time) is not { } trackId) return;
+        for (var i = 0; i < entities.Count; i++)
+            if (entities[i].TrackId == trackId && entities[i].Identity is not null) entities[i] = entities[i] with { State = MobState.Dying };
+    }
+
+    /// <summary>
+    /// Gives every mob with an identity its hitbox: the client's body rectangle (lt/rb) of the matched frame, or for a carried
+    /// identity of the track's last frame, with its origin on the feet. Matched feet are the sprite's origin; a carried
+    /// identity's feet come from its blob (the bottom of what shows), so a floor-bound species is put down on the surface
+    /// below within the body's height (a stump half hidden by unreliable background showed only its top). Feet within
+    /// <see cref="EntityTracker.OnFootholdUnits"/> of a surface are snapped onto it. A frame without lt/rb (the die frames)
+    /// falls back to its visible extent.
+    /// </summary>
+    private void PlaceHitboxes(List<DetectedEntity> entities, DetectionContext ctx, int camX, int camY)
+    {
+        for (var i = 0; i < entities.Count; i++)
+        {
+            var e = entities[i];
+            if (e.Identity is not { } id || e.Kind != EntityKind.Mob || _mobs!.ById(id.MobId)?.Species is not { } species) continue;
+            var frameOf = id.Verified && e.Sprite is { } sm && sm.Species.Id == id.MobId ? sm.Frame
+                : species.Frames.FirstOrDefault(f => f.Anim == id.Anim && f.Index == id.FrameIndex && f.Facing == id.Facing);
+            if (frameOf is null) continue;
+            var (l, t, r, b) = frameOf.Body;
+            var feet = e.Feet;
+            var world = new PointD(camX + feet.X, camY + feet.Y);
+            FootholdHit? surface;
+            if (!id.Verified && species.Mobility is MobMobility.Floor or MobMobility.Static)
+                surface = ctx.Footholds.Below(world, b - t + 4, EntityTracker.OnFootholdUnits);
+            else surface = ctx.Footholds.Nearest(world, EntityTracker.OnFootholdUnits);
+            if (surface is { } h)
+            {
+                feet = new PointD(feet.X, h.SurfaceY - camY);
+                world = new PointD(world.X, h.SurfaceY);
+            }
+            int fx = (int)Math.Round(feet.X), fy = (int)Math.Round(feet.Y);
+            var hitbox = new CaptureRect(fx + l, fy + t, r - l, b - t);
+            entities[i] = e with
+            {
+                Hitbox = hitbox, HitboxFromClient = frameOf.ClientBody is not null, Feet = feet, World = world,
+                FootholdId = surface is { } s2 ? s2.Foothold.Id : e.FootholdId, FootholdDistance = surface is not null ? 0 : e.FootholdDistance,
+            };
+        }
     }
 
     /// <summary>
@@ -457,7 +881,8 @@ public sealed class EntityDetector
     /// leaves the Dark Axe Stump's axe uncovered), the species the track already has getting <see cref="RecolourMargin"/>
     /// and rarer species paying <see cref="SpawnPrior"/>.
     /// </summary>
-    private SpriteMatch Contest(Candidate c, SpriteMatch first, List<MapMobSet.Entry> order, SpriteMatch? last, PointD? feetOnly)
+    /// <param name="window">Search window for the other species (default the matcher's): a find of the foothold search knows its feet to a pixel.</param>
+    private SpriteMatch Contest(Candidate c, SpriteMatch first, List<MapMobSet.Entry> order, SpriteMatch? last, PointD? feetOnly, (int X, int Y)? window = null)
     {
         var found = new List<SpriteMatch> { first };
         var recolours = _mobs!.Recolours(first.Species);
@@ -472,7 +897,7 @@ public sealed class EntityDetector
             foreach (var f in e.Species.Frames)
             {
                 if (feetOnly is null && !SpriteMatcher.Fits(f, c.Box.Width, c.Box.Height)) continue;
-                if (_matcher.Best(c.Box, feetOnly, e.Species, f, needed) is { } x && x.Score >= needed && (best is null || x.Score > best.Value.Score)) best = x;
+                if (_matcher.Best(c.Box, feetOnly, e.Species, f, needed, window?.X ?? SpriteMatcher.SearchX, window?.Y ?? SpriteMatcher.SearchY) is { } x && x.Score >= needed && (best is null || x.Score > best.Value.Score)) best = x;
             }
             if (best is { } b) found.Add(b);
         }
@@ -825,6 +1250,7 @@ public sealed class EntityDetector
         EntityKind.Pet => 0xFF30FFFF,
         EntityKind.Drop => 0xFFFFE030,
         EntityKind.Effect => 0xFFC060FF,
+        EntityKind.Damage => 0xFFFF9020,
         _ => 0xFFB0B0B0,
     };
 
@@ -855,13 +1281,13 @@ public sealed class EntityDetector
         var t = half ? 3 : 2;
         if (LastOwnBox is { } own) canvas.Rect(own.X, own.Y, own.Width, own.Height, 0xFFFFFFFF, half ? 2 : 1);
         foreach (var tag in LastTags) canvas.Rect(tag.X0 + vp.X, tag.Y0 + vp.Y, tag.Width, tag.Height, 0xFF00FFFF, half ? 2 : 1);
-        foreach (var e in result.Entities) canvas.Rect(e.Box.X, e.Box.Y, e.Box.Width, e.Box.Height, KindColour(e.Kind), t);
+        foreach (var e in result.Entities) canvas.Rect(e.DisplayBox.X, e.DisplayBox.Y, e.DisplayBox.Width, e.DisplayBox.Height, KindColour(e.Kind), t);
         if (half) canvas = canvas.Half();
         var s = half ? 2 : 1;
         foreach (var e in result.Entities)
         {
             var label = Label(e);
-            canvas.Text(e.Box.X / s, Math.Max(0, e.Box.Y / s - 9), label, KindColour(e.Kind));
+            canvas.Text(e.DisplayBox.X / s, Math.Max(0, e.DisplayBox.Y / s - 9), label, KindColour(e.Kind));
         }
         return canvas;
     }
@@ -875,6 +1301,7 @@ public sealed class EntityDetector
     {
         if (e.Kind == EntityKind.Mob && e.Identity is { } id) return $"#{e.TrackId} {id.Name} {id.Anim}/{id.FrameIndex}{(id.Facing > 0 ? "R" : "L")}{(id.Verified ? "" : "~")}";
         if (e.Kind == EntityKind.Drop && e.Drop is { } d) return $"#{e.TrackId} {(d.IsMeso ? "meso" : "item")} {d.ItemId}";
+        if (e.Kind == EntityKind.Damage && e.Damage is { } dm) return $"#{e.TrackId} dmg {(dm.Complete ? "" : "?")}{dm.Digits} {dm.DirectionText}";
         var name = e.Name is null ? "" : " " + (e.Level is { } lv ? lv > 0 ? $"Lv{lv} " : "Lv? " : "") + e.Name;
         return $"#{e.TrackId} {e.Kind}{(e.Kind == EntityKind.Mob ? "?" : "")}{name}";
     }

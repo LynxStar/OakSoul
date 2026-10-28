@@ -59,8 +59,73 @@ public static class EntityReport
         Drops(o, watch, done);
         Tags(o, watch, done, mobs, detectors);
         CameraFeedback(o, watch, rows);
+        Review(o, watch, rows, done, detectors);
         Cost(o, done, detectors);
     }
+
+    /// <summary>
+    /// What the first review round added: the foothold search, damage numbers (with the taken ones checked against the
+    /// HP the status bar lost), the pet's one track, the own character's slivers, kills credited by EXP gains, dying mobs,
+    /// hitboxes and the association rules that refused a track.
+    /// </summary>
+    private static void Review(TextWriter o, EntityWatch watch, List<EntityWatch.Row> rows, List<EntityWatch.Row> done, List<EntityDetector> detectors)
+    {
+        var frames = Math.Max(1, done.Count);
+        var all = done.SelectMany(r => r.Result.Entities).ToList();
+        var swept = all.Where(e => e.Swept && e.Sprite is not null).ToList();
+        var scores = detectors.SelectMany(d => d.SweepScores).ToList();
+        o.WriteLine($"  foothold search: {detectors.Sum(d => d.SweepFinds)} mobs found where no blob was, {detectors.Sum(d => d.SweepAttached)} blobs verified that no box alignment matched;" +
+                    $" {swept.Count} detections in the output rest on it (gap columns per map {string.Join(", ", detectors.Where(d => d.Search is not null).Select(d => $"{d.Mosaic.MapId} {d.Search!.GapColumns}"))})");
+        if (scores.Count > 0)
+            o.WriteLine($"    scores of the finds: n {scores.Count}, p5 {Pct(scores, 5):0.00}, p10 {Pct(scores, 10):0.00}, median {Pct(scores, 50):0.00}, min {scores.Min():0.00};" +
+                        $" histogram (tenths from 0.4) {string.Join(" ", Enumerable.Range(4, 6).Select(t => scores.Count(v => v >= t / 10.0 && (t == 9 || v < (t + 1) / 10.0))))}");
+        o.WriteLine($"    by species: {string.Join(", ", swept.GroupBy(e => e.Sprite!.Value.Species.Name).OrderByDescending(g => g.Count()).Select(g => $"{g.Key} {g.Count()}"))};" +
+                    $" by animation: {string.Join(", ", swept.GroupBy(e => e.Sprite!.Value.Frame.Anim).OrderByDescending(g => g.Count()).Select(g => $"{g.Key} {g.Count()}"))}");
+        o.WriteLine($"    cost: {detectors.Sum(d => d.SweepMs) / frames:0.00} ms per frame mean ({detectors.Sum(d => d.SweepUnderMs) / frames:0.00} under unmatched blobs); placements probed {detectors.Sum(d => d.Search?.Probed ?? 0) / (double)frames:0} per frame, fully scored {detectors.Sum(d => d.Search?.Scored ?? 0) / (double)frames:0.0}");
+
+        // Damage numbers: each track once (its first sighting), by direction.
+        var damage = all.Where(e => e.Damage is not null).GroupBy(e => e.TrackId).Select(g => g.First()).ToList();
+        o.WriteLine($"  damage numbers: {all.Count(e => e.Damage is not null)} detections, {damage.Count} numbers (tracks):" +
+                    $" {string.Join(", ", damage.GroupBy(d => d.Damage!.Family + " " + d.Damage.DirectionText).Select(g => $"{g.Key} {g.Count()}"))};" +
+                    $" complete {damage.Count(d => d.Damage!.Complete)}, read fading (opacity under 0.95) {damage.Count(d => d.Damage!.Alpha < 0.95)}; {detectors.Sum(d => d.DamageMs) / frames:0.00} ms per frame mean" +
+                    (watch.Damage is { } dr ? $" (regions {dr.RegionsTried / (double)frames:0.0} per frame, searched {dr.RegionsSearched / (double)frames:0.0} of {dr.RegionPixels / (double)Math.Max(1, dr.RegionsSearched):0} pixels, digit placements scored {dr.PlacementsScored / (double)frames:0.0})" : ""));
+        foreach (var dir in new[] { DamageDirection.Dealt, DamageDirection.Taken, DamageDirection.Other })
+        {
+            var values = damage.Where(d => d.Damage!.Direction == dir).Select(d => d.Damage!.Digits + (d.Damage.Complete ? "" : "?")).ToList();
+            if (values.Count > 0) o.WriteLine($"    {dir.ToString().ToLowerInvariant()}: {string.Join(" ", values)}");
+        }
+        // Taken damage against the HP the status bar lost between consecutive frames, around the number's first sighting.
+        var hp = rows.Where(r => r.Hp is not null).Select(r => (r.Result.Frame, Hp: r.Hp!.Value)).ToList();
+        int agree = 0, checkedN = 0;
+        var mismatches = new List<string>();
+        foreach (var d in damage.Where(d => d.Damage!.Direction == DamageDirection.Taken && d.Damage.Value is not null))
+        {
+            var k = hp.FindIndex(h => h.Frame >= d.FirstFrame);
+            if (k < 0) continue;
+            checkedN++;
+            var drops = new List<long>();
+            for (var j = Math.Max(1, k - 3); j <= Math.Min(hp.Count - 1, k + 1); j++) drops.Add(hp[j - 1].Hp - hp[j].Hp);
+            if (drops.Contains(d.Damage!.Value!.Value)) agree++;
+            else mismatches.Add($"{d.Damage.Digits} at seq {watch.SequenceOf(d.FirstFrame)} (HP drops {string.Join("/", drops)})");
+        }
+        o.WriteLine($"    taken damage equal to an HP drop of the status bar (from 3 frames before its first sighting to 1 after): {agree} of {checkedN}{(mismatches.Count > 0 ? $"; not: {string.Join(", ", mismatches.Take(8))}" : "")}");
+
+        // The pet.
+        var pets = all.Where(e => e.Kind == EntityKind.Pet).ToList();
+        o.WriteLine($"  pet '{watch.Tracker.Names.PetName ?? "none"}': {pets.Select(e => e.TrackId).Distinct().Count()} track id(s) over the session; {pets.Count} frames with the pet, {pets.Count(e => e.Tag is not null)} located by its tag, {pets.Count(e => e.Tag is null)} without;" +
+                    $" at most {done.Select(r => r.Result.Entities.Count(e => e.Kind == EntityKind.Pet)).DefaultIfEmpty(0).Max()} in a frame; {detectors.Sum(d => d.Tags.PetSplits)} tag boxes split at the pet's tag, {watch.Tracker.PetDuplicates} frames with two pet tags");
+        o.WriteLine($"  own character: {detectors.Sum(d => d.OwnSlivers)} blobs sticking out of its box dropped as its own; the pet's tag taken off {detectors.Sum(d => d.PetTagsDetached)} blobs too large for the pet;" +
+                    $" {detectors.Sum(d => d.DuplicateSprites)} duplicate matches of one mob dropped, {detectors.Sum(d => d.ExplainedBlobs)} blobs dropped as matched mobs and the pet run together");
+        // Kills and dying.
+        o.WriteLine($"  kills credited by EXP gains: {watch.Tracker.KillsCredited} of {detectors.Sum(d => d.ExpGainsLabelled)} gains equal to one species' exp ({detectors.Sum(d => d.ExpGains)} gains), {watch.Tracker.KillsUnmatched} found no live track of the species;" +
+                    $" dying detections {all.Count(e => e.State == MobState.Dying)} ({all.Count(e => e.State == MobState.Dying && e.Identity?.Verified == true && e.Identity.Anim.StartsWith("die", StringComparison.Ordinal))} with the die pose matched)");
+        var mobs = all.Where(e => e.Kind == EntityKind.Mob && e.Identity is not null).ToList();
+        o.WriteLine($"  hitboxes: {mobs.Count(e => e.Hitbox is not null)} identified mob detections, {mobs.Count(e => e.HitboxFromClient)} from the client's lt/rb, {mobs.Count(e => e.Hitbox is not null && !e.HitboxFromClient)} from the sprite extent (frames without lt/rb);" +
+                    $" carried identities {mobs.Count(e => !e.Identity!.Verified)}, carried for median {Pct(mobs.Where(e => !e.Identity!.Verified).Select(e => e.Identity!.CarriedFor).ToList(), 50):0.0} s, max {mobs.Where(e => !e.Identity!.Verified).Select(e => e.Identity!.CarriedFor).DefaultIfEmpty(0).Max():0.0} s");
+        o.WriteLine($"  associations refused: {(watch.Tracker.Refused.Count == 0 ? "none" : string.Join(", ", watch.Tracker.Refused.OrderByDescending(r => r.Value).Select(r => $"{r.Key} {r.Value}")))}");
+        if (watch.Tracker.Names.PetMismatch is { } pm) o.WriteLine($"  pet check: {pm}");
+    }
+
 
     private static bool On(double? d) => d is { } v && Math.Abs(v) <= EntityTracker.OnFootholdUnits;
 
@@ -375,7 +440,8 @@ public static class EntityReport
     private static void Cost(TextWriter o, List<EntityWatch.Row> done, List<EntityDetector> detectors)
     {
         var ms = done.Select(r => r.Result.Milliseconds).ToList();
-        o.WriteLine($"  cost per frame excluding OCR and diagnostics: mean {ms.Average():0.0} ms, median {Pct(ms, 50):0.0}, p90 {Pct(ms, 90):0.0}, max {ms.Max():0.0}");
+        o.WriteLine($"  cost per frame excluding OCR and diagnostics: mean {ms.Average():0.0} ms, median {Pct(ms, 50):0.0}, p90 {Pct(ms, 90):0.0}, max {ms.Max():0.0}" +
+                    $" (slowest: {string.Join(", ", done.OrderByDescending(r => r.Result.Milliseconds).Take(3).Select(r => $"seq {r.Sequence} {r.Result.Milliseconds:0}"))})");
         var frames = detectors.Sum(d => d.StageFrames);
         if (frames > 0)
         {
