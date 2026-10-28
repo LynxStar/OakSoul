@@ -230,7 +230,7 @@ public sealed class FrameView : Control
             dc.FillRectangle(Unprocessed, frameRect);
             Caption(dc, s.State == StreamState.Generating ? "not processed yet: the watcher has not reached this frame" : "no stream for this frame", frameRect.Center, 0xFFD0D0D0);
         }
-        else OverlayPainter.Paint(dc, frame, scale, _origin, Options(s), 11, new Rect(Bounds.Size), new Size(s.Pixels.Width, s.Pixels.Height), _labels, _shown);
+        else OverlayPainter.Paint(dc, frame, scale, _origin, Options(s), new Size(s.Pixels.Width, s.Pixels.Height), _labels, _shown);
 
         if (s.ShowNotes)
             foreach (var note in s.Packets.Notes.Where(n => s.NoteIndex(n) == index))
@@ -248,27 +248,35 @@ public sealed class FrameView : Control
         if (Pending is { } p) Region(dc, p, PendingIsPoint, 0xFFFFE070, "new note", false);
     }
 
+    /// <summary>
+    /// A note's or truth entry's region with its label under it. Like the overlay's labels, the label and a point's
+    /// marker are part of the frame's picture, sized in game pixels, so zooming scales them with the frame.
+    /// </summary>
     private void Region(DrawingContext dc, (int X, int Y, int W, int H) region, bool point, uint colour, string label, bool dashed)
     {
         var pen = OverlayPainter.Pen(colour, 2, dashed);
-        Rect r;
+        double bottom;
         if (point)
         {
             var c = ScreenRect(region).Center;
-            r = new Rect(c.X - 7, c.Y - 7, 14, 14);
-            dc.DrawEllipse(null, pen, r);
-            dc.DrawLine(pen, new Point(c.X - 11, c.Y), new Point(c.X + 11, c.Y));
-            dc.DrawLine(pen, new Point(c.X, c.Y - 11), new Point(c.X, c.Y + 11));
+            double radius = 4 * Scale, arm = 6 * Scale;
+            dc.DrawEllipse(null, pen, c, radius, radius);
+            dc.DrawLine(pen, new Point(c.X - arm, c.Y), new Point(c.X + arm, c.Y));
+            dc.DrawLine(pen, new Point(c.X, c.Y - arm), new Point(c.X, c.Y + arm));
+            bottom = region.Y + 0.5 + 6;
         }
         else
         {
-            r = ScreenRect(region);
-            dc.DrawRectangle(null, pen, r);
+            dc.DrawRectangle(null, pen, ScreenRect(region));
+            bottom = region.Y + region.H;
         }
-        var text = new FormattedText(label, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, OverlayPainter.LabelFace, 11, OverlayPainter.Brush(colour));
-        var at = new Point(r.X, r.Bottom + 2);
-        dc.DrawRectangle(OverlayPainter.LabelBacking, null, new Rect(at.X, at.Y, text.Width + 4, text.Height + 1));
-        dc.DrawText(text, new Point(at.X + 2, at.Y));
+        var text = new FormattedText(label, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, OverlayPainter.LabelFace, OverlayPainter.LabelSize, OverlayPainter.Brush(colour));
+        var x = point ? region.X + 0.5 - 6 : region.X;
+        using (dc.PushTransform(Matrix.CreateScale(Scale, Scale) * Matrix.CreateTranslation(_origin.X, _origin.Y)))
+        {
+            dc.DrawRectangle(OverlayPainter.LabelBacking, null, new Rect(x, bottom + 1, text.Width + 2, text.Height));
+            dc.DrawText(text, new Point(x + 1, bottom + 1));
+        }
     }
 
     private static void Caption(DrawingContext dc, string text, Point centre, uint colour)
@@ -422,7 +430,7 @@ public sealed class FrameView : Control
         {
             using (dc.PushRenderOptions(new RenderOptions { BitmapInterpolationMode = Avalonia.Media.Imaging.BitmapInterpolationMode.None }))
                 dc.DrawImage(pixels, new Rect(0, 0, width, height), dest);
-            if (frame is not null) OverlayPainter.Paint(dc, frame, scale, origin, options, 12, new Rect(0, 0, size.Width, size.Height));
+            if (frame is not null) OverlayPainter.Paint(dc, frame, scale, origin, options);
             var r = new Rect(origin.X + region.X * scale, origin.Y + region.Y * scale, region.W * scale, region.H * scale);
             var pen = OverlayPainter.Pen(0xFFFFE070, 2, true);
             if (point) dc.DrawEllipse(null, pen, r.Center, 10, 10);

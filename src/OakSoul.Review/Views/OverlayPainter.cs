@@ -59,17 +59,16 @@ public static class OverlayPainter
     /// <summary>
     /// Paints the frame's visible items with game pixel (x, y) at <paramref name="origin"/> + (x, y) x <paramref name="zoom"/>,
     /// in the registry's drawing order (entities on top), then the labels over everything. Shapes are clipped to the
-    /// frame (<paramref name="frameSize"/> game pixels, when given); labels may sit in the margin around it, within
-    /// <paramref name="bounds"/>.
+    /// frame (<paramref name="frameSize"/> game pixels, when given); labels may stand in the margin around it.
     /// </summary>
-    public static void Paint(DrawingContext dc, OverlayFrame frame, double zoom, Point origin, PaintOptions o, double labelSize = 11, Rect? bounds = null, Size? frameSize = null,
+    public static void Paint(DrawingContext dc, OverlayFrame frame, double zoom, Point origin, PaintOptions o, Size? frameSize = null,
         LabelLayout? layout = null, int frameIndex = -1)
     {
         var labels = new List<(OverlayItem Item, uint Colour)>();
         Point P(double x, double y) => new(origin.X + x * zoom, origin.Y + y * zoom);
         using (frameSize is { } fs ? dc.PushClip(new Rect(origin.X, origin.Y, fs.Width * zoom, fs.Height * zoom)) : default(DrawingContext.PushedState?))
             Shapes(dc, frame, zoom, o, labels, P);
-        if (labels.Count > 0) PaintLabels(dc, labels, zoom, origin, labelSize, bounds, o, layout ?? new LabelLayout(), frameIndex);
+        if (labels.Count > 0) PaintLabels(dc, labels, zoom, origin, o, layout ?? new LabelLayout(), frameIndex);
     }
 
     private static void Shapes(DrawingContext dc, OverlayFrame frame, double zoom, PaintOptions o, List<(OverlayItem Item, uint Colour)> labels, Func<double, double, Point> P)
@@ -114,48 +113,50 @@ public static class OverlayPainter
             }
     }
 
+    /// <summary>Label text height in game pixels: Bake's labels are its 5x7 font in 6x8 cells with a pixel of margin.</summary>
+    public const double LabelSize = 8.5;
+
     /// <summary>
     /// Labels above their item's top-left corner (an entity's box, a region, a portal), on a translucent backing so the
-    /// sprite under them still shows, kept inside the bounds. Overlapping labels stack in one fixed order, the same every
-    /// frame: the HUD's and the map's first, then entities by track, the oldest nearest its box; a label raised by the
-    /// stack is joined to its item by a line. <paramref name="layout"/> carries each label's level from frame to frame:
-    /// a raised label keeps its level while that is free and drops only once the level below has been free for
-    /// <see cref="LabelLayout.Settle"/> frames, so labels hold still in playback instead of jumping as overlaps come and
-    /// go. The hovered and the selected item's labels are drawn last, over any they overlap; that never moves them.
+    /// sprite under them still shows. They are part of the frame's picture: laid out in game pixels at the size Bake
+    /// bakes them, and drawn through the same zoom and pan as the pixels, so the view zoomed and panned anywhere shows
+    /// exactly what an exported frame would, and moving the view never moves a label. Overlapping labels stack in one
+    /// fixed order, the same every frame: the HUD's and the map's first, then entities by track, the oldest nearest its
+    /// box; a label raised by the stack is joined to its item by a line. <paramref name="layout"/> carries each label's
+    /// level from frame to frame: a raised label keeps its level while that is free and drops only once the level below
+    /// has been free for <see cref="LabelLayout.Settle"/> frames, so labels hold still in playback. The hovered and the
+    /// selected item's labels are drawn last, over any they overlap; that never moves them.
     /// </summary>
-    private static void PaintLabels(DrawingContext dc, List<(OverlayItem Item, uint Colour)> labels, double zoom, Point origin, double size, Rect? bounds,
+    private static void PaintLabels(DrawingContext dc, List<(OverlayItem Item, uint Colour)> labels, double zoom, Point origin,
         PaintOptions o, LabelLayout layout, int frameIndex)
     {
-        var top = bounds?.Top ?? 0;
-        var left = bounds?.Left ?? 0;
-        var right = bounds?.Right ?? double.MaxValue;
         var ordered = labels
             .Select(l => (l.Item, l.Colour, Key: LabelLayout.Key(l.Item), Track: l.Item.Layer == OverlayLayers.Entity ? l.Item.Long("track") ?? long.MaxValue : -1))
             .OrderBy(l => l.Track).ToList();
         var levels = layout.Begin(frameIndex);
+        // Everything below is in game pixels.
         var placed = new List<(Rect Box, Point Anchor, int Level, FormattedText Text, uint Colour, OverlayItem Item)>();
         foreach (var (item, colour, key, _) in ordered)
         {
-            var text = new FormattedText(item.Label!, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, LabelFace, size, Brush(colour));
-            var anchor = item.Rect is { } rr ? new Point(origin.X + rr.X * zoom, origin.Y + rr.Y * zoom)
-                : item.Point("point") is { } pp ? new Point(origin.X + pp.X * zoom, origin.Y + pp.Y * zoom - 4 * zoom)
-                : item.Point("feet") is { } ff ? new Point(origin.X + ff.X * zoom, origin.Y + ff.Y * zoom)
-                : origin;
-            double w = text.Width + 4, h = text.Height + 1;
-            // Kept inside the bounds; a label wider than them keeps its start (the track id) in view.
-            var x = Math.Max(left, Math.Min(anchor.X, right - w));
-            Rect At(int level) => new(x, Math.Max(top, anchor.Y - h - 1 - level * h), w, h);
+            var text = new FormattedText(item.Label!, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, LabelFace, LabelSize, Brush(colour));
+            var anchor = item.Rect is { } rr ? new Point(rr.X, rr.Y)
+                : item.Point("point") is { } pp ? new Point(pp.X, pp.Y - 4)
+                : item.Point("feet") is { } ff ? new Point(ff.X, ff.Y)
+                : default;
+            double w = text.Width + 2, h = text.Height;
+            Rect At(int level) => new(anchor.X, anchor.Y - h - 1 - level * h, w, h);
             bool Free(int level) => !placed.Any(p => p.Box.Intersects(At(level)));
             var level = levels.Placed(key, Free);
             placed.Add((At(level), anchor, level, text, colour, item));
         }
         bool OnTop(OverlayItem item) => ReferenceEquals(item, o.Hover) || (o.Selected is { } t && item.Long("track") == t);
-        foreach (var (box, anchor, level, text, colour, _) in placed.OrderBy(p => OnTop(p.Item)))
-        {
-            if (level > 0) dc.DrawLine(Pen(colour, 1), new Point(box.X, box.Bottom), anchor);
-            dc.DrawRectangle(LabelBacking, null, box);
-            dc.DrawText(text, new Point(box.X + 2, box.Y));
-        }
+        using (dc.PushTransform(Matrix.CreateScale(zoom, zoom) * Matrix.CreateTranslation(origin.X, origin.Y)))
+            foreach (var (box, anchor, level, text, colour, _) in placed.OrderBy(p => OnTop(p.Item)))
+            {
+                if (level > 0) dc.DrawLine(Pen(colour, 1), new Point(box.X, box.Bottom), anchor);
+                dc.DrawRectangle(LabelBacking, null, box);
+                dc.DrawText(text, new Point(box.X + 1, box.Y));
+            }
     }
 
     /// <summary>The entity under a game pixel (the smallest box containing it), among the visible ones.</summary>
