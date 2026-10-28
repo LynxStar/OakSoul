@@ -73,8 +73,8 @@ public sealed class SessionRow(string name, string info)
 public partial class MainWindow : Window
 {
     private static readonly double[] Speeds = [0.25, 1, 2];
-    private static readonly string[] KindChoices = ["—", "mob", "player", "pet", "drop", "effect", "damage", "unknown", NoteExpect.Nothing];
-    private static readonly string[] NotKindChoices = ["—", "mob", "player", "pet", "drop", "effect", "damage", "unknown"];
+    private static readonly string[] KindChoices = ["—", .. ReviewSession.EntityKinds, NoteExpect.Nothing];
+    private static readonly string[] NotKindChoices = ["—", .. ReviewSession.EntityKinds];
 
     private readonly ToolOptions _options;
     private readonly RepoPaths _paths;
@@ -545,7 +545,7 @@ public partial class MainWindow : Window
             var ents = f.Layer(OverlayLayers.Entity).ToList();
             var mobs = ents.Where(x => x.Kind == "mob").ToList();
             counts.AppendLine($"mob {mobs.Count}: matched {mobs.Count(m => m.Str("evidence") == "matched")}, carried ~{mobs.Count(m => m.Str("evidence") == "carried")}, unverified ?{mobs.Count(m => m.Str("evidence") == "unverified")}");
-            counts.AppendLine(string.Join("  ", new[] { "player", "pet", "drop", "effect", "damage", "unknown" }.Select(k => $"{k} {ents.Count(x => x.Kind == k)}")));
+            counts.AppendLine(string.Join("  ", ReviewSession.EntityKinds.Where(k => k != "mob").Select(k => $"{k} {ents.Count(x => x.Kind == k)}")));
             counts.AppendLine($"tags {f.Layer(OverlayLayers.Tags).Count()}");
         }
         if (s.Stream is { } st)

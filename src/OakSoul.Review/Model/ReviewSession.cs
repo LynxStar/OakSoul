@@ -88,7 +88,8 @@ public sealed class ReviewSession : IDisposable
     public bool ShowNotes { get; set; } = true;
     public bool ShowTruth { get; set; } = true;
 
-    public static readonly IReadOnlyList<string> EntityKinds = ["mob", "player", "pet", "drop", "effect", "damage", "unknown"];
+    /// <summary>The entity kinds of the stream schema, in the registry's order.</summary>
+    public static readonly IReadOnlyList<string> EntityKinds = [.. OverlayLayers.Find(OverlayLayers.Entity)!.Kinds.Select(k => k.Kind)];
 
     public event Action? CursorChanged;
     public event Action? StreamChanged;
