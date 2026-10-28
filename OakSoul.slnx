@@ -8,6 +8,8 @@
     <Project Path="src/OakSoul.MobInfo/OakSoul.MobInfo.csproj" />
     <Project Path="src/OakSoul.Overlay/OakSoul.Overlay.csproj" />
     <Project Path="src/OakSoul.Recorder/OakSoul.Recorder.csproj" />
+    <Project Path="src/OakSoul.Review/OakSoul.Review.csproj" />
+    <Project Path="src/OakSoul.Review.Tests/OakSoul.Review.Tests.csproj" />
     <Project Path="src/OakSoul.SpriteExport/OakSoul.SpriteExport.csproj" />
     <Project Path="src/OakSoul.Vision/OakSoul.Vision.csproj" />
     <Project Path="src/OakSoul.Watch/OakSoul.Watch.csproj" />

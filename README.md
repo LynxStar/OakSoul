@@ -467,6 +467,8 @@ All layers are on; the registry (`OverlayLayers`) is the source of truth for kin
 
 `src/OakSoul.Bake` renders the overlay stream over a recording's own frames, so what the pipeline concluded can be looked at frame by frame and pointed at unambiguously ("frame 0001411, #116 is a Wild Boar, not a Dark Stump"). It works on recordings only: nothing is captured, attached to or drawn on screen. Run it from the repository root; SESSION is a folder name under `recordings/` (or a session folder's path).
 
+For reviewing, use the [review tool](#review-tool): the same overlay, interactive, with notes written into review packets. Baked PNGs stay for sharing a frame and for contact sheets.
+
 ```
 dotnet run -c Release --project src/OakSoul.Bake -- regenerate fx-combat-exact
 dotnet run -c Release --project src/OakSoul.Bake -- render fx-combat-exact --frame 1411
@@ -512,6 +514,28 @@ The reviewer's statements about baked frames are kept, tracked in the repository
 dotnet run -c Release --project src/OakSoul.Bake -- regenerate fx-combat-exact
 dotnet run -c Release --project src/OakSoul.Bake -- truth fx-combat-exact
 ```
+
+## Review tool
+
+`src/OakSoul.Review` is a desktop window (Avalonia 11, dark Fluent theme) for reviewing a recording frame by frame: the overlay stream drawn over the frame as vectors (Bake's colours and labels, sharp at any zoom), what a baked frame's header and footer say as panels, every track over time, the ground truth checked against the stream, and review notes written straight into packets. Recordings only: it never captures the screen or touches the client. Run it from the repository root (or pass `--root DIR`):
+
+```
+dotnet run -c Release --project src/OakSoul.Review -- fx-combat-exact
+dotnet run -c Release --project src/OakSoul.Review -- fx-combat-exact --video --frame 781
+```
+
+Without a session it opens on the list of recordings, in keyframe or video mode. The stream is `data/overlays/SESSION/overlay.jsonl.gz` (`overlay-video.jsonl.gz`). When it is missing, the window regenerates it in the background: a child process runs Bake's `regenerate` into `overlay.jsonl`, the window reads that file as it grows, and gzips it into place when the watcher finishes. Frames can be browsed as far as it has got; the rest is greyed. A stream whose header does not match the checkout (commit, replay mode, thresholds, layers, and `--character`/`--pet` when given) is marked stale, or "provenance unknown" when either side has uncommitted changes, next to a Regenerate button. Fields the tool does not know (a newer pipeline's) are read and shown, flagged as new. `--reviewer NAME` (default Arthur) names the reviewer in packets and promoted truth.
+
+- **Review tab.** The frame at a whole number of screen pixels per game pixel, nearest-neighbour (zoom 2 on a Retina display is the game's own size); drag or scroll to pan, Cmd+wheel to zoom. Layer, entity-kind, label, note and truth toggles, and the frame, HUD and entity-count panels, on the left. Hover an entity for its details; click it to select its track: the inspector shows its full record and a strip of its history (green matched, amber carried, red unverified), and clicking a cell goes to that frame.
+- **Tracks tab.** One row per track across the recording, coloured by evidence, kills as green lines, dying frames as dots, a white bar where a track ends, so fragmentation shows at a glance. Filter by kind and length; order by first seen, name or length; click a row to open that frame with the track selected.
+- **Notes and truth tab.** Every note of the session's packets and every entry of `truth/SESSION.jsonl`, PASS or FAIL against the open stream (Bake's truth check; a note is checked when it says what is really there). Click one to go to its frame and region.
+- **Timeline.** Kills (EXP gains, green), map changes (blue), notes (yellow) and failing truth entries (red); click or drag to scrub.
+
+Keys: ← → a frame (a keyframe in keyframe mode), with Shift a keyframe (15 frames), with Cmd a second; Space play or pause, S cycles 0.25x, 1x and 2x; K, N, F, M the next kill, note, failing truth entry, map change (with Shift the previous); G jumps to a sequence (`781`) or a time (`0:26`); V select, R rectangle, P point, Esc back to select; +, − and 0 zoom and fit; L labels; O open; Cmd+1 to 3 the tabs. In the note editor: 1 to 7 the category, Cmd+Enter saves, Esc cancels.
+
+**Review packets.** Draw a rectangle (R) or click a point (P), press 1 to 7 for the category (missed, false detection, wrong kind or species, wrong box, wrong track or identity, wrong value, other), optionally say what it really is (a kind or "nothing", a name with the map's species offered, a state such as dying, a kind it is not), type the note and press Cmd+Enter. The note is appended at once to `reviews/SESSION/YYYY-MM-DD-N.jsonl` (tracked): today's latest packet, or a new one, which is the next review round ("New packet" starts one). One JSON object per line: `id`, `packet`, `review`, `reviewer`, `created`, `session`, `mode`, `seq`, `pts`, `t`, `rect` or `point`, `category`, `expect` (`kind`, `name`, `state`, `notKind`), `note` (the words verbatim), `entities` (the stream's entities at the region: id, kind, label, rect, score, evidence), `stream` (its path and header provenance), the visible `layers` and `kinds`, and `crops`: the region plus 24 pixels at 4x, raw and with the overlay as shown, in `data/reviews/SESSION/PACKET/NNN-raw.png` and `NNN-overlay.png` (gitignored). **Promote to truth** turns notes that say what is there into entries of `truth/SESSION.jsonl` in the format above: a kind with `nameEndsWith` and `state`, "nothing" as `none`, a kind it is not as `notKind`, and for a wrong box `covers` at the drawn rect's inner corners; id `r<review>-<seq>-<what>`, the words in `note`, source "Arthur, review N, date". The entries are shown before they are appended, and each note records its entry's id.
+
+`dotnet test src/OakSoul.Review.Tests` renders the window headless over fx-combat-exact (and regenerates fx-exact's stream into a scratch folder), writing screenshots to `data/review-shots/`; without the recordings those tests check nothing.
 
 ## Notes
 
