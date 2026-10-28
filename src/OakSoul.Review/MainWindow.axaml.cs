@@ -332,9 +332,7 @@ public partial class MainWindow : Window
             UpdatePacket();
         };
 
-        SelectTool.Click += (_, _) => SetTool(Tool.Select);
-        RectTool.Click += (_, _) => SetTool(Tool.Rect);
-        PointTool.Click += (_, _) => SetTool(Tool.Point);
+        NoteTool.Click += (_, _) => SetTool(NoteTool.IsChecked == true ? Tool.Note : Tool.Select);
         ZoomIn.Click += (_, _) => Frame.ZoomBy(1);
         ZoomOut.Click += (_, _) => Frame.ZoomBy(-1);
         ZoomFit.Click += (_, _) => Frame.Fit();
@@ -716,9 +714,7 @@ public partial class MainWindow : Window
     private void SetTool(Tool tool)
     {
         Frame.Tool = tool;
-        SelectTool.IsChecked = tool == Tool.Select;
-        RectTool.IsChecked = tool == Tool.Rect;
-        PointTool.IsChecked = tool == Tool.Point;
+        NoteTool.IsChecked = tool == Tool.Note;
         Frame.SetCursor(FrameView.ToolCursor(tool));
     }
 
@@ -827,7 +823,7 @@ public partial class MainWindow : Window
         if (Editor.IsVisible)
         {
             if (e.Key == Key.Escape) { CloseEditor(); e.Handled = true; return; }
-            if (e.Key == Key.Enter && (command || !typing)) { SaveNote(); e.Handled = true; return; }
+            if (e.Key == Key.Enter && (shift || command || !typing)) { SaveNote(); e.Handled = true; return; }
             if (!typing && !command && NoteCategory.All.FirstOrDefault(c => KeyChar(e.Key) == c.Key) is { } cat) { PickCategory(cat); e.Handled = true; return; }
         }
         if (typing)
@@ -845,9 +841,7 @@ public partial class MainWindow : Window
             case Key.Home when s is not null: Navigate(() => s.Seek(0)); break;
             case Key.End when s is not null: Navigate(() => s.Seek(s.Timeline.Count - 1)); break;
             case Key.Space: TogglePlay(); break;
-            case Key.V: SetTool(Tool.Select); break;
-            case Key.R: SetTool(Tool.Rect); break;
-            case Key.P: SetTool(Tool.Point); break;
+            case Key.N: SetTool(Frame.Tool == Tool.Note ? Tool.Select : Tool.Note); break;
             case Key.S:
                 SpeedBox.SelectedIndex = (SpeedBox.SelectedIndex + 1) % Speeds.Length;
                 break;
@@ -911,8 +905,10 @@ public partial class MainWindow : Window
         var (packet, review, isNew) = s.Packets.NextPacket();
         EditorPacket.Text = $"goes to {Path.Combine(s.Packets.Dir, packet + ".jsonl")}{(isNew ? $" (new, review {review})" : "")}; crops to {Path.Combine(_paths.ReviewData, s.Name, packet)}";
         Editor.IsVisible = true;
-        Status("note: pick a category with 1–7, then write what is wrong; Cmd+Enter saves, Esc cancels");
-        Frame.Focus();
+        Status("note: write what is wrong (a category if you like); Shift+Enter saves, Esc cancels");
+        // One region per N: drawing it ends the note tool, and the words come next.
+        SetTool(Tool.Select);
+        NoteText.Focus();
     }
 
     private void PickCategory(NoteCategory category)
@@ -938,11 +934,7 @@ public partial class MainWindow : Window
     private void SaveNote()
     {
         if (_session is not { } s || _pendingIndex < 0) return;
-        if (_category is not { } category)
-        {
-            Status("pick a category first (1–7)");
-            return;
-        }
+        var category = _category ?? NoteCategory.Find("other");
         var kind = Choice(ExpectKind);
         var name = Text(ExpectName.Text);
         if (kind is null && name is not null && s.Species.ForMap(s.Stream?.At(_pendingIndex)?.MapId).Contains(name)) kind = "mob";

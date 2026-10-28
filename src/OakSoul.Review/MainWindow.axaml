@@ -75,9 +75,7 @@
           <Grid Grid.Column="1">
             <views:FrameView x:Name="Frame" />
             <StackPanel Orientation="Horizontal" Spacing="2" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="8">
-              <ToggleButton x:Name="SelectTool" Content="Select (V)" IsChecked="True" ToolTip.Tip="Hover for details, click an entity to inspect its track, drag to pan" />
-              <ToggleButton x:Name="RectTool" Content="Rect (R)" ToolTip.Tip="Drag a rectangle on the frame for a note" />
-              <ToggleButton x:Name="PointTool" Content="Point (P)" ToolTip.Tip="Click a point on the frame for a note (something missed)" />
+              <ToggleButton x:Name="NoteTool" Content="Note (N)" ToolTip.Tip="Drag a rectangle on the frame (or click a point, for something missed) and write a note about it; Esc cancels" />
             </StackPanel>
             <Border HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="8" Background="#C0101114" CornerRadius="4" Padding="4,2">
               <StackPanel Orientation="Horizontal" Spacing="4">
@@ -106,7 +104,7 @@
                 <StackPanel Spacing="4">
                   <TextBlock Classes="panelTitle" Text="New note" Foreground="#FFD84A" />
                   <TextBlock x:Name="EditorRegion" FontFamily="Menlo, Consolas, monospace" FontSize="11" Foreground="#A0A8B0" TextWrapping="Wrap" />
-                  <TextBlock Text="Category (keys 1–7)" FontSize="12" />
+                  <TextBlock Text="Category (other when none is picked)" FontSize="12" />
                   <WrapPanel x:Name="CategoryButtons" />
                   <TextBlock Text="What it really is (optional; makes the note promotable to truth)" FontSize="12" TextWrapping="Wrap" Margin="0,4,0,0" />
                   <Grid ColumnDefinitions="56,*" RowDefinitions="Auto,Auto,Auto,Auto">
@@ -120,10 +118,10 @@
                     <ComboBox Grid.Row="3" Grid.Column="1" x:Name="ExpectNotKind" HorizontalAlignment="Stretch" Margin="0,2" />
                   </Grid>
                   <TextBlock Text="Note, in your words" FontSize="12" Margin="0,4,0,0" />
-                  <TextBox x:Name="NoteText" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="80" Watermark="what is wrong here (Cmd+Enter saves, Esc cancels)" />
+                  <TextBox x:Name="NoteText" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="80" Watermark="what is wrong here (Shift+Enter saves, Esc cancels)" />
                   <TextBlock x:Name="EditorUnder" FontFamily="Menlo, Consolas, monospace" FontSize="11" Foreground="#A0A8B0" TextWrapping="Wrap" />
                   <StackPanel Orientation="Horizontal" Spacing="6">
-                    <Button x:Name="SaveNoteButton" Content="Save (⌘↵)" />
+                    <Button x:Name="SaveNoteButton" Content="Save (⇧↵)" />
                     <Button x:Name="CancelNoteButton" Content="Cancel (Esc)" />
                   </StackPanel>
                   <TextBlock x:Name="EditorPacket" FontSize="11" Foreground="#8A9098" TextWrapping="Wrap" />

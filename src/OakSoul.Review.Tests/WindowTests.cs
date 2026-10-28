@@ -7,6 +7,7 @@ using Avalonia.Interactivity;
 using OakSoul.Bake;
 using OakSoul.Overlay;
 using OakSoul.Review.Model;
+using OakSoul.Review.Views;
 using Xunit;
 
 namespace OakSoul.Review.Tests;
@@ -38,6 +39,10 @@ public class WindowTests
         window.KeyReleaseQwerty(key, modifiers);
     }
 
+    private static void Category(MainWindow window, string id) =>
+        window.CategoryButtons.Children.OfType<Avalonia.Controls.Primitives.ToggleButton>().Single(b => ((NoteCategory)b.Tag!).Id == id)
+            .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+
     private static Point At(MainWindow window, (int X, int Y) game)
     {
         var screen = window.Frame.ScreenRect((game.X, game.Y, 1, 1)).Center;
@@ -68,33 +73,38 @@ public class WindowTests
         Assert.NotEmpty(s.Stream!.Kills);
         Assert.Equal(s.Timeline.Count, s.Stream.ProcessedUpTo);
 
-        // Keyboard stepping: a frame (a keyframe in this mode) forward and back, a second back and forward.
+        // Keyboard stepping: a frame (a keyframe in this mode) forward and back, 5 seconds back and forward.
         Press(window, PhysicalKey.ArrowRight, RawInputModifiers.None);
         Assert.Equal(796, s.Entry.Sequence);
         Press(window, PhysicalKey.ArrowLeft, RawInputModifiers.None);
         Assert.Equal(781, s.Entry.Sequence);
-        Press(window, PhysicalKey.ArrowLeft, RawInputModifiers.Meta);
+        Press(window, PhysicalKey.ArrowLeft, RawInputModifiers.Shift);
         Assert.True(s.Entry.Sequence < 781);
-        Press(window, PhysicalKey.ArrowRight, RawInputModifiers.Meta);
+        Press(window, PhysicalKey.ArrowRight, RawInputModifiers.Shift);
         Assert.Equal(781, s.Entry.Sequence);
         Fixture.Pump(() => window.Frame.Shown == s.Cursor);
 
-        // Two notes, drawn and written as a reviewer would: R, drag, a category key, words, Cmd+Enter.
-        Press(window, PhysicalKey.R, RawInputModifiers.None);
+        // Two notes, drawn and written as a reviewer would: N, drag, the words typed straight in (the note text has the
+        // focus), a category clicked, Shift+Enter.
+        Press(window, PhysicalKey.N, RawInputModifiers.None);
         Drag(window, (520, 18), (592, 68));
         Assert.True(window.Editor.IsVisible);
-        Press(window, PhysicalKey.Digit1, RawInputModifiers.None);
+        Assert.Equal(Tool.Select, window.Frame.Tool);
+        Assert.Same(window.NoteText, window.FocusManager?.GetFocusedElement());
         window.KeyTextInput("the stump on the top platform has no box");
+        Category(window, "missed");
         window.ExpectKind.SelectedItem = "mob";
         window.ExpectName.Text = "Dark Axe Stump";
         Shot(window, "editor.png");
-        Press(window, PhysicalKey.Enter, RawInputModifiers.Meta);
+        Press(window, PhysicalKey.Enter, RawInputModifiers.Shift);
         Assert.False(window.Editor.IsVisible);
+        Assert.Same(window.Frame, window.FocusManager?.GetFocusedElement());
+        Press(window, PhysicalKey.N, RawInputModifiers.None);
         Drag(window, (222, 667), (271, 701));
-        Press(window, PhysicalKey.Digit4, RawInputModifiers.None);
         window.KeyTextInput("the box covers the top of the stump and cuts off its lower part");
+        Category(window, "wrong-box");
         window.ExpectKind.SelectedItem = "mob";
-        Press(window, PhysicalKey.Enter, RawInputModifiers.Meta);
+        Press(window, PhysicalKey.Enter, RawInputModifiers.Shift);
         var notes = s.Packets.Notes.ToList();
         Assert.Equal(2, notes.Count);
         Assert.Equal("missed", notes[0].Category);
@@ -103,7 +113,6 @@ public class WindowTests
         Assert.Equal(781, notes[1].Sequence);
         Assert.All(notes, n => Assert.True(File.Exists(Path.Combine(Fixture.Root!, n.RawCrop!)) && File.Exists(Path.Combine(Fixture.Root!, n.OverlayCrop!)), $"crops of {n.Id}"));
         Assert.NotEmpty(notes[1].Json["entities"]!.AsArray());
-        Press(window, PhysicalKey.V, RawInputModifiers.None);
 
         // Select the first matched mob and hover it.
         var mob = s.Frame!.Layer(OverlayLayers.Entity).First(e => e.Kind == "mob" && e.Str("evidence") == "matched");

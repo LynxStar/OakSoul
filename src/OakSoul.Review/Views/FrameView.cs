@@ -11,8 +11,8 @@ using OakSoul.Review.Model;
 
 namespace OakSoul.Review.Views;
 
-/// <summary>The annotation tools: select (and pan), drag a rectangle, click a point.</summary>
-public enum Tool { Select, Rect, Point }
+/// <summary>The frame's tools: select (hover, click an entity, drag to pan), and note (drag a rectangle or click a point).</summary>
+public enum Tool { Select, Note }
 
 /// <summary>
 /// The frame at a zoom in device pixels per game pixel, nearest-neighbour (1x on a Retina display is the game pixel for
@@ -302,13 +302,10 @@ public sealed class FrameView : Control
             var g = GamePixel(p);
             switch (Tool)
             {
-                case Tool.Rect:
+                case Tool.Note:
                     _dragFrom = _dragTo = g;
                     e.Pointer.Capture(this);
                     InvalidateVisual();
-                    return;
-                case Tool.Point:
-                    RegionDrawn?.Invoke((g.X, g.Y, 1, 1), true);
                     return;
                 default:
                     var hit = _session?.Stream?.At(_shown) is { } f && _session is { } s ? OverlayPainter.EntityAt(f, g.X + 0.5, g.Y + 0.5, Options(s)) : null;
@@ -389,7 +386,7 @@ public sealed class FrameView : Control
             _dragFrom = _dragTo = null;
             e.Pointer.Capture(null);
             var r = Normalize(a, b);
-            // A click with the rect tool is a point.
+            // A click with the note tool is a point.
             if (r.W <= 2 && r.H <= 2) RegionDrawn?.Invoke((a.X, a.Y, 1, 1), true);
             else RegionDrawn?.Invoke(r, false);
             InvalidateVisual();
