@@ -75,7 +75,8 @@ public sealed class SpriteFrame
     /// <summary>The frame's straight-alpha BGRA pixels (for drawing and coverage; matching uses the samples).</summary>
     public byte[] Bgra { get; init; } = [];
 
-    public string Key => $"{Anim}/{Index}{(Facing > 0 ? "R" : "L")}";
+    public string Key => _key ??= $"{Anim}/{Index}{(Facing > 0 ? "R" : "L")}";
+    private string? _key;
 
     public override string ToString() => $"{Anim}_{Index}{(Facing > 0 ? " right" : " left")} {Width}x{Height} origin {OriginX},{OriginY}";
 

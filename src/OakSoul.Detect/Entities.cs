@@ -22,6 +22,17 @@ public enum EntityKind
     Damage,
 }
 
+/// <summary>How an entity was found in its frame (the temporal pass, <see cref="EntityDetector"/>).</summary>
+public enum FoundBy : byte
+{
+    /// <summary>The full search: a foreground blob or tag verified by the species search or the foothold search, and every kind but a mob.</summary>
+    Search,
+    /// <summary>A track's predicted pose (its animation and facing, a frame the delay table allows) verified at its predicted place.</summary>
+    Prediction,
+    /// <summary>Another pose of the track's species (a neighbouring frame, stand or move, the other facing, hit, die, another animation) verified at its predicted place.</summary>
+    Transition,
+}
+
 /// <summary>What a mob track is doing: alive, or dying (its die pose matched, or a kill credited by an EXP gain).</summary>
 public enum MobState : byte { Alive, Dying }
 
@@ -56,6 +67,9 @@ public sealed record DetectedEntity(
 
     /// <summary>Found by the direct search along a foothold rather than from its foreground blob alone.</summary>
     public bool Swept { get; init; }
+
+    /// <summary>How the entity was found in this frame: the full search, or a track's prediction (or a transition of it) verified.</summary>
+    public FoundBy Found { get; init; }
 
     /// <summary>The box drawn for the entity: the hitbox for an identified mob, the damage number's digits, else <see cref="Box"/>.</summary>
     public CaptureRect DisplayBox => Hitbox ?? Box;

@@ -13,8 +13,8 @@ public static class OverlayLabels
     public const double CloseRival = 0.15;
 
     /// <summary>
-    /// "#116 Dark Stump move/3 R 0.97" for a mob matched in this frame (" frozen", " steam" when tinted, " vs Axe Stump 0.90"
-    /// when the contest's rival came close, " dying"); "#28 Dark Stump ~carried 1.5 s (last move/0 R 1.00 at 23.0)" when the
+    /// "#116 Dark Stump move/3 R 0.97 [p]" for a mob matched in this frame (" frozen", " steam" when tinted, " vs Axe Stump
+    /// 0.90" when the contest's rival came close, " dying", then how it was found: [p] prediction, [t] transition, [s] search); "#28 Dark Stump ~carried 1.5 s (last move/0 R 1.00 at 23.0)" when the
     /// identity is carried by the track (its last match's pose, score and time, not a score of this frame); "#116 Mob? Lv23
     /// Dark Axe Stump" for a mob nothing verified; "#12 meso 09000000 1.00" for an identified drop, "#12 Drop?" otherwise;
     /// "#173 dmg 287 dealt", "#174 dmg 119 taken fading 0.79" for damage numbers; "#7 Pet Mara", "#9 Player KOOKAW", "#3
@@ -39,7 +39,7 @@ public static class OverlayLabels
             if (e.Str("tint") is { } tint && tint != "drawn") text += " " + tint;
             if (e.Str("rivalName") is { } rival && e.Double("rivalScore") is { } rs && rs >= score - CloseRival)
                 text += $" vs {rival} {rs.ToString("0.00", CultureInfo.InvariantCulture)}";
-            return text + dying;
+            return text + dying + FoundMark(e);
         }
         if (e.Kind == "drop")
             return e.Str("item") is { } item ? $"#{track} {(e.Str("category") == "meso" ? "meso" : "item")} {item} {(e.Double("score") ?? 0).ToString("0.00", CultureInfo.InvariantCulture)}" : $"#{track} Drop?";
@@ -48,6 +48,18 @@ public static class OverlayLabels
                    $"{(e.Double("alpha") is { } a && a < 0.95 ? $" fading {a.ToString("0.00", CultureInfo.InvariantCulture)}" : "")}";
         return $"#{track} {kind}{(e.Kind == "mob" ? "?" : "")}{NameText(e)}";
     }
+
+    /// <summary>
+    /// How a mob matched in its frame was found, briefly: " [p]" its track's predicted pose verified, " [t]" a transition of
+    /// it verified, " [s]" the full search (the stream's <c>found</c>).
+    /// </summary>
+    public static string FoundMark(OverlayItem e) => e.Str("found") switch
+    {
+        "prediction" => " [p]",
+        "transition" => " [t]",
+        "search" => " [s]",
+        _ => "",
+    };
 
     /// <summary>The contact sheets' label, as <c>EntityDetector.Label</c>: "#12 Red Snail move/2R" ("~" carried), "#12 Mob? Lv23 Name", "#12 meso 09000000".</summary>
     public static string Sheet(OverlayItem e)

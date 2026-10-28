@@ -72,8 +72,9 @@ public sealed class ScreenPatch
     /// Fills the patch for the inclusive screen box (x0, y0)-(x1, y1), clamped to the frame; with a
     /// <paramref name="background"/> (the map's mosaic at the frame's registered camera) also the background behind each pixel.
     /// </summary>
+    /// <param name="explained">Pixels already explained (viewport coordinates, non-zero where explained), compared as little as masked ones.</param>
     public void Fill(ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, int x0, int y0, int x1, int y1,
-        (BackgroundMosaic Mosaic, int CameraX, int CameraY)? background = null)
+        (BackgroundMosaic Mosaic, int CameraX, int CameraY)? background = null, byte[]? explained = null)
     {
         var frameHeight = frame.Length / 4 / frameWidth;
         x0 = Math.Max(0, x0); y0 = Math.Max(0, y0); x1 = Math.Min(frameWidth - 1, x1); y1 = Math.Min(frameHeight - 1, y1);
@@ -82,30 +83,45 @@ public sealed class ScreenPatch
         if (B.Length < n) { B = new int[n]; G = new int[n]; R = new int[n]; Ok = new byte[n]; Packed = new int[n]; Background = new int[n]; }
         var vp = mask.Viewport;
         var bits = mask.Bits;
+        int mw = mask.Width, mh = mask.Height, w = Width;
+        var px = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, int>(frame);
+        int[] pb = B, pg = G, pr = R, packed = Packed;
+        var ok = Ok;
         for (var y = 0; y < Height; y++)
         {
-            var d = y * Width;
-            var o = ((y0 + y) * frameWidth + x0) * 4;
+            var d = y * w;
+            var src = (y0 + y) * frameWidth + x0;
             var vy = y0 + y - vp.Y;
-            for (var x = 0; x < Width; x++, o += 4)
+            var rowOk = (uint)vy < (uint)mh;
+            var mrow = vy * mw - vp.X;
+            for (var x = 0; x < w; x++)
             {
-                B[d + x] = frame[o]; G[d + x] = frame[o + 1]; R[d + x] = frame[o + 2];
+                var c = px[src + x] & 0xFFFFFF;
+                pb[d + x] = c & 0xFF; pg[d + x] = c >> 8 & 0xFF; pr[d + x] = c >> 16;
                 var vx = x0 + x - vp.X;
-                Ok[d + x] = (uint)vx < (uint)mask.Width && (uint)vy < (uint)mask.Height && bits[vy * mask.Width + vx] == 0 ? (byte)1 : (byte)0;
-                Packed[d + x] = Ok[d + x] != 0 ? frame[o] | frame[o + 1] << 8 | frame[o + 2] << 16 : -1;
+                var good = rowOk && (uint)vx < (uint)mw && bits[mrow + x0 + x] == 0 && (explained is null || explained[mrow + x0 + x] == 0);
+                ok[d + x] = good ? (byte)1 : (byte)0;
+                packed[d + x] = good ? c : -1;
             }
         }
         if (background is { } bg)
         {
             var m = bg.Mosaic;
+            int bw = m.Width, bh = m.Height;
+            var usable = m.ForegroundUsable;
+            var pixels = m.Pixels;
+            var back = Background;
             for (var y = 0; y < Height; y++)
             {
                 var wy = bg.CameraY + y0 + y - m.OriginY;
-                for (var x = 0; x < Width; x++)
+                var d = y * w;
+                if ((uint)wy >= (uint)bh) { Array.Fill(back, -1, d, w); continue; }
+                var row = wy * bw;
+                var wx0 = bg.CameraX + x0 - m.OriginX;
+                for (var x = 0; x < w; x++)
                 {
-                    var wx = bg.CameraX + x0 + x - m.OriginX;
-                    var i = wy * m.Width + wx;
-                    Background[y * Width + x] = (uint)wx < (uint)m.Width && (uint)wy < (uint)m.Height && m.ForegroundUsable[i] != 0 ? (int)(m.Pixels[i] & 0xFFFFFF) : -1;
+                    var wx = wx0 + x;
+                    back[d + x] = (uint)wx < (uint)bw && usable[row + wx] != 0 ? (int)(pixels[row + wx] & 0xFFFFFF) : -1;
                 }
             }
         }
@@ -244,6 +260,13 @@ public sealed class SpriteMatcher
 
     private readonly ScreenPatch _patch = new();
 
+    /// <summary>
+    /// Screen pixels the temporal pass's verified predictions explain (viewport coordinates, the screen mask's layout, non-zero
+    /// where explained), or null. Patches prepared while it is set leave them out like masked pixels, so the full search that
+    /// runs on the rest of the frame does not find the predicted mobs a second time.
+    /// </summary>
+    public byte[]? Explained { get; set; }
+
     /// <summary>Whether a frame's extent fits a candidate box (the size prefilter).</summary>
     public static bool Fits(SpriteFrame f, int boxWidth, int boxHeight) =>
         boxWidth <= (1 + SizeTolerance) * f.ExtentWidth && boxHeight <= (1 + SizeTolerance) * f.ExtentHeight
@@ -263,12 +286,16 @@ public sealed class SpriteMatcher
             var padY = (int)(CutTolerance * box.Height) + SearchY + 2;
             r = (box.X - padX, box.Y - padY, box.X + box.Width - 1 + padX, box.Y + box.Height - 1 + SearchY + 2);
         }
-        _patch.Fill(frame, frameWidth, mask, r.Item1 - 1, r.Item2 - 1, r.Item3 + 1, r.Item4 + 1, Background);
+        _patch.Fill(frame, frameWidth, mask, r.Item1 - 1, r.Item2 - 1, r.Item3 + 1, r.Item4 + 1, Background, Explained);
     }
+
+    /// <summary>Whether the prepared patch covers the screen region (inclusive), as far as it lies on the frame.</summary>
+    public bool PatchCovers(int x0, int y0, int x1, int y1) =>
+        _patch.Width > 0 && Math.Max(0, x0) >= _patch.X0 && Math.Max(0, y0) >= _patch.Y0 && x1 < _patch.X0 + _patch.Width && y1 < _patch.Y0 + _patch.Height;
 
     /// <summary>Prepares the screen patch for an explicit screen region (inclusive), for searches placing frames by their origin (<see cref="FootholdSearch"/>).</summary>
     public void PrepareRegion(ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, int x0, int y0, int x1, int y1) =>
-        _patch.Fill(frame, frameWidth, mask, x0, y0, x1, y1, Background);
+        _patch.Fill(frame, frameWidth, mask, x0, y0, x1, y1, Background, Explained);
 
     /// <summary>
     /// Tries the frames in order on the prepared candidate and returns the best of the first species to pass
@@ -341,7 +368,9 @@ public sealed class SpriteMatcher
     /// drawn or through steam (<see cref="Fog"/> with the neighbour test); a pixel both explain, or neither, counts for
     /// neither.
     /// </summary>
-    public (int OnlyA, int OnlyB, int Visible) Distinguish(SpriteFrame a, SpriteFrame b, int left, int top, SpriteTint tint)
+    /// <param name="decided">When given, counting stops once one side has at least this many and at least twice what the other
+    /// can still reach (every remaining pixel counted for it): the outcome of <c>EntityDetector.Settle</c> cannot change.</param>
+    public (int OnlyA, int OnlyB, int Visible) Distinguish(SpriteFrame a, SpriteFrame b, int left, int top, SpriteTint tint, int decided = 0)
     {
         var patch = _patch;
         int lx = left - patch.X0, ty = top - patch.Y0, onlyA = 0, onlyB = 0, visible = 0;
@@ -370,8 +399,59 @@ public sealed class SpriteMatcher
             var fitB = (sb == bb && sg == bg && sr == br) || (Fog(sb, sg, sr, bb, bg, br) is var fb && fb > 0 && Coherent(b, fx, fy, x, y, fb, frozen));
             if (fitA && !fitB) onlyA++;
             else if (fitB && !fitA) onlyB++;
+            else continue;
+            if (decided > 0)
+            {
+                var remaining = a.PixelX.Length - 1 - i;
+                if (onlyA >= decided && onlyA >= 2 * (onlyB + remaining) || onlyB >= decided && onlyB >= 2 * (onlyA + remaining)) break;
+            }
         }
         return (onlyA, onlyB, visible);
+    }
+
+    /// <summary>
+    /// The screen pixels a match explains, on the prepared patch (which must cover it): its opaque pixels that agree with
+    /// the screen under the tint it was scored with (equal as drawn or frozen, or through steam with a coherent neighbour,
+    /// as <see cref="Score"/> counts them), and its partly transparent edge pixels, which blend the sprite with whatever lies
+    /// behind it. Opaque pixels that disagree (something in front of the mob: the pet, a snail, a damage number) are not
+    /// explained. Those set in <paramref name="mask"/> (viewport coordinates, <paramref name="viewport"/> its place on
+    /// screen) are counted and, when <paramref name="clear"/>, cleared; returns the count and their extent on screen.
+    /// </summary>
+    /// <param name="explained">When given, every explained pixel (in the foreground or not) is marked in it, in the mask's layout.</param>
+    public (int Pixels, CaptureRect? Extent) Explain(SpriteMatch m, byte[] mask, int maskWidth, int maskHeight, CaptureRect viewport, bool clear, byte[]? explained = null)
+    {
+        var patch = _patch;
+        var f = m.Frame;
+        var frozen = m.Tint == SpriteTint.Frozen;
+        int count = 0, x0 = int.MaxValue, y0 = int.MaxValue, x1 = int.MinValue, y1 = int.MinValue;
+        for (var fy = 0; fy < f.Height; fy++)
+            for (var fx = 0; fx < f.Width; fx++)
+            {
+                var o = (fy * f.Width + fx) * 4;
+                var a = f.Bgra[o + 3];
+                if (a == 0) continue;
+                int sx = m.Left + fx, sy = m.Top + fy, vx = sx - viewport.X, vy = sy - viewport.Y;
+                if ((uint)vx >= (uint)maskWidth || (uint)vy >= (uint)maskHeight) continue;
+                var i = vy * maskWidth + vx;
+                if (mask[i] == 0 && explained is null) continue;
+                if (a == SpriteFrame.SolidAlpha)
+                {
+                    int px = sx - patch.X0, py = sy - patch.Y0;
+                    if ((uint)px >= (uint)patch.Width || (uint)py >= (uint)patch.Height) continue;
+                    var k = py * patch.Width + px;
+                    int tb = f.Bgra[o], tg = f.Bgra[o + 1], tr = f.Bgra[o + 2];
+                    if (frozen) { tb = (tb * FrozenB + 127) / 255; tg = (tg * FrozenG + 127) / 255; tr = (tr * FrozenR + 127) / 255; }
+                    int sb = patch.B[k], sg = patch.G[k], sr = patch.R[k];
+                    var agrees = (sb == tb && sg == tg && sr == tr) || (Fog(sb, sg, sr, tb, tg, tr) is var fa && fa > 0 && Coherent(f, fx, fy, px, py, fa, frozen));
+                    if (!agrees) continue;
+                }
+                if (explained is not null) explained[i] = 1;
+                if (mask[i] == 0) continue;
+                count++;
+                if (clear) mask[i] = 0;
+                x0 = Math.Min(x0, sx); y0 = Math.Min(y0, sy); x1 = Math.Max(x1, sx); y1 = Math.Max(y1, sy);
+            }
+        return (count, count == 0 ? null : new CaptureRect(x0, y0, x1 - x0 + 1, y1 - y0 + 1));
     }
 
     /// <summary>The score of a frame at one exact placement on the prepared patch (no early stop).</summary>

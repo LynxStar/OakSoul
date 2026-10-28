@@ -60,6 +60,7 @@ public static class EntityReport
         Tags(o, watch, done, mobs, detectors);
         CameraFeedback(o, watch, rows);
         Review(o, watch, rows, done, detectors);
+        Temporal(o, done, detectors);
         Cost(o, done, detectors);
     }
 
@@ -126,6 +127,29 @@ public static class EntityReport
         if (watch.Tracker.Names.PetMismatch is { } pm) o.WriteLine($"  pet check: {pm}");
     }
 
+
+    /// <summary>
+    /// The temporal pass: how the mob sightings were found (a track's predicted pose verified, a transition verified, or the full
+    /// search), the predictions made and what became of them, and on the full frames what the full search said about them.
+    /// </summary>
+    private static void Temporal(TextWriter o, List<EntityWatch.Row> done, List<EntityDetector> detectors)
+    {
+        var mobs = done.SelectMany(r => r.Result.Entities).Where(e => e.Kind == EntityKind.Mob).ToList();
+        int pred = mobs.Count(e => e.Found == FoundBy.Prediction), trans = mobs.Count(e => e.Found == FoundBy.Transition), search = mobs.Count - pred - trans;
+        var searchMatched = mobs.Count(e => e.Found == FoundBy.Search && e.Sprite is not null);
+        o.WriteLine($"  temporal pass: mob sightings found by prediction {pred} = {Frac(pred, mobs.Count)}, by transition {trans} = {Frac(trans, mobs.Count)}, by the full search {search} = {Frac(search, mobs.Count)}" +
+                    $" ({searchMatched} of those matched in their frame); of the mob sightings matched in their frame: prediction {Frac(pred, pred + trans + searchMatched)}, transition {Frac(trans, pred + trans + searchMatched)}, search {Frac(searchMatched, pred + trans + searchMatched)}");
+        var s = detectors.Select(d => d.Temporals).ToList();
+        int Sum(Func<EntityDetector.TemporalStats, int> f) => s.Sum(f);
+        var frames = Math.Max(1, Sum(x => x.TemporalFrames) + Sum(x => x.FullFrames));
+        o.WriteLine($"    frames: {Sum(x => x.TemporalFrames)} temporal, {Sum(x => x.FullFrames)} full (every {string.Join("/", detectors.Select(d => d.Temporal ? d.FullEvery.ToString() : "off").Distinct())});" +
+                    $" tracks predicted {Sum(x => x.Tracks)} ({Sum(x => x.Precise)} pose by pose, {Sum(x => x.Stretch)} along the foothold), verified {Sum(x => x.Predicted)} as predicted and {Sum(x => x.Transitions)} by a transition" +
+                    $" ({string.Join(", ", s.SelectMany(x => x.TransitionsByKind).GroupBy(k => k.Key).OrderByDescending(g => g.Sum(k => k.Value)).Select(g => $"{g.Key} {g.Sum(k => k.Value)}"))}), not verified {Sum(x => x.Failed)}," +
+                    $" lost the species contest {Sum(x => x.Contested)}, a second track on one mob {Sum(x => x.Conflicts)}; {s.Sum(x => x.PixelsExplained) / (double)frames:0} foreground pixels explained per frame");
+        o.WriteLine($"    on full frames, the full search and the predictions: same mob and species {Sum(x => x.FullAgree)}, another species (drift) {Sum(x => x.FullDrift)}, found by the prediction alone {Sum(x => x.FullOnly)};" +
+                    $" mob tracks matched for the first time {Sum(x => x.FirstMatchFull)} on full frames ({Sum(x => x.FirstMatchFull) / (double)Math.Max(1, Sum(x => x.FullFrames)):0.000} per frame), {Sum(x => x.FirstMatchTemporal)} on temporal ones ({Sum(x => x.FirstMatchTemporal) / (double)Math.Max(1, Sum(x => x.TemporalFrames)):0.000});" +
+                    $" {s.Sum(x => x.Ms) / frames:0.00} ms per frame mean");
+    }
 
     private static bool On(double? d) => d is { } v && Math.Abs(v) <= EntityTracker.OnFootholdUnits;
 
@@ -446,7 +470,7 @@ public static class EntityReport
         if (frames > 0)
         {
             var stages = EntityDetector.StageNames.Select((n, i) => $"{n} {detectors.Sum(d => d.StageMs[i]) / frames:0.00}");
-            o.WriteLine($"    by stage (mean ms): {string.Join(", ", stages)}; wide searches {detectors.Sum(d => d.WideSearches)}");
+            o.WriteLine($"    by stage (mean ms): {string.Join(", ", stages)}; wide searches {detectors.Sum(d => d.WideSearches)}, registered within the camera prior {detectors.Sum(d => d.PriorRegistrations)}");
             var sprite = detectors.SelectMany(d => d.SpriteStageMs).ToList();
             o.WriteLine($"    sprite stage per frame: median {Pct(sprite, 50):0.00} ms, p90 {Pct(sprite, 90):0.00}, max {(sprite.Count == 0 ? 0 : sprite.Max()):0.00};" +
                         $" frames scored {detectors.Sum(d => d.Matcher.FramesScored) / (double)frames:0.0} per frame, {detectors.Sum(d => d.Matcher.FramesSkippedBySize) / (double)frames:0} skipped by size");

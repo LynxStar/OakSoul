@@ -205,6 +205,14 @@ public static class OverlayBuilder
         items.Add(item);
     }
 
+    /// <summary>How an entity was found: a track's predicted pose verified, a transition of it verified, or the full search.</summary>
+    public static string Found(FoundBy f) => f switch
+    {
+        FoundBy.Prediction => "prediction",
+        FoundBy.Transition => "transition",
+        _ => "search",
+    };
+
     /// <summary>The colour state of a sprite match: as drawn, frozen, through steam, or both.</summary>
     public static string Tint(SpriteMatch m) => (m.Tint == SpriteTint.Frozen, m.Fogged > 0) switch
     {
@@ -249,6 +257,7 @@ public static class OverlayBuilder
         else if (sprite is { } other)
             item.Set("match", $"{other.Species.IdText} {other.Species.Name} {other.Frame.Anim}/{other.Frame.Index}{(other.Frame.Facing > 0 ? "R" : "L")} {other.Score:0.00}");
         if (e.Swept) item.Set("sweep", true);
+        item.Set("found", Found(e.Found));
         if (e.Drop is { } d)
             item.Set("item", d.ItemId).Set("category", d.IsMeso ? "meso" : d.Category).Set("score", D2(d.Score)).Set("evidence", "matched").Set("agree", new[] { d.Matches, d.Compared });
         else if (e.Kind == EntityKind.Drop) item.Set("evidence", "unverified");

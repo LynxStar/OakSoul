@@ -195,7 +195,7 @@ public static class FrameRenderer
         Swatch("tag box", Cyan);
         Swatch("own character", White);
         if (layers.Contains(OverlayLayers.World)) { Swatch("foothold", Foothold); Swatch("rope/ladder", Rope); Swatch("portal", Portal); }
-        c.Text(x, y, "mob box: client hitbox (lt/rb); #track name anim/frame facing score; ~carried (last match); ? unverified; + feet", Dim, ts, null);
+        c.Text(x, y, "mob box: client hitbox (lt/rb); #track name anim/frame facing score; [p] predicted, [t] transition, [s] search; ~carried (last match); ? unverified; + feet", Dim, ts, null);
     }
 
     /// <summary>Every entity, one line each, in its kind's colour: the label, then where it is and why it is what it is.</summary>
@@ -225,6 +225,7 @@ public static class FrameRenderer
             if (e.Str("evidence") is { } ev) parts.Add(ev == "carried" ? $"carried {(e.Double("carriedFor") ?? 0).ToString("0.0", CultureInfo.InvariantCulture)} s since seq {e.Long("lastMatchedSeq")}" : ev);
             if (e.Str("state") is { } st) parts.Add(st);
             if (e.Bool("sweep")) parts.Add("found along the foothold");
+            if (e.Str("found") is "prediction" or "transition") parts.Add($"found by {e.Str("found")}");
             if (e.Str("set") is { } set) parts.Add($"{set} {e.Str("digits")} a {e.Double("alpha")?.ToString("0.00", CultureInfo.InvariantCulture)}");
             if (e.Str("basis") is { } b) parts.Add($"by {b}");
             if (e.Ints("agree") is [var m, var n]) parts.Add($"{m}/{n} px");

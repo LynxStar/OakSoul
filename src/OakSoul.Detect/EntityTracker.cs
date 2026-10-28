@@ -33,6 +33,12 @@ public sealed class Candidate
     public DamageMatch? Damage { get; set; }
     /// <summary>Found by the direct search along a foothold (no foreground blob, or a blob no box alignment matched).</summary>
     public bool Swept { get; set; }
+
+    /// <summary>How the candidate was found: by the full search, or by verifying a track's prediction (see <see cref="EntityDetector"/>, the temporal pass).</summary>
+    public FoundBy Found { get; set; }
+
+    /// <summary>The track whose prediction this candidate verified (its own species' sprite at its predicted place): association takes that track first.</summary>
+    public int? PredictedTrack { get; set; }
 }
 
 /// <summary>
@@ -179,6 +185,23 @@ public sealed class EntityTracker
     /// <param name="TagName">The mob name the track's tags showed (only when a level badge or a known mob name backs it).</param>
     public sealed record TrackHint(int TrackId, int? MobId, string? TagName, SpriteMatch? LastSprite);
 
+    /// <summary>
+    /// A live identified mob track, for the temporal pass: its last match (frame, placement) and where that put its feet in
+    /// the world, when it was, its velocity, floor and state.
+    /// </summary>
+    public sealed record LiveTrack(int TrackId, SpriteMatch Last, PointD LastWorld, double LastMatchTime, double LastSeenTime, PointD Velocity, int? Floor,
+        bool Dead, double DeathTime, double HitTime, int Verified);
+
+    /// <summary>
+    /// The identified mob tracks whose sprite matched within <paramref name="memory"/> seconds (the pet excluded; a dead track
+    /// only while its die pose may still show), most verified first.
+    /// </summary>
+    public List<LiveTrack> Live(double time, double memory) =>
+        _tracks.Where(t => !t.IsPet && t.MobId is not null && t.LastSprite is not null && time - t.LastMatchTime <= memory && (!t.Dead || time - t.DeathTime <= DeathHoldSeconds))
+            .OrderByDescending(t => t.Verified).ThenBy(t => t.Id)
+            .Select(t => new LiveTrack(t.Id, t.LastSprite!.Value, t.LastMatchWorld, t.LastMatchTime, t.LastTime, Velocity(t), t.Floor, t.Dead, t.DeathTime, t.HitTime, t.Verified))
+            .ToList();
+
     /// <summary>The map the tracks belong to, stamped on their summaries.</summary>
     public int MapId { get; set; }
 
@@ -217,6 +240,8 @@ public sealed class EntityTracker
         public double DeathTime;
         public double LastMatchTime;
         public long LastMatchSequence;
+        /// <summary>The feet's world position at the last match (the sprite's origin).</summary>
+        public PointD LastMatchWorld;
         /// <summary>The last non-empty <see cref="Update"/> that observed the track.</summary>
         public long SeenUpdate;
         public bool IsPet;
@@ -298,6 +323,15 @@ public sealed class EntityTracker
             {
                 if (c == petCandidate) continue;
                 var cand = candidates[c];
+                // A candidate that verified this track's own prediction (its species' sprite at the place and in the pose the
+                // track predicts, within the reach the rules below allow) continues it before anything else: the pixels say it
+                // is this mob, whatever a tag read or the nearest-neighbour gate say. A dead track's prediction tries its die
+                // pose only, so the death rule holds by construction.
+                if (cand.PredictedTrack == tr.Id)
+                {
+                    pairs.Add((BoundCost, t, c));
+                    continue;
+                }
                 var sameSpecies = cand.Sprite is { } sp0 && sp0.Species.Id == tr.MobId;
                 // A dead mob (its kill credited by an EXP gain) shows only its die pose until it is gone.
                 if (tr.Dead && !(sameSpecies && cand.Sprite!.Value.Frame.Anim.StartsWith("die", StringComparison.Ordinal) && time - tr.DeathTime <= DeathHoldSeconds)) { Refuse("dead"); continue; }
@@ -398,6 +432,7 @@ public sealed class EntityTracker
                 State = dying && identity is not null ? MobState.Dying : MobState.Alive,
                 Damage = cand.Damage,
                 Swept = cand.Swept,
+                Found = cand.Found,
             });
         }
         if (candidates.Count > 0) _lastFull = _update;
@@ -438,6 +473,9 @@ public sealed class EntityTracker
     /// but on a lossless video at 30 per second not the frame or two a blob flickers away for.
     /// </summary>
     public const double AbsentSeconds = 0.25;
+
+    /// <summary>Association cost of a candidate that verified the track's own prediction: lower than any other pair's, so it is assigned first.</summary>
+    public const double BoundCost = -1e6;
 
     /// <summary>A track absent from the last frame resumes only on a blob within this factor of its last area (and of a similar shape).</summary>
     public const int ResumeAreaRatio = 2;
@@ -553,7 +591,7 @@ public sealed class EntityTracker
             // The species is the one the sprites matched most often, so one odd match does not rename the track.
             tr.SpeciesVotes[sprite.Species.Id] = tr.SpeciesVotes.GetValueOrDefault(sprite.Species.Id) + 1;
             var top = tr.SpeciesVotes.MaxBy(v => v.Value).Key;
-            if (top == sprite.Species.Id) { tr.MobId = top; tr.MobName = sprite.Species.Name; tr.LastSprite = sprite; tr.LastMatchTime = time; tr.LastMatchSequence = sequence; }
+            if (top == sprite.Species.Id) { tr.MobId = top; tr.MobName = sprite.Species.Name; tr.LastSprite = sprite; tr.LastMatchTime = time; tr.LastMatchSequence = sequence; tr.LastMatchWorld = c.World; }
             tr.Verified++;
         }
         if (c.Drop is { } drop) tr.Drop = drop;

@@ -149,7 +149,13 @@ public sealed class EntityWatch
                     mobs = _mobSets[mapId] = MapMobSet.Build(map, index, _mobLibrary);
                     Console.WriteLine($"entities: map {mapId} mob templates: {(mobs.Entries.Count == 0 ? "none" : string.Join(", ", mobs.Entries.Select(e => $"{e.Species.Name} x{e.Spawns} ({e.Species.Mobility.ToString().ToLowerInvariant()}, {e.Species.Frames.Count} frames, floors {string.Join("/", e.Floors)})")))}{(mobs.Missing.Count > 0 ? $"; no data for {string.Join(", ", mobs.Missing)}" : "")}");
                 }
-                _detector = mosaic is null ? null : new EntityDetector(mosaic, _layout, _tracker, mobs, _drops, _damage) { SpriteDiagnostics = _diagnostics };
+                _detector = mosaic is null ? null : new EntityDetector(mosaic, _layout, _tracker, mobs, _drops, _damage)
+                {
+                    SpriteDiagnostics = _diagnostics,
+                    // OAKSOUL_TEMPORAL=off runs the full search alone on every frame; OAKSOUL_TEMPORAL_FULL_EVERY=N sets how often it runs.
+                    Temporal = Environment.GetEnvironmentVariable("OAKSOUL_TEMPORAL") is not ("off" or "0"),
+                    FullEvery = int.TryParse(Environment.GetEnvironmentVariable("OAKSOUL_TEMPORAL_FULL_EVERY"), out var every) && every > 0 ? every : EntityDetector.DefaultFullEvery,
+                };
                 _detectors[mapId] = _detector;
                 Console.WriteLine(mosaic is null ? $"entities: no background for map {mapId} in {_backgrounds} (build it with --build-background)"
                     : $"entities: background {mapId} loaded from {_backgrounds} ({mosaic.Width}x{mosaic.Height}, {mosaic.Frames} frames)");
@@ -167,7 +173,7 @@ public sealed class EntityWatch
         // The detector counts frames by their position in the replay (Frame.Index), which is unique even where the recorder
         // filled an idle gap by repeating a captured frame (a filled video frame carries the sequence of the frame it repeats).
         var ctx = new DetectionContext(frame.Index, time, map, index, place.Camera, place.Source == WorldSource.DotAndTag, tag?.Tag, place.Position, panel,
-            frame.Sequence, status.ExpValue?.Total);
+            frame.Sequence, status.ExpValue?.Total, frame.Pts);
         _sequences[frame.Index] = frame.Sequence;
         _detector.DebugDir = _debugDir is not null && _debugFrames.Contains(frame.Index) ? _debugDir : null;
         var result = _detector.Detect(frame.Pixels, frame.Width, ctx);

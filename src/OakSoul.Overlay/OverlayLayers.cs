@@ -80,6 +80,7 @@ public static class OverlayLayers
              F("carriedFor", "double", "a carried identity: seconds since its last match"), F("lastMatchedAt", "double", "a carried identity: session time of its last match"),
              F("state", "string", "dying: the die pose matched (now or last), or an EXP gain credited the kill to the track"),
              F("sweep", "bool", "found by the direct search along a foothold"),
+             F("found", "string", "how it was found in this frame: prediction (its track's predicted pose verified at the predicted place), transition (another pose of its species verified there: a neighbouring frame, stand or move, the other facing, hit, die) or search (the full search)"),
              F("value", "long", "damage number value"), F("digits", "string", "damage number digits as read"), F("direction", "string", "damage: dealt (NoRed, NoCri), taken (NoViolet) or other"),
              F("critical", "bool", "damage: a critical hit (NoCri)"), F("set", "string", "damage: the digit set family"), F("complete", "bool", "damage: the leftmost digit is a first-digit glyph (no leading digit hidden)"),
              F("alpha", "double", "damage: the opacity the digits were drawn with (they fade out at the end)"),
