@@ -60,6 +60,12 @@ public sealed class FootholdSearch
     /// <summary>How often each colour occurs in the map's mosaic (every fourth pixel of every fourth row), to pick anchors the background rarely shows.</summary>
     private readonly Dictionary<int, int> _background = [];
 
+    /// <summary>
+    /// The map's clouds placed in this frame, or null (set per frame by the detector): under a cloud a screen pixel is looked
+    /// up as each art colour the clouds blend into it, and a probe pixel agrees as the clouds' blend of the art.
+    /// </summary>
+    public CloudLayer? Clouds { get; set; }
+
     public FootholdSearch(BackgroundMosaic mosaic, MapData map, FootholdIndex index, MapMobSet mobs)
     {
         _mobs = mobs;
@@ -159,6 +165,8 @@ public sealed class FootholdSearch
         if (_tried.Length < index.Frames.Count * n) _tried = new int[index.Frames.Count * n * 2];
         var generation = ++_generation;
         var tried = _tried;
+        var clouds = Clouds;
+        Span<int> unfogged = stackalloc int[1 + UnfoggedColours];
         // An anchor pixel at column qx belongs to a placement up to the frames' reach away, whose feet row is that placement's own:
         // on a flat foothold one row for every column, on a slope every row the feet take within the reach, each hit checked
         // against its placement's feet (before, the row of the anchor's own column was used, which missed mobs on slopes).
@@ -185,7 +193,14 @@ public sealed class FootholdSearch
             {
                 var qy = fy + k;
                 if ((uint)qy >= (uint)frameHeight) continue;
-                if (!index.ByColour.TryGetValue(pixels[qy * frameWidth + qx] & 0xFFFFFF, out var entries)) continue;
+                var screenColour = pixels[qy * frameWidth + qx] & 0xFFFFFF;
+                // Under clouds the anchor is each art colour they blend into this screen colour.
+                var lookups = 1;
+                unfogged[0] = screenColour;
+                if (clouds is not null && clouds.MayCover(qx, qy)) lookups += clouds.Unfog(screenColour, qx, qy, unfogged[1..]);
+                for (var u = 0; u < lookups; u++)
+                {
+                if (!index.ByColour.TryGetValue(unfogged[u], out var entries)) continue;
                 foreach (var (fi, dx) in entries)
                 {
                     var c = qx - dx - sx0;
@@ -206,9 +221,11 @@ public sealed class FootholdSearch
                         compared++;
                         var s = pixels[y * frameWidth + x] & 0xFFFFFF;
                         if (s == p.Colour[i] || s == p.Frozen[i]) continue;
+                        if (clouds is not null && clouds.MayCover(x, y) && s == clouds.CompositeAt(p.Colour[i], x, y)) continue;
                         if (++missed > ProbeMisses || (compared == 2 && missed == 2)) break;
                     }
                     if (compared >= ProbeCompared && missed <= ProbeMisses) hits.Add((sp, f, ox, oy));
+                }
                 }
             }
         }
@@ -219,6 +236,12 @@ public sealed class FootholdSearch
     /// has opaque pixels on these rows, and a mob is found when any of them shows.
     /// </summary>
     public static readonly int[] AnchorRows = [-6, -14, -22];
+
+    /// <summary>
+    /// Art colours an anchor under clouds is looked up as, at most: under thick cloud several art levels per channel blend to
+    /// the screen's (the Wild Boar of keyframe 496 under two clouds, a tenth to a third of it showing through).
+    /// </summary>
+    public const int UnfoggedColours = 16;
 
     /// <summary>
     /// Grey colours (channels within this many levels: outline black, the stumps' and axes' greys) anchor nothing: every

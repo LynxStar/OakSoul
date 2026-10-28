@@ -37,8 +37,9 @@ public enum SpeciesBasis : byte
 /// <param name="Rival">The best other species tried at the same placement (a recolour of the same shape), if any, and its score.</param>
 /// <param name="Fogged">Agreeing pixels that matched only as seen through a light translucent layer (steam).</param>
 /// <param name="Basis">What the species rests on, once the detector's contest settled it.</param>
+/// <param name="Clouded">Agreeing pixels that matched as the blend of the map's clouds over the art (<see cref="CloudLayer"/>).</param>
 public readonly record struct SpriteMatch(MobSpecies Species, SpriteFrame Frame, int Left, int Top, int Matches, int Compared, SpriteTint Tint, int Fog,
-    MobSpecies? Rival = null, double RivalScore = 0, int Fogged = 0, SpeciesBasis Basis = SpeciesBasis.Shape)
+    MobSpecies? Rival = null, double RivalScore = 0, int Fogged = 0, SpeciesBasis Basis = SpeciesBasis.Shape, int Clouded = 0)
 {
     public double Score => Compared == 0 ? 0 : (double)Matches / Compared;
 
@@ -46,7 +47,7 @@ public readonly record struct SpriteMatch(MobSpecies Species, SpriteFrame Frame,
     public PointD Feet => new(Left + Frame.OriginX, Top + Frame.OriginY);
 
     public override string ToString() =>
-        $"{Species.Name} {Frame.Key} {Score:0.00} ({Matches}/{Compared}{(Tint != SpriteTint.None ? $", {Tint.ToString().ToLowerInvariant()}" : "")}{(Fogged > 0 ? $", fog {Fog / 256.0:0.00} on {Fogged}" : "")}) at {Left},{Top}";
+        $"{Species.Name} {Frame.Key} {Score:0.00} ({Matches}/{Compared}{(Tint != SpriteTint.None ? $", {Tint.ToString().ToLowerInvariant()}" : "")}{(Fogged > 0 ? $", fog {Fog / 256.0:0.00} on {Fogged}" : "")}{(Clouded > 0 ? $", cloud on {Clouded}" : "")}) at {Left},{Top}";
 }
 
 /// <summary>
@@ -69,12 +70,59 @@ public sealed class ScreenPatch
     internal int[] Background = [];
 
     /// <summary>
+    /// The map's clouds over each pixel (<see cref="CloudLayer"/>): how many (<see cref="FogN"/>), and per layer, in draw
+    /// order, the cloud pixel's colour and weight (art alpha times cloud alpha), at k * MaxLayers + layer. Filled only when a
+    /// cloud covers the patch (<see cref="HasFog"/>).
+    /// </summary>
+    internal byte[] FogN = [];
+    internal int[] FogC = [], FogW = [];
+
+    /// <summary>The background seen through the clouds over it (<see cref="Fogged"/>), where <see cref="FogN"/> is non-zero and the background known.</summary>
+    internal int[] BackFog = [];
+    internal bool HasFog;
+
+    internal void ClearFog()
+    {
+        var n = Width * Height;
+        if (FogN.Length < n) { FogN = new byte[n]; FogC = new int[n * CloudLayer.MaxLayers]; FogW = new int[n * CloudLayer.MaxLayers]; BackFog = new int[n]; }
+        else Array.Clear(FogN, 0, n);
+        HasFog = true;
+    }
+
+    internal void AddFog(int k, int colour, int weight)
+    {
+        var n = FogN[k];
+        if (n >= CloudLayer.MaxLayers) { Ok[k] = 0; Packed[k] = -1; return; }
+        FogC[k * CloudLayer.MaxLayers + n] = colour;
+        FogW[k * CloudLayer.MaxLayers + n] = weight;
+        FogN[k] = (byte)(n + 1);
+    }
+
+    /// <summary>The share of the scene the clouds over patch pixel k let through.</summary>
+    internal double Transmittance(int k)
+    {
+        int n = FogN[k], o = k * CloudLayer.MaxLayers;
+        var t = 1.0;
+        for (var j = 0; j < n; j++) t *= 1 - FogW[o + j] / 65025.0;
+        return t;
+    }
+
+    /// <summary>A colour (packed) as the screen shows it at patch pixel k under the clouds over it: blended with each in draw order.</summary>
+    internal int Fogged(int k, int colour)
+    {
+        int n = FogN[k], o = k * CloudLayer.MaxLayers;
+        for (var j = 0; j < n; j++) colour = CloudLayer.BlendPacked(colour, FogC[o + j], FogW[o + j]);
+        return colour;
+    }
+
+    /// <summary>
     /// Fills the patch for the inclusive screen box (x0, y0)-(x1, y1), clamped to the frame; with a
     /// <paramref name="background"/> (the map's mosaic at the frame's registered camera) also the background behind each pixel.
     /// </summary>
     /// <param name="explained">Pixels already explained (viewport coordinates, non-zero where explained), compared as little as masked ones.</param>
+    /// <param name="clouds">The map's clouds placed in this frame: the patch then knows, per pixel, the clouds drawn over it.</param>
     public void Fill(ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, int x0, int y0, int x1, int y1,
-        (BackgroundMosaic Mosaic, int CameraX, int CameraY)? background = null, byte[]? explained = null)
+        (BackgroundMosaic Mosaic, int CameraX, int CameraY)? background = null, byte[]? explained = null, CloudLayer? clouds = null)
     {
         var frameHeight = frame.Length / 4 / frameWidth;
         x0 = Math.Max(0, x0); y0 = Math.Max(0, y0); x1 = Math.Min(frameWidth - 1, x1); y1 = Math.Min(frameHeight - 1, y1);
@@ -126,6 +174,25 @@ public sealed class ScreenPatch
             }
         }
         else Array.Fill(Background, -1, 0, n);
+        HasFog = false;
+        if (clouds is not null)
+        {
+            var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+            if (clouds.Cover(this))
+            {
+                var back = Background;
+                for (var k = 0; k < n; k++)
+                {
+                    if (FogN[k] == 0) continue;
+                    if (back[k] >= 0) BackFog[k] = Fogged(k, back[k]);
+                    // Under thick cloud (less than half the scene shows through) a light art colour and a light background
+                    // blend alike; where the background is unknown that cannot be ruled out, so the pixel is not compared.
+                    else if (Transmittance(k) < CloudLayer.MinUnknownTransmittance) { Ok[k] = 0; Packed[k] = -1; }
+                }
+            }
+            clouds.CoverMilliseconds += System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
+            clouds.Covers++;
+        }
     }
 }
 
@@ -264,6 +331,13 @@ public sealed class SpriteMatcher
     internal ScreenPatch Patch => _patch;
 
     /// <summary>
+    /// The map's clouds placed in this frame (set per frame by the detector), or null. A sprite pixel under clouds is expected
+    /// as the blend of the clouds over its art (<see cref="CloudLayer.Blend"/>, rounded as the client rounds), as well as as
+    /// drawn; and it is left out where the background behind it shows the same through the same clouds.
+    /// </summary>
+    public CloudLayer? Clouds { get; set; }
+
+    /// <summary>
     /// Screen pixels the temporal pass's verified predictions explain (viewport coordinates, the screen mask's layout, non-zero
     /// where explained), or null. Patches prepared while it is set leave them out like masked pixels, so the full search that
     /// runs on the rest of the frame does not find the predicted mobs a second time.
@@ -289,7 +363,7 @@ public sealed class SpriteMatcher
             var padY = (int)(CutTolerance * box.Height) + SearchY + 2;
             r = (box.X - padX, box.Y - padY, box.X + box.Width - 1 + padX, box.Y + box.Height - 1 + SearchY + 2);
         }
-        _patch.Fill(frame, frameWidth, mask, r.Item1 - 1, r.Item2 - 1, r.Item3 + 1, r.Item4 + 1, Background, Explained);
+        _patch.Fill(frame, frameWidth, mask, r.Item1 - 1, r.Item2 - 1, r.Item3 + 1, r.Item4 + 1, Background, Explained, Clouds);
     }
 
     /// <summary>Whether the prepared patch covers the screen region (inclusive), as far as it lies on the frame.</summary>
@@ -298,7 +372,7 @@ public sealed class SpriteMatcher
 
     /// <summary>Prepares the screen patch for an explicit screen region (inclusive), for searches placing frames by their origin (<see cref="FootholdSearch"/>).</summary>
     public void PrepareRegion(ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, int x0, int y0, int x1, int y1) =>
-        _patch.Fill(frame, frameWidth, mask, x0, y0, x1, y1, Background, Explained);
+        _patch.Fill(frame, frameWidth, mask, x0, y0, x1, y1, Background, Explained, Clouds);
 
     /// <summary>
     /// Tries the frames in order on the prepared candidate and returns the best of the first species to pass
@@ -396,10 +470,17 @@ public sealed class SpriteMatcher
             if ((uint)x >= (uint)patch.Width || (uint)y >= (uint)patch.Height) continue;
             var k = y * patch.Width + x;
             if (patch.Ok[k] == 0 || patch.Background[k] == a.PixelPacked[i] || patch.Background[k] == plainB) continue;
+            var clouded = patch.HasFog && patch.FogN[k] != 0;
+            int cloudA = 0, cloudB = 0;
+            if (clouded)
+            {
+                cloudA = patch.Fogged(k, ab | ag << 8 | ar << 16); cloudB = patch.Fogged(k, bb | bg << 8 | br << 16);
+                if (patch.Background[k] >= 0 && (patch.BackFog[k] == patch.Fogged(k, a.PixelPacked[i]) || patch.BackFog[k] == patch.Fogged(k, plainB))) continue;
+            }
             visible++;
             int sb = patch.B[k], sg = patch.G[k], sr = patch.R[k];
-            var fitA = (sb == ab && sg == ag && sr == ar) || (Fog(sb, sg, sr, ab, ag, ar) is var fa && fa > 0 && Coherent(a, fx, fy, x, y, fa, frozen));
-            var fitB = (sb == bb && sg == bg && sr == br) || (Fog(sb, sg, sr, bb, bg, br) is var fb && fb > 0 && Coherent(b, fx, fy, x, y, fb, frozen));
+            var fitA = (sb == ab && sg == ag && sr == ar) || clouded && patch.Packed[k] == cloudA || (!clouded && Fog(sb, sg, sr, ab, ag, ar) is var fa && fa > 0 && Coherent(a, fx, fy, x, y, fa, frozen));
+            var fitB = (sb == bb && sg == bg && sr == br) || clouded && patch.Packed[k] == cloudB || (!clouded && Fog(sb, sg, sr, bb, bg, br) is var fb && fb > 0 && Coherent(b, fx, fy, x, y, fb, frozen));
             if (fitA && !fitB) onlyA++;
             else if (fitB && !fitA) onlyB++;
             else continue;
@@ -445,7 +526,9 @@ public sealed class SpriteMatcher
                     int tb = f.Bgra[o], tg = f.Bgra[o + 1], tr = f.Bgra[o + 2];
                     if (frozen) { tb = (tb * FrozenB + 127) / 255; tg = (tg * FrozenG + 127) / 255; tr = (tr * FrozenR + 127) / 255; }
                     int sb = patch.B[k], sg = patch.G[k], sr = patch.R[k];
-                    var agrees = (sb == tb && sg == tg && sr == tr) || (Fog(sb, sg, sr, tb, tg, tr) is var fa && fa > 0 && Coherent(f, fx, fy, px, py, fa, frozen));
+                    var clouded = patch.HasFog && patch.FogN[k] != 0;
+                    var agrees = (sb == tb && sg == tg && sr == tr) || clouded && (sb | sg << 8 | sr << 16) == patch.Fogged(k, tb | tg << 8 | tr << 16)
+                        || (!clouded && Fog(sb, sg, sr, tb, tg, tr) is var fa && fa > 0 && Coherent(f, fx, fy, px, py, fa, frozen));
                     if (!agrees) continue;
                 }
                 if (explained is not null) explained[i] = 1;
@@ -463,7 +546,7 @@ public sealed class SpriteMatcher
         var n = Math.Min(f.PixelX.Length, MaxPixels);
         if (n == 0) return null;
         var s = Score(f, n, left, top, 0);
-        return s.Compared < MinComparable * n ? null : new SpriteMatch(species, f, left, top, s.Matches, s.Compared, s.Tint, s.Fog, Fogged: s.Fogged);
+        return s.Compared < MinComparable * n ? null : new SpriteMatch(species, f, left, top, s.Matches, s.Compared, s.Tint, s.Fog, Fogged: s.Fogged, Clouded: s.Clouded);
     }
 
 
@@ -477,16 +560,24 @@ public sealed class SpriteMatcher
             int left = left0 + dx - patch.X0, top = top0 + dy - patch.Y0, compared = 0, agree = 0, w = patch.Width, h = patch.Height;
             var packed = patch.Packed;
             var back = patch.Background;
+            var fogN = patch.HasFog ? patch.FogN : null;
             for (var i = 0; i < samples; i++)
             {
                 int x = left + f.PixelX[i], y = top + f.PixelY[i];
                 if ((uint)x >= (uint)w || (uint)y >= (uint)h) continue;
-                var s = packed[y * w + x];
-                if (s < 0 || back[y * w + x] == f.PixelPacked[i]) continue;
+                var k = y * w + x;
+                var s = packed[k];
+                if (s < 0 || back[k] == f.PixelPacked[i]) continue;
+                // Under clouds: the art as blended with them, and the background likewise.
+                var clouded = fogN is not null && fogN[k] != 0;
+                var cloudArt = clouded ? patch.Fogged(k, f.PixelPacked[i]) : 0;
+                if (clouded && back[k] >= 0 && patch.BackFog[k] == cloudArt) continue;
                 compared++;
                 // Equality of the packed colours: no tolerance.
                 if (s == f.PixelPacked[i] || (freeze && s == f.PixelFrozen[i])) { agree++; continue; }
-                if (f.PixelFoggable[i] && (s & 0xFF) > f.PixelB[i] && Fog(s & 0xFF, (s >> 8) & 0xFF, s >> 16, f.PixelB[i], f.PixelG[i], f.PixelR[i]) > 0) agree++;
+                if (clouded && (s == cloudArt || freeze && s == patch.Fogged(k, f.PixelFrozen[i]))) { agree++; continue; }
+                // Where a cloud of the map is modelled the light layer is known: the steam rule is for the skills' steam.
+                if (!clouded && f.PixelFoggable[i] && (s & 0xFF) > f.PixelB[i] && Fog(s & 0xFF, (s >> 8) & 0xFF, s >> 16, f.PixelB[i], f.PixelG[i], f.PixelR[i]) > 0) agree++;
             }
             return (agree, compared);
         }
@@ -534,31 +625,36 @@ public sealed class SpriteMatcher
             if (Rank(other, n, minComparable) > Rank(best, n, minComparable)) { best = other; bestX = secondX; bestY = secondY; }
         }
         if (best.Compared < minComparable * n) return null;
-        return new SpriteMatch(species, f, bestX, bestY, best.Matches, best.Compared, best.Tint, best.Fog, Fogged: best.Fogged);
+        return new SpriteMatch(species, f, bestX, bestY, best.Matches, best.Compared, best.Tint, best.Fog, Fogged: best.Fogged, Clouded: best.Clouded);
     }
 
-    private static double Rank((int Matches, int Compared, SpriteTint, int, int) r, int n, double minComparable) => r.Compared < minComparable * n ? -1 : (double)r.Matches / r.Compared;
+    private static double Rank((int Matches, int Compared, SpriteTint, int, int, int) r, int n, double minComparable) => r.Compared < minComparable * n ? -1 : (double)r.Matches / r.Compared;
 
     /// <summary>
     /// Scores the first <paramref name="n"/> opaque pixels at one placement under each tint: a pixel agrees when it equals
     /// the art (frozen: the tinted art) or fits it seen through steam (<see cref="Fog"/>). The best tint wins. Counting
     /// stops once <paramref name="needed"/> is out of reach for every tint.
     /// </summary>
-    private (int Matches, int Compared, SpriteTint Tint, int Fog, int Fogged) Score(SpriteFrame f, int n, int left, int top, double needed)
+    private (int Matches, int Compared, SpriteTint Tint, int Fog, int Fogged, int Clouded) Score(SpriteFrame f, int n, int left, int top, double needed)
     {
         var patch = _patch;
         int lx = left - patch.X0, ty = top - patch.Y0;
         var compared = 0;
         var back = patch.Background;
+        var fogN = patch.HasFog ? patch.FogN : null;
         for (var i = 0; i < n; i++)
         {
             int x = lx + f.PixelX[i], y = ty + f.PixelY[i];
-            if ((uint)x < (uint)patch.Width && (uint)y < (uint)patch.Height && patch.Ok[y * patch.Width + x] != 0 && back[y * patch.Width + x] != f.PixelPacked[i]) compared++;
+            if ((uint)x >= (uint)patch.Width || (uint)y >= (uint)patch.Height) continue;
+            var k = y * patch.Width + x;
+            if (patch.Ok[k] == 0 || back[k] == f.PixelPacked[i]) continue;
+            if (fogN is not null && fogN[k] != 0 && back[k] >= 0 && patch.BackFog[k] == patch.Fogged(k, f.PixelPacked[i])) continue;
+            compared++;
         }
-        if (compared == 0) return (0, 0, SpriteTint.None, 0, 0);
+        if (compared == 0) return (0, 0, SpriteTint.None, 0, 0, 0);
         var allowed = needed > 0 ? (int)((1 - needed) * compared) + 1 : int.MaxValue;
         var freeze = AllowFreeze;
-        int plain = 0, plainFog = 0, plainMiss = 0, frozen = 0, frozenFog = 0, frozenMiss = 0;
+        int plain = 0, plainFog = 0, plainMiss = 0, plainCloud = 0, frozen = 0, frozenFog = 0, frozenMiss = 0, frozenCloud = 0;
         long plainAlpha = 0, frozenAlpha = 0;
         for (var i = 0; i < n; i++)
         {
@@ -566,24 +662,28 @@ public sealed class SpriteMatcher
             if ((uint)x >= (uint)patch.Width || (uint)y >= (uint)patch.Height) continue;
             var k = y * patch.Width + x;
             if (patch.Ok[k] == 0 || back[k] == f.PixelPacked[i]) continue;
+            var clouded = fogN is not null && fogN[k] != 0;
+            if (clouded && back[k] >= 0 && patch.BackFog[k] == patch.Fogged(k, f.PixelPacked[i])) continue;
             int sb = patch.B[k], sg = patch.G[k], sr = patch.R[k];
             int tb = f.PixelB[i], tg = f.PixelG[i], tr = f.PixelR[i];
             if (sb == tb && sg == tg && sr == tr) plain++;
-            else if (Fog(sb, sg, sr, tb, tg, tr) is var a && a > 0 && Coherent(f, f.PixelX[i], f.PixelY[i], x, y, a, false)) { plain++; plainFog++; plainAlpha += a; }
+            else if (clouded && patch.Packed[k] == patch.Fogged(k, f.PixelPacked[i])) { plain++; plainCloud++; }
+            else if (!clouded && Fog(sb, sg, sr, tb, tg, tr) is var a && a > 0 && Coherent(f, f.PixelX[i], f.PixelY[i], x, y, a, false)) { plain++; plainFog++; plainAlpha += a; }
             else plainMiss++;
             if (freeze)
             {
                 int fb = (tb * FrozenB + 127) / 255, fg = (tg * FrozenG + 127) / 255, fr = (tr * FrozenR + 127) / 255;
                 if (sb == fb && sg == fg && sr == fr) frozen++;
-                else if (Fog(sb, sg, sr, fb, fg, fr) is var b && b > 0 && Coherent(f, f.PixelX[i], f.PixelY[i], x, y, b, true)) { frozen++; frozenFog++; frozenAlpha += b; }
+                else if (clouded && patch.Packed[k] == patch.Fogged(k, f.PixelFrozen[i])) { frozen++; frozenCloud++; }
+                else if (!clouded && Fog(sb, sg, sr, fb, fg, fr) is var b && b > 0 && Coherent(f, f.PixelX[i], f.PixelY[i], x, y, b, true)) { frozen++; frozenFog++; frozenAlpha += b; }
                 else frozenMiss++;
             }
             else frozenMiss++;
             if (plainMiss > allowed && frozenMiss > allowed) break;
         }
         return frozen > plain
-            ? (frozen, compared, SpriteTint.Frozen, frozenFog == 0 ? 0 : (int)(frozenAlpha / frozenFog), frozenFog)
-            : (plain, compared, SpriteTint.None, plainFog == 0 ? 0 : (int)(plainAlpha / plainFog), plainFog);
+            ? (frozen, compared, SpriteTint.Frozen, frozenFog == 0 ? 0 : (int)(frozenAlpha / frozenFog), frozenFog, frozenCloud)
+            : (plain, compared, SpriteTint.None, plainFog == 0 ? 0 : (int)(plainAlpha / plainFog), plainFog, plainCloud);
     }
 
     /// <summary>

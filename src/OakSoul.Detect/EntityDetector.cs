@@ -289,6 +289,7 @@ public sealed partial class EntityDetector
         _matcher.Background = (_mosaic, camX, camY);
         if (_drops is not null) _drops.Background = (_mosaic, camX, camY);
         _fg.Difference(frame, frameWidth, _mask, _mosaic, camX, camY);
+        UpdateClouds(frame, frameWidth, ctx, camX, camY);
         var tDiff = sw.Elapsed.TotalMilliseconds;
         var vp = _mask.Viewport;
         // What the client draws over the world that is no entity: the log's text, the mobs' HP bars (read, then out of the foreground).
@@ -528,6 +529,7 @@ public sealed partial class EntityDetector
         var bars = AttachHpBars(hpBars, entities);
         RememberPoses(entities, ctx, full);
         RememberDeaths(entities, ctx.Time);
+        CloudInterest(entities, ctx, camX, camY);
         _lastDetected = true;
         if (SpriteDiagnostics)
             for (var i = Diagnostics.Count - 1; i >= 0 && Diagnostics[i].Frame == ctx.Frame; i--)
@@ -621,10 +623,26 @@ public sealed partial class EntityDetector
         // A box cut on one side (by the screen's edge, unreliable background, something in front) holds the frame's other edge: the
         // frames wider than the box are aligned on its left and on its right edge too (a Red Snail on fx-combat-exact's video frame
         // 207 agreed on 0.41 of its pixels seven columns off the box's centre and was taken for an effect).
-        if (match is null && blob && c.Pixels >= SweepMinPixels && c.SurfaceDistance is { } csd && Math.Abs(csd) <= FloorUnits && order.Count > 0)
+        // A box beside hidden background (the mosaic cannot vouch for it, or a translucent layer whitens it) is cut there even when
+        // some frame fits it weakly: the differencing sees no mob there, so a mob standing half in it leaves a blob of its other
+        // half (the Wild Boar of fx-combat-exact's keyframe 496 under two clouds: its head, 34 of its 71 columns, which Dark Stump
+        // die1/2 fitted on 0.23 of its pixels while move/0 aligned on the box's right edge shows exactly).
+        var weakCut = (match is null || match.Value.Score < CutRetryScore) && blob && CutByUnknown(c.Box, camX, camY);
+        if ((match is null || weakCut) && blob && c.Pixels >= SweepMinPixels && c.SurfaceDistance is { } csd && Math.Abs(csd) <= FloorUnits && order.Count > 0)
         {
             var tc = Stopwatch.GetTimestamp();
-            match = FirstCut(c.Box, FrameOrder(order[0].Species, last).Select(f => (order[0].Species, f)));
+            // Beside hidden foreground the box may hold less than half the mob: frames up to WideCut times its width are aligned
+            // too, on a patch wide enough for them.
+            if (weakCut)
+            {
+                var reach = (int)(WideCut * c.Box.Width);
+                _matcher.PrepareRegion(frame, frameWidth, _mask, c.Box.X - reach, c.Box.Y - c.Box.Height - SpriteMatcher.SearchY - 2,
+                    c.Box.X + c.Box.Width - 1 + reach, c.Box.Y + c.Box.Height - 1 + SpriteMatcher.SearchY + 2);
+            }
+            // ... and of the likeliest few species, the best: the track there may have taken the mob for another.
+            var cut = FirstCut(c.Box, order.Take(weakCut ? CutSpecies : 1).SelectMany(e => FrameOrder(e.Species, last).Select(f => (e.Species, f))),
+                weakCut ? WideCut : SpriteMatcher.CutTolerance + 1, firstSpecies: !weakCut);
+            if (cut is { } cm && (match is not { } fitted || cm.Score > fitted.Score)) { match = cm; if (weakCut) CutBesideUnknown++; }
             CutMs += Stopwatch.GetElapsedTime(tc).TotalMilliseconds;
         }
         Candidate? rest = null;
@@ -671,16 +689,60 @@ public sealed partial class EntityDetector
 
     /// <summary>Boxes matched by a frame aligned on one of their edges because the box was cut (see <see cref="Identify"/>), since construction.</summary>
     public int CutAligned { get; private set; }
+
+    /// <summary>Boxes beside hidden background (see <see cref="CutByUnknown"/>), fitted weakly or not at all, that a wide edge-aligned frame fitted better.</summary>
+    public int CutBesideUnknown { get; private set; }
+
+    /// <summary>A fit below this score on a box beside hidden background is retried with frames aligned on the box's edges.</summary>
+    public const double CutRetryScore = 0.5;
+
+    /// <summary>Frames up to this many times as wide as a box beside hidden foreground are aligned on its edges (twice otherwise).</summary>
+    public const double WideCut = 3;
+
+    /// <summary>Species (likeliest first) whose frames are aligned on the edges of a box beside hidden foreground.</summary>
+    public const int CutSpecies = 2;
+
+    /// <summary>Columns beside a box looked at, and the share of their pixels (box rows) the mosaic must not vouch for, for the box to be cut there.</summary>
+    public const int CutColumns = 3;
+    public const double CutUnknownShare = 0.5;
+
+    /// <summary>
+    /// Whether what lies just beside a box's left or right edge hides foreground: background the mosaic cannot vouch for, or
+    /// background whitened by a translucent layer (steam, fog, clouds), where a mob's pixels under the layer are taken for the
+    /// layer (the box may be cut there).
+    /// </summary>
+    private bool CutByUnknown(CaptureRect box, int camX, int camY)
+    {
+        var m = _mosaic;
+        var vp = _mask.Viewport;
+        var classes = _fg.Classes;
+        int fw = _fg.Width, fh = _fg.Height;
+        bool Side(int x0)
+        {
+            int unknown = 0, n = 0;
+            for (var y = box.Y; y < box.Y + box.Height; y++)
+                for (var x = x0; x < x0 + CutColumns; x++)
+                {
+                    n++;
+                    int mx = camX + x - m.OriginX, my = camY + y - m.OriginY;
+                    if ((uint)mx >= (uint)m.Width || (uint)my >= (uint)m.Height || m.ForegroundUsable[my * m.Width + mx] == 0) { unknown++; continue; }
+                    int vx = x - vp.X, vy = y - vp.Y;
+                    if ((uint)vx < (uint)fw && (uint)vy < (uint)fh && classes[vy * fw + vx] is (byte)PixelClass.Fog or (byte)PixelClass.BrightFog) unknown++;
+                }
+            return n > 0 && unknown >= CutUnknownShare * n;
+        }
+        return Side(box.X - CutColumns) || Side(box.X + box.Width);
+    }
     public double CutMs { get; private set; }
 
     /// <summary>The best frame, wider than the box, that passes aligned on the box's left or right edge, or null (the likeliest species only, for cost).</summary>
-    private SpriteMatch? FirstCut(CaptureRect box, IEnumerable<(MobSpecies Species, SpriteFrame Frame)> tries)
+    private SpriteMatch? FirstCut(CaptureRect box, IEnumerable<(MobSpecies Species, SpriteFrame Frame)> tries, double widest, bool firstSpecies = true)
     {
         SpriteMatch? found = null;
         foreach (var (species, f) in tries)
         {
-            if (found is { } m0 && species.Id != m0.Species.Id) break;
-            if (f.ExtentWidth <= box.Width + SpriteMatcher.SearchX || !SpriteMatcher.Fits(f, box.Width, box.Height)) continue;
+            if (firstSpecies && found is { } m0 && species.Id != m0.Species.Id) break;
+            if (f.ExtentWidth <= box.Width + SpriteMatcher.SearchX || f.ExtentWidth > widest * box.Width || !SpriteMatcher.Fits(f, f.ExtentWidth, box.Height)) continue;
             foreach (var align in new[] { Align.Left, Align.Right })
                 if (_matcher.Best(box, null, species, f, found?.Score ?? SpriteMatcher.Threshold, align: align) is { } m && m.Score >= SpriteMatcher.Threshold
                     && (found is null || m.Score > found.Value.Score)) found = m;

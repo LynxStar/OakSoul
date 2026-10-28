@@ -53,10 +53,23 @@ public sealed record LifeSpawn(string Type, string Id, int X, int Y, int Fh)
     public bool IsMob => Type == "m";
 }
 
+/// <summary>
+/// One back layer of a map (back/&lt;n&gt;, in draw order): its art (Map/Back/&lt;Bs&gt;.img back or ani /&lt;No&gt;), place, parallax
+/// factors, tiling distances, type (0 static, 1 to 3 tiled, 4 to 7 tiled and moving), alpha, flip, and whether the client
+/// draws it in front of the map (<see cref="Front"/>) rather than behind.
+/// </summary>
+public sealed record BackLayer(int Index, string Bs, int No, bool Ani, int X, int Y, int Rx, int Ry, int Cx, int Cy, int Type, int A, bool Front, bool Flip);
+
 /// <summary>One map's metadata, as exported by OakSoul.MapExport into data/maps/&lt;id&gt;.json.</summary>
+/// <param name="Cloud">info/cloud = 1: the client draws drifting clouds (MapHelper.img weather/cloud) in front of the map's layers and its mobs.</param>
+/// <param name="Back">The back layers; empty in an export made before they were exported.</param>
 public sealed record MapData(int MapId, string StreetName, string MapName, int ReturnMap, ViewBounds Vr, MiniMapInfo? MiniMap,
-    IReadOnlyList<Foothold> Footholds, IReadOnlyList<LadderRope> LadderRopes, IReadOnlyList<Portal> Portals, IReadOnlyList<LifeSpawn>? Life = null)
+    IReadOnlyList<Foothold> Footholds, IReadOnlyList<LadderRope> LadderRopes, IReadOnlyList<Portal> Portals, IReadOnlyList<LifeSpawn>? Life = null,
+    bool Cloud = false, IReadOnlyList<BackLayer>? Back = null)
 {
+    /// <summary>The layers drawn in front of the map (back entries with front = 1).</summary>
+    public IEnumerable<BackLayer> FrontLayers => (Back ?? []).Where(b => b.Front);
+
     /// <summary>The mob spawns (life entries of type "m").</summary>
     public IEnumerable<LifeSpawn> MobSpawns => (Life ?? []).Where(l => l.IsMob);
 
@@ -67,13 +80,13 @@ public sealed record MapData(int MapId, string StreetName, string MapName, int R
         var dto = JsonSerializer.Deserialize<MapDto>(File.ReadAllText(path), Json) ?? throw new InvalidDataException($"{path}: empty map file");
         return new MapData(dto.MapId, dto.StreetName ?? "", dto.MapName ?? "", dto.ReturnMap,
             dto.Vr ?? throw new InvalidDataException($"{path}: no vr"), dto.MiniMap,
-            dto.Footholds ?? [], dto.LadderRopes ?? [], dto.Portals ?? [], dto.Life ?? []);
+            dto.Footholds ?? [], dto.LadderRopes ?? [], dto.Portals ?? [], dto.Life ?? [], dto.Cloud, dto.Back ?? []);
     }
 
     public override string ToString() => $"{MapId} {StreetName} / {MapName}";
 
     private sealed record MapDto(int MapId, string? StreetName, string? MapName, int ReturnMap, ViewBounds? Vr, MiniMapInfo? MiniMap,
-        List<Foothold>? Footholds, List<LadderRope>? LadderRopes, List<Portal>? Portals, List<LifeSpawn>? Life);
+        List<Foothold>? Footholds, List<LadderRope>? LadderRopes, List<Portal>? Portals, List<LifeSpawn>? Life, bool Cloud = false, List<BackLayer>? Back = null);
 }
 
 /// <summary>

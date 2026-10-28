@@ -312,7 +312,8 @@ public static class WatchProgram
             Console.WriteLine("background: the session's frames are not pixel-exact (no one-pixel strokes in the status bar); nothing built");
         else if (buildBackground && recording is not null)
             await BackgroundBuild.Run(Console.Out, () => new RecordingFrameSource(recording, keyframes, cropTop, 0), buildFrames, screenMask, backgroundsPath,
-                !keyframes && cropTop == 0 ? BackgroundBuild.KeyframesOf(recording) : null);
+                !keyframes && cropTop == 0 ? BackgroundBuild.KeyframesOf(recording) : null,
+                Environment.GetEnvironmentVariable("OAKSOUL_CLOUDS") is "off" or "0" ? null : CloudArt.Load(spritesPath));
         return 0;
     }
 }

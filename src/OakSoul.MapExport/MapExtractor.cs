@@ -38,8 +38,18 @@ internal static partial class MapExtractor
             Footholds(root["foothold"]),
             LadderRopes(root["ladderRope"]),
             Portals(root["portal"]),
-            Life(root["life"]));
+            Life(root["life"]),
+            // info/cloud = 1: the client draws drifting clouds (Map.wz MapHelper.img weather/cloud) in front of the map.
+            info.GetInt("cloud") == 1,
+            Back(root["back"]));
     }
+
+    /// <summary>back/&lt;n&gt;, in numeric order (the client's draw order).</summary>
+    private static List<BackLayer> Back(WzNode? node) =>
+        Ordered(node).Select(n => new BackLayer(
+            ParseName(n), n.GetString("bS") ?? string.Empty, n.GetInt("no"), n.GetInt("ani") == 1,
+            n.GetInt("x"), n.GetInt("y"), n.GetInt("rx"), n.GetInt("ry"), n.GetInt("cx"), n.GetInt("cy"),
+            n.GetInt("type"), n.GetInt("a", 255), n.GetInt("front") == 1, n.GetInt("f") == 1)).ToList();
 
     /// <summary>foothold/&lt;layer&gt;/&lt;group&gt;/&lt;id&gt; with x1, y1, x2, y2, prev, next.</summary>
     private static List<Foothold> Footholds(WzNode? footholdRoot)

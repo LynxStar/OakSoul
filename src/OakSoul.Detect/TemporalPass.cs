@@ -388,7 +388,7 @@ public sealed partial class EntityDetector
                             if ((uint)vx >= (uint)mw || (uint)vy >= (uint)mh || bits[vy * mw + vx] != 0 || explained is not null && explained[vy * mw + vx] != 0) continue;
                             compared++;
                             var c = pixels[py * frameWidth + px] & 0xFFFFFF;
-                            if (c == p.Colour[i] || c == p.Frozen[i]) continue;
+                            if (c == p.Colour[i] || c == p.Frozen[i] || CloudAgrees(c, p.Colour[i], px, py)) continue;
                             if (++missed > FootholdSearch.ProbeMisses || (compared == 2 && missed == 2)) break;
                         }
                         if (compared >= FootholdSearch.ProbeCompared && missed <= FootholdSearch.ProbeMisses) hits.Add((species, frames[k], x, y));

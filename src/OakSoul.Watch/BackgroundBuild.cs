@@ -20,8 +20,10 @@ public static class BackgroundBuild
     /// <param name="keyframes">For a mosaic voted from a session's video: the session's lossless keyframes with the
     /// video frame each one copies (<see cref="KeyframesOf"/>); their pixels replace the video's where they agree
     /// (<see cref="MosaicBuilder.ExactRefine"/>).</param>
+    /// <param name="clouds">The client's cloud art: a map with info/cloud gets a third round with the pixels under its clouds
+    /// left out of the votes (<see cref="BackgroundDefog"/>).</param>
     public static async Task Run(TextWriter o, Func<IFrameSource> replay, IReadOnlyDictionary<long, FrameInfo> frames, ScreenMask mask, string dir,
-        IReadOnlyList<(long VideoSequence, string Path)>? keyframes = null)
+        IReadOnlyList<(long VideoSequence, string Path)>? keyframes = null, CloudArt? clouds = null)
     {
         var builders = frames.Values.Select(f => f.Map).DistinctBy(m => m.MapId).ToDictionary(m => m.MapId, m => new MosaicBuilder(m.MapId, m.Vr));
         // A map where the camera never sat on a bound has no exact camera to anchor the mosaic: its first frame
@@ -86,6 +88,13 @@ public static class BackgroundBuild
                 residual[mapId] = (fix.X, fix.Y);
                 o.WriteLine($"background {mapId}: second round, the minimap dot over {fix.Frames} frames ({fix.Outliers} a cell off) leaves x {fix.X:+0;-0;0}" +
                             $" (the dot allows {fix.X - fix.SlackLow:0}..{fix.X + fix.SlackHigh:0}), y {fix.Y:+0;-0;0}");
+            }
+        // Maps with drifting clouds: one more round, the clouds followed over the replay and their pixels left out of the votes.
+        if (clouds is not null)
+            foreach (var map in frames.Values.Select(f => f.Map).DistinctBy(m => m.MapId).Where(m => m.Cloud && builders[m.MapId].Counted > 0).ToList())
+            {
+                if (residual.TryGetValue(map.MapId, out var r) && r != (0, 0)) { o.WriteLine($"background {map.MapId}: clouds not taken out (the mosaic's origin moved after the votes)"); continue; }
+                builders[map.MapId] = await BackgroundDefog.Run(o, replay, frames, mask, refined, builders[map.MapId].Build(), map, clouds, builders[map.MapId], keyframes);
             }
         foreach (var (mapId, builder) in builders)
         {

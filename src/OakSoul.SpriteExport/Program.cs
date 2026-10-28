@@ -25,6 +25,8 @@ internal static partial class Program
           --maps         minimap canvases          -> minimap/<mapId>.png
           --effects      damage number digits (Effect BasicEff.img No*: NoRed0, NoViolet1, ...)
                                                    -> effect/BasicEff/<set>/<digit>.png, effect/damage-digits.json
+          --clouds       the drifting clouds of maps with info/cloud (Map MapHelper.img weather/cloud)
+                                                   -> weather/cloud/<n>.png, weather/cloud.json
           --pets         every pet's animation frames -> pet/<id>/<anim>_<n>.png, pet/frames.json
           --cursor       the mouse cursor (UI Basic.img/Cursor) -> ui/cursor/<state>_<n>.png, ui/cursor/frames.json
           --mesos        the meso coins' spinning frames with their origins -> item/meso/<id>/iconRaw_<n>.png, item/meso/frames.json
@@ -50,7 +52,7 @@ internal static partial class Program
     {
         string client = DefaultClient;
         string? outDir = null;
-        bool mobs = false, items = false, skills = false, maps = false, effects = false, verify = false, pets = false, cursor = false, mesos = false;
+        bool mobs = false, items = false, skills = false, maps = false, effects = false, clouds = false, verify = false, pets = false, cursor = false, mesos = false;
         string[] skillJobs = [];
         try
         {
@@ -66,11 +68,12 @@ internal static partial class Program
                     case "--skills": skills = true; break;
                     case "--maps": maps = true; break;
                     case "--effects": effects = true; break;
+                    case "--clouds": clouds = true; break;
                     case "--pets": pets = true; break;
                     case "--cursor": cursor = true; break;
                     case "--mesos": mesos = true; break;
                     case "--skill-effects": skillJobs = Next().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries); break;
-                    case "--all": mobs = items = skills = maps = effects = pets = cursor = mesos = true; break;
+                    case "--all": mobs = items = skills = maps = effects = clouds = pets = cursor = mesos = true; break;
                     case "--verify": verify = true; break;
                     case "-h" or "--help": Console.WriteLine(Usage); return 0;
                     default:
@@ -97,8 +100,8 @@ internal static partial class Program
         if (verify)
             return Verify(client);
 
-        if (!(mobs || items || skills || maps || effects || pets || cursor || mesos) && skillJobs.Length == 0)
-            mobs = items = skills = maps = effects = pets = cursor = mesos = true;
+        if (!(mobs || items || skills || maps || effects || clouds || pets || cursor || mesos) && skillJobs.Length == 0)
+            mobs = items = skills = maps = effects = clouds = pets = cursor = mesos = true;
 
         outDir = Path.GetFullPath(outDir ?? Path.Combine(RepoRoot(), "data", "sprites"));
         if (IsUnder(outDir, client))
@@ -119,6 +122,8 @@ internal static partial class Program
             run.ExportMinimaps();
         if (effects)
             run.ExportEffects();
+        if (clouds)
+            run.ExportClouds();
         if (pets)
             run.ExportPets();
         if (cursor)

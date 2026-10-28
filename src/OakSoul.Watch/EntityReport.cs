@@ -158,7 +158,7 @@ public static class EntityReport
         var effects = all.Where(e => e.Skill is not null).ToList();
         o.WriteLine($"  own skill effects: {effects.Count} recognised ({string.Join(", ", effects.GroupBy(e => $"{e.Skill!.Value.Species.Name} {e.Skill.Value.Frame.Anim}").OrderByDescending(g => g.Count()).Select(g => $"{g.Key} {g.Count()}"))});" +
                     $" {detectors.Sum(d => d.EffectBlobsTried)} blobs tried, {detectors.Sum(d => d.EffectMs) / frames:0.00} ms per frame");
-        o.WriteLine($"  time per frame: HUD overlays {detectors.Sum(d => d.HudMs) / frames:0.00} ms (log text {detectors.Sum(d => d.LogMs) / frames:0.00}, HP bars {detectors.Sum(d => d.BarMs) / frames:0.00}, the rest the cursor), coins (followed, pieces) {detectors.Sum(d => d.CoinMs) / frames:0.00} ms, pet {detectors.Sum(d => d.PetMs) / frames:0.00} ms, own effects {detectors.Sum(d => d.EffectMs) / frames:0.00} ms, cut boxes aligned on an edge {detectors.Sum(d => d.CutAligned)} in {detectors.Sum(d => d.CutMs) / frames:0.00} ms");
+        o.WriteLine($"  time per frame: HUD overlays {detectors.Sum(d => d.HudMs) / frames:0.00} ms (log text {detectors.Sum(d => d.LogMs) / frames:0.00}, HP bars {detectors.Sum(d => d.BarMs) / frames:0.00}, the rest the cursor), coins (followed, pieces) {detectors.Sum(d => d.CoinMs) / frames:0.00} ms, pet {detectors.Sum(d => d.PetMs) / frames:0.00} ms, own effects {detectors.Sum(d => d.EffectMs) / frames:0.00} ms, cut boxes aligned on an edge {detectors.Sum(d => d.CutAligned)} ({detectors.Sum(d => d.CutBesideUnknown)} over a weak fit beside unknown background) in {detectors.Sum(d => d.CutMs) / frames:0.00} ms");
         o.WriteLine($"  look-alike shapes settled on their telling pixels {detectors.Sum(d => d.ShapeSettled)} ({detectors.Sum(d => d.ShapeChanged)} changed the winner); predictions not made for finished mobs {detectors.Sum(d => d.FinishedSkips)}");
     }
 
@@ -509,6 +509,16 @@ public static class EntityReport
             o.WriteLine($"    sprite stage per frame: median {Pct(sprite, 50):0.00} ms, p90 {Pct(sprite, 90):0.00}, max {(sprite.Count == 0 ? 0 : sprite.Max()):0.00};" +
                         $" frames scored {detectors.Sum(d => d.Matcher.FramesScored) / (double)frames:0.0} per frame, {detectors.Sum(d => d.Matcher.FramesSkippedBySize) / (double)frames:0} skipped by size");
             o.WriteLine($"    diagnostics (all species per candidate, report only): {detectors.Sum(d => d.DiagnosticMs) / frames:0.0} ms per frame");
+            var clouds = detectors.Select(d => d.Clouds).OfType<CloudLayer>().ToList();
+            if (clouds.Count > 0)
+            {
+                var attempts = clouds.Sum(c => c.DiscoveryAttempts);
+                var clouded = done.SelectMany(r => r.Result.Entities).Count(e => e.Kind == EntityKind.Mob && e.Sprite is { Clouded: > 0 } && e.Identity is { Verified: true });
+                o.WriteLine($"  clouds (info/cloud maps): {clouds.Sum(c => c.Discovered)} found and {clouds.Sum(c => c.Reacquired)} found again in {attempts} discoveries ({clouds.Sum(c => c.DiscoveryMilliseconds) / Math.Max(1, attempts):0.0} ms each)," +
+                            $" {clouds.Sum(c => c.VerifiedPlacements)} placements verified by {clouds.Sum(c => c.Verifications)} tried, {clouds.Sum(c => c.Dropped)} dropped;" +
+                            $" {clouds.Sum(c => c.Milliseconds) / frames:0.00} ms per frame mean ({clouds.Sum(c => c.DiscoveryMilliseconds) / frames:0.00} discovering, {clouds.Sum(c => c.FollowMilliseconds) / frames:0.00} following; inside the difference stage);" +
+                            $" mob detections matched with pixels seen through clouds: {clouded}; patches {clouds.Sum(c => c.Covers)} covered in {clouds.Sum(c => c.CoverMilliseconds) / frames:0.00} ms per frame; discovery work {clouds.Sum(c => c.Work):N0} units ({clouds.Sum(c => c.DiscoveryMilliseconds) * 1e6 / Math.Max(1, clouds.Sum(c => c.Work)):0} ns each); discovery by phase (ms total): samples {clouds.Sum(c => c.PhaseMs[0]):0}, coarse {clouds.Sum(c => c.PhaseMs[1]):0}, refine {clouds.Sum(c => c.PhaseMs[2]):0}, exact {clouds.Sum(c => c.PhaseMs[3]):0}");
+            }
         }
         var reg = done.Select(r => r.Result.Registration!.Value.Score).ToList();
         o.WriteLine($"  registration match fraction: median {Pct(reg, 50):0.000}, p10 {Pct(reg, 10):0.000}");

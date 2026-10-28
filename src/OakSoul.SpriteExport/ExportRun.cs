@@ -125,6 +125,40 @@ internal sealed partial class ExportRun(string client, string outDir)
         Console.WriteLine($"Wrote {json} ({sets.Count} sets)");
     }
 
+    /// <summary>
+    /// The clouds the client draws drifting over maps whose info/cloud is 1 (the Perion maps): Map/_Canvas MapHelper.img
+    /// weather/cloud/&lt;n&gt;, as <c>weather/cloud/&lt;n&gt;.png</c>, plus <c>weather/cloud.json</c> with each canvas's origin from the
+    /// property archive (Map/Map_NNN.wz), where the canvases are only outlinks.
+    /// </summary>
+    public void ExportClouds()
+    {
+        Export("weather", Program.ArchiveParts(Path.Combine(client, "Map", "_Canvas")), (img, node) =>
+        {
+            if (img.Name != "MapHelper.img") return null;
+            var parts = node.Path.Split('/');
+            return parts is ["weather", "cloud", var n] ? $"weather/cloud/{n}.png" : null;
+        });
+        var clouds = new SortedDictionary<int, DigitInfo>();
+        foreach (string path in Program.ArchiveParts(Path.Combine(client, "Map")))
+        {
+            using var file = WzFile.Open(path);
+            var helper = file.Root.EnumerateImages().FirstOrDefault(i => i.Name == "MapHelper.img");
+            if (helper?.Root["weather/cloud"] is not { } cloud) continue;
+            foreach (var n in cloud.Children.Where(n => n.Type == WzNodeType.Canvas))
+            {
+                var file2 = $"weather/cloud/{n.Name}.png";
+                if (!int.TryParse(n.Name, out var index) || !File.Exists(Path.Combine(outDir, file2))) continue;
+                var origin = n["origin"] is { Type: WzNodeType.Vector } o ? o.Vector : (0, 0);
+                clouds[index] = new DigitInfo(file2, origin.Item1, origin.Item2);
+            }
+            helper.Unload();
+        }
+        Directory.CreateDirectory(Path.Combine(outDir, "weather"));
+        var json = Path.Combine(outDir, "weather", "cloud.json");
+        File.WriteAllText(json, JsonSerializer.Serialize(new { source = "Map/MapHelper.img weather/cloud", clouds = clouds.Values }, Program.JsonOptions));
+        Console.WriteLine($"Wrote {json} ({clouds.Count} clouds)");
+    }
+
     /// <summary>One canvas of a damage number set: its PNG and origin.</summary>
     internal sealed record DigitInfo(string File, int OriginX, int OriginY);
 

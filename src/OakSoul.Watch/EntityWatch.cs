@@ -21,6 +21,7 @@ public sealed class EntityWatch
     private readonly MobLibrary? _mobLibrary;
     private readonly DropMatcher? _drops;
     private readonly DamageReader? _damage;
+    private readonly CloudArt? _clouds;
     private readonly bool _diagnostics;
     private bool _petWarned;
     private readonly EntityTracker _tracker = new();
@@ -56,6 +57,11 @@ public sealed class EntityWatch
         _damage = sprites is null ? null : DamageReader.Load(sprites);
         Console.WriteLine(_damage is null ? $"entities: no damage digits at {sprites}/effect (run OakSoul.SpriteExport --effects); damage numbers stay effects"
             : $"entities: damage digits {string.Join(", ", _damage.FamilyNames)} ({_damage.GlyphCount} glyphs) from {sprites}/effect");
+        // OAKSOUL_CLOUDS=off leaves the clouds out of the comparison (for measuring what they change).
+        var cloudsOff = Environment.GetEnvironmentVariable("OAKSOUL_CLOUDS") is "off" or "0";
+        _clouds = sprites is null || cloudsOff ? null : CloudArt.Load(sprites);
+        Console.WriteLine(_clouds is null ? $"entities: no cloud art at {sprites}/weather (run OakSoul.SpriteExport --clouds){(cloudsOff ? " or OAKSOUL_CLOUDS=off" : "")}; clouds not modelled"
+            : $"entities: {_clouds.Sprites.Count} cloud canvases from {sprites}/weather");
         if (sprites is not null)
         {
             _pets = petName is null ? null : SpriteSet.Pets(sprites);
@@ -214,13 +220,18 @@ public sealed class EntityWatch
                     // OAKSOUL_TEMPORAL=off runs the full search alone on every frame; OAKSOUL_TEMPORAL_FULL_EVERY=N sets how often it runs.
                     Temporal = Environment.GetEnvironmentVariable("OAKSOUL_TEMPORAL") is not ("off" or "0"),
                     FullEvery = int.TryParse(Environment.GetEnvironmentVariable("OAKSOUL_TEMPORAL_FULL_EVERY"), out var every) && every > 0 ? every : EntityDetector.DefaultFullEvery,
+                    // A map with info/cloud draws drifting clouds over its mobs; the matcher sees through them.
+                    Clouds = map.Cloud && _clouds is not null ? new CloudLayer(_clouds, map.Vr.Left, map.Vr.Right) : null,
                 };
                 _detector?.Prepare();
+                if (_detector?.Clouds is not null) Console.WriteLine($"entities: map {mapId} has clouds (info/cloud); following them");
                 _detectors[mapId] = _detector;
                 Console.WriteLine(mosaic is null ? $"entities: no background for map {mapId} in {_backgrounds} (build it with --build-background)"
                     : $"entities: background {mapId} loaded from {_backgrounds} ({mosaic.Width}x{mosaic.Height}, {mosaic.Frames} frames)");
             }
             _tracker.MapId = mapId;
+            // Clouds seen on an earlier visit have drifted on.
+            _detector?.Clouds?.Clear();
         }
         if (_detector is null)
         {
