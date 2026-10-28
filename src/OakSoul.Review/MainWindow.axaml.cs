@@ -271,7 +271,6 @@ public partial class MainWindow : Window
         }
         EvidenceLegend.Children.Add(Legend(OverlayPainter.EvidenceColour(Model.Evidence.Present, "pet"), "present (no evidence; kind colour)"));
         EvidenceLegend.Children.Add(Legend(0xFFFFFFFF, "dot dying, bar track ends"));
-        EvidenceLegend.Children.Add(Legend(TimelineView.KillColour, "kill"));
         EvidenceLegend.Children.Add(Legend(TimelineView.MapColour, "map change"));
         StripLegend.Children.Add(Legend(0xFF22252A, "absent"));
 
@@ -503,7 +502,7 @@ public partial class MainWindow : Window
 
     // Each info panel shows a fixed number of short lines (blank where a value is absent, never wrapped), so the panels
     // keep their size as frames advance.
-    private const int FrameLines = 12, HudLines = 8, CountLines = 7;
+    private const int FrameLines = 12, HudLines = 8, CountLines = 6;
 
     /// <summary>Frames processed so far, as "X / Y · P% · M:SS left", the time left from the last 10 seconds' rate.</summary>
     private string Progress(int count, int total)
@@ -578,12 +577,8 @@ public partial class MainWindow : Window
             counts.AddRange(ReviewSession.EntityKinds.Where(k => k != "mob").Select(k => $"{k} {ents.Count(x => x.Kind == k)}").Append($"tags {f.Layer(OverlayLayers.Tags).Count()}")
                 .Chunk(3).Select(row => string.Join("  ", row)));
         }
-        while (counts.Count < CountLines - 2) counts.Add("");
-        if (s.Stream is { } st)
-        {
-            counts.Add($"so far: {st.Kills.Count(k => k <= s.Cursor)} kills of {st.Kills.Count}");
-            counts.Add($"  {st.Tracks.Count} tracks");
-        }
+        while (counts.Count < CountLines - 1) counts.Add("");
+        if (s.Stream is { } st) counts.Add($"{st.Tracks.Count} tracks in the stream");
         CountsInfo.Text = Lines(counts, CountLines);
     }
 

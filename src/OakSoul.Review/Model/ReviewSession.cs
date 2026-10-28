@@ -235,7 +235,6 @@ public sealed class ReviewSession : IDisposable
         return true;
     }
 
-    public IEnumerable<int> KillMarks => Stream?.Kills ?? [];
     public IEnumerable<int> MapMarks => Stream?.MapChanges.Select(m => m.Index) ?? [];
     public IEnumerable<int> NoteMarks => Packets.Notes.Select(NoteIndex);
     public IEnumerable<int> FailMarks => Truth.Entries.Where(e => e.Verdict?.Pass == false).Select(e => Timeline.Nearest(e.Sequence));

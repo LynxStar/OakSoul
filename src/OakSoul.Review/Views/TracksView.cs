@@ -14,8 +14,8 @@ public enum TrackOrder { First, Name, Length }
 
 /// <summary>
 /// Every track of the stream as a row across the recording's time, coloured by evidence frame by frame (matched green,
-/// carried amber, unverified red-grey, present without evidence the kind's colour), with kills (EXP gains) as green
-/// lines through all rows, a dying frame as a white dot and the end of a track (before the stream's end) as a white bar,
+/// carried amber, unverified red-grey, present without evidence the kind's colour), map changes as blue lines through
+/// all rows, a dying frame as a white dot and the end of a track (before the stream's end) as a white bar,
 /// so fragmentation (one creature split over many short rows) shows at a glance. Click a row to go to that frame in the
 /// Review tab with the track selected; the wheel scrolls, Cmd+wheel zooms time, shift+wheel pans it.
 /// </summary>
@@ -121,7 +121,7 @@ public sealed class TracksView : Control
         // Unprocessed time.
         if (processed < Frames && X(processed) < plot.Right)
             dc.FillRectangle(OverlayPainter.Brush(0xFF1E1F22), new Rect(Math.Max(plot.X, X(processed)), 0, plot.Right - Math.Max(plot.X, X(processed)), Bounds.Height));
-        // Header: time ticks, map changes and kills.
+        // Header: time ticks and map changes.
         // Ticks at least 56 pixels apart.
         var seconds = Math.Max(1e-3, s.Timeline[Math.Min(Frames - 1, (int)(_start + _span) - 1)].Time - s.Timeline[(int)_start].Time);
         var step = new[] { 1, 2, 5, 10, 15, 30, 60 }.FirstOrDefault(st => st * Plot / seconds >= 56, 120);
@@ -136,8 +136,6 @@ public sealed class TracksView : Control
         using (dc.PushClip(new Rect(LabelWidth, 0, Plot, Bounds.Height)))
         {
             foreach (var m in s.MapMarks) dc.DrawLine(OverlayPainter.Pen(TimelineView.MapColour, 2), new Point(X(m), 0), new Point(X(m), Bounds.Height));
-            foreach (var k in s.KillMarks) dc.DrawLine(OverlayPainter.Pen(0x553DD68C, 1), new Point(X(k + 0.5), HeaderHeight - 8), new Point(X(k + 0.5), Bounds.Height));
-            foreach (var k in s.KillMarks) dc.DrawLine(OverlayPainter.Pen(TimelineView.KillColour, 2), new Point(X(k + 0.5), HeaderHeight - 9), new Point(X(k + 0.5), HeaderHeight - 2));
         }
         Text(dc, $"{_rows.Count} tracks{(s.Stream?.Tracks.Count is { } all && all != _rows.Count ? $" of {all}" : "")}", new Point(6, 4), 0xFFB8C4D0, 11);
 

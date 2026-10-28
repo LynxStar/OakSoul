@@ -9,8 +9,8 @@ using OakSoul.Review.Model;
 namespace OakSoul.Review.Views;
 
 /// <summary>
-/// The recording's time as a bar: the part the stream covers lit, the rest greyed, with marks for kills (EXP gains,
-/// green), map changes (blue), review notes (yellow) and failing truth entries (red), the cursor, and time ticks.
+/// The recording's time as a bar: the part the stream covers lit, the rest greyed, with marks for map changes
+/// (blue), review notes (yellow) and failing truth entries (red), the cursor, and time ticks.
 /// Click or drag to move the cursor.
 /// </summary>
 public sealed class TimelineView : Control
@@ -20,7 +20,7 @@ public sealed class TimelineView : Control
     private bool _dragging;
     private double? _hoverX;
 
-    public const uint KillColour = 0xFF3DD68C, MapColour = 0xFF4A9BFF, NoteColour = 0xFFFFD84A, FailColour = 0xFFFF5A5A;
+    public const uint MapColour = 0xFF4A9BFF, NoteColour = 0xFFFFD84A, FailColour = 0xFFFF5A5A;
 
     public TimelineView()
     {
@@ -85,7 +85,6 @@ public sealed class TimelineView : Control
             if (major) Text(dc, OverlayFrame.FormatTime(t)[..^2], new Point(x + 2, 0), 0xFF8A9098, 10);
         }
         foreach (var m in s.MapMarks) Mark(dc, X(m), top, h, MapColour, 0, 1);
-        foreach (var k in s.KillMarks) Mark(dc, X(k), top, h, KillColour, 0, 0.45);
         foreach (var f in s.FailMarks) Mark(dc, X(f), top, h, FailColour, 0.3, 0.7);
         foreach (var n in s.NoteMarks)
         {
