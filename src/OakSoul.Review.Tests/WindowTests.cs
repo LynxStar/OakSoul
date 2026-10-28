@@ -194,6 +194,12 @@ public class WindowTests
         window.Show();
         var s = window.Session!;
         Assert.Equal(StreamState.Generating, s.State);
+        // Space plays even when a toolbar button was the last thing clicked: it never presses the button (restarting the regeneration).
+        var growing = s.Stream;
+        window.RegenerateButton.Focus();
+        Press(window, PhysicalKey.Space, RawInputModifiers.None);
+        Press(window, PhysicalKey.Space, RawInputModifiers.None);
+        Assert.Same(growing, s.Stream);
         Fixture.Pump(() => s.Stream is { Count: >= 6 } || s.State != StreamState.Generating, 180);
         if (s.State == StreamState.Generating)
         {

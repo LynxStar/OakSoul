@@ -463,13 +463,14 @@ public partial class MainWindow : Window
         var why = s.Provenance is { } p ? p.Reasons.FirstOrDefault() : null;
         StreamText.Text = s.State switch
         {
-            StreamState.Generating => $"{count} of {total} frames processed  ·  {s.StatusText}",
+            StreamState.Generating => Progress(count, total),
             StreamState.Loading => $"reading {s.StreamPath}: {count} frames",
             StreamState.Failed => $"{s.StatusText}  ({count} frames read)",
             _ => $"{s.StreamPath}  ·  {count} frames{(why is null ? "" : $"  ·  {why}")}",
         };
         var tip = new StringBuilder();
         tip.AppendLine(s.StreamPath);
+        if (s.State == StreamState.Generating) tip.AppendLine(s.StatusText);
         if (s.Provenance is { } prov) foreach (var r in prov.Reasons) tip.AppendLine($"• {r}");
         if (stream is not null)
         {
@@ -503,6 +504,21 @@ public partial class MainWindow : Window
     // Each info panel shows a fixed number of short lines (blank where a value is absent, never wrapped), so the panels
     // keep their size as frames advance.
     private const int FrameLines = 12, HudLines = 8, CountLines = 7;
+
+    /// <summary>Frames processed so far, as "X / Y · P% · M:SS left", the time left from the last 10 seconds' rate.</summary>
+    private string Progress(int count, int total)
+    {
+        var now = _clock.Elapsed.TotalSeconds;
+        if (_progress.Count > 0 && count < _progress.Peek().Count) _progress.Clear();
+        if (_progress.Count == 0 || _progress.Last().Count != count) _progress.Enqueue((now, count));
+        while (_progress.Count > 2 && now - _progress.Peek().Wall > 10) _progress.Dequeue();
+        var (w0, c0) = _progress.Peek();
+        var rate = now - w0 >= 1 && count > c0 ? (count - c0) / (now - w0) : 0;
+        var left = rate > 0 ? $"{TimeSpan.FromSeconds(Math.Ceiling((total - count) / rate)):m\\:ss} left" : "estimating time left";
+        return $"{count:N0} / {total:N0}  ·  {(total == 0 ? 0 : 100.0 * count / total):0}%  ·  {left}";
+    }
+
+    private readonly Queue<(double Wall, int Count)> _progress = new();
 
     private void UpdateFrameInfo()
     {

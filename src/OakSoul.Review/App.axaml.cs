@@ -14,7 +14,10 @@ public partial class App : Application
     public override void OnFrameworkInitializationCompleted()
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
+        {
+            DockIcon.Set("avares://OakSoul.Review/Assets/icon.png");
             desktop.MainWindow = new MainWindow(Options);
+        }
         base.OnFrameworkInitializationCompleted();
     }
 }

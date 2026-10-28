@@ -1,6 +1,7 @@
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              x:Class="OakSoul.Review.App"
+             Name="OakSoul Review"
              RequestedThemeVariant="Dark">
   <Application.Styles>
     <FluentTheme DensityStyle="Compact" />
@@ -24,6 +25,11 @@
       <Setter Property="CornerRadius" Value="4" />
       <Setter Property="Padding" Value="8,2,8,8" />
       <Setter Property="Margin" Value="0,0,0,6" />
+    </Style>
+    <!-- The window's keys are its own (Space plays, Enter saves a note): a clicked button never keeps the keyboard focus,
+         so Space or Enter never presses it again (Space on Regenerate restarted the regeneration). -->
+    <Style Selector="Button, ToggleButton, RadioButton, CheckBox">
+      <Setter Property="Focusable" Value="False" />
     </Style>
     <Style Selector="Button.tool:checked">
       <Setter Property="Background" Value="#3A5A80" />
