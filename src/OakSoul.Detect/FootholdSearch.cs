@@ -39,6 +39,14 @@ public sealed class FootholdSearch
     public const int ProbeMisses = 2;
 
     /// <summary>
+    /// Probe pixels that may disagree under a mob known to be hit (its tag's level badge or its HP bar): the skill that hit it is
+    /// drawn over it. The frozen Wild Boar of fx-combat-exact's video frame 3 under Cold Beam's shards agrees on 0.53 of its
+    /// pixels (hit1/0 R), but its probe missed 3 of 8; on frame 5 2 of 8. At least <see cref="ProbeCompared"/> -
+    /// <see cref="ProbeMisses"/> probe pixels must still agree.
+    /// </summary>
+    public const int HitProbeMisses = 4;
+
+    /// <summary>
     /// Share of a found frame's pixels that must be comparable: lower than the matcher's 0.4, since a mob the own character
     /// stands in front of is masked by the character's box (the dying Wild Boar on frame 781, 61% of it behind LynxHope).
     /// </summary>
@@ -139,7 +147,8 @@ public sealed class FootholdSearch
     /// ranges of mobs already matched and of the own character), and adds the passing placements.
     /// </summary>
     public void Probe(ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, Foothold fh, int camX, int camY, int sx0, int sx1,
-        IReadOnlyList<MobSpecies> species, IReadOnlyList<(int X0, int X1)> skip, List<(MobSpecies Species, SpriteFrame Frame, int FeetX, int FeetY)> hits)
+        IReadOnlyList<MobSpecies> species, IReadOnlyList<(int X0, int X1)> skip, List<(MobSpecies Species, SpriteFrame Frame, int FeetX, int FeetY)> hits,
+        int misses = ProbeMisses)
     {
         var vp = mask.Viewport;
         var bits = mask.Bits;
@@ -222,9 +231,9 @@ public sealed class FootholdSearch
                         var s = pixels[y * frameWidth + x] & 0xFFFFFF;
                         if (s == p.Colour[i] || s == p.Frozen[i]) continue;
                         if (clouds is not null && clouds.MayCover(x, y) && s == clouds.CompositeAt(p.Colour[i], x, y)) continue;
-                        if (++missed > ProbeMisses || (compared == 2 && missed == 2)) break;
+                        if (++missed > misses || (compared == 2 && missed == 2 && misses == ProbeMisses)) break;
                     }
-                    if (compared >= ProbeCompared && missed <= ProbeMisses) hits.Add((sp, f, ox, oy));
+                    if (compared >= ProbeCompared && missed <= misses && compared - missed >= ProbeCompared - ProbeMisses) hits.Add((sp, f, ox, oy));
                 }
                 }
             }

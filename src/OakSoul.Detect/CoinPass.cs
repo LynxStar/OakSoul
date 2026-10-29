@@ -43,11 +43,11 @@ public sealed partial class EntityDetector
     private List<Candidate> FollowCoins(ReadOnlySpan<byte> frame, int frameWidth, DetectionContext ctx, int camX, int camY, bool clear)
     {
         var result = new List<Candidate>();
-        if (Coins is null || _drops is null) return result;
+        if (_drops is null) return result;
         var vp = _mask.Viewport;
-        foreach (var coin in _tracker.LiveCoins(ctx.Time, CoinMemorySeconds))
+        foreach (var coin in Coins is null ? [] : _tracker.LiveCoins(ctx.Time, CoinMemorySeconds))
         {
-            if (!Coins.Groups.TryGetValue(coin.Last.ItemId, out var group) || coin.Last.AnchorWorld is not { } anchor) continue;
+            if (!Coins!.Groups.TryGetValue(coin.Last.ItemId, out var group) || coin.Last.AnchorWorld is not { } anchor) continue;
             int ax = (int)Math.Round(anchor.X - camX), ay = (int)Math.Round(anchor.Y - camY);
             _matcher.PrepareRegion(frame, frameWidth, _mask, ax - 48, ay - 48, ax + 48, ay + 12);
             var frames = group.Frames.OrderBy(f => (f.Index - coin.Last.IconFrame - 1 + 64) % 64).ToList();
@@ -74,6 +74,31 @@ public sealed partial class EntityDetector
             result.Add(c);
             CoinsFollowed++;
         }
+        // An item lies still where it landed: its icon is verified there, exactly, whatever the background (over parallax rock it
+        // leaves no blob to match, see DropsOnFloor).
+        var allowItems = _matcher.AllowFreeze;
+        _matcher.AllowFreeze = false;
+        foreach (var item in _tracker.LiveItems(ctx.Time, CoinMemorySeconds))
+        {
+            if (item.Last.PlaceWorld is not { } place || _drops.Icon(item.Last.ItemId, item.Last.IconFrame) is not { } icon) continue;
+            var f = icon.Frame;
+            int left = (int)Math.Round(place.X - camX), top = (int)Math.Round(place.Y - camY);
+            if (left + f.Width < vp.X || left > vp.X + vp.Width || top + f.Height < vp.Y || top > vp.Y + vp.Height) continue;
+            _matcher.PrepareRegion(frame, frameWidth, _mask, left - CoinSlackX - 2, top - CoinSlackY - 2, left + f.Width + CoinSlackX + 2, top + f.Height + CoinSlackY + 2);
+            var fx = left + f.OriginX; var fy = top + f.OriginY;
+            if (_matcher.Best(new CaptureRect(fx, fy, 1, 1), new PointD(fx, fy), icon.Holder, f, DropMatcher.Threshold, CoinSlackX, CoinSlackY, minComparable: CoinMinComparable) is not { } bm
+                || bm.Score < DropMatcher.Threshold) { ItemsLost++; continue; }
+            // Its box is the icon's extent: over hidden background the explained foreground is only a sliver of it.
+            var (pixels, _) = _matcher.Explain(bm, _fg.Mask, _fg.Width, _fg.Height, vp, clear: true, clear ? _explained : null);
+            var box = new CaptureRect(bm.Left + f.X0, bm.Top + f.Y0, f.ExtentWidth, f.ExtentHeight);
+            var c = MakeCandidate(ctx, camX, camY, box, new PointD(bm.Feet.X, box.Y + box.Height), Math.Max(1, pixels), null, false, false, null, _ownWorld);
+            c.Drop = new DropMatch(item.Last.ItemId, item.Last.Category, f.Index, bm.Left, bm.Top, bm.Matches, bm.Compared) { PlaceWorld = new PointD(bm.Left + camX, bm.Top + camY) };
+            c.Found = FoundBy.Prediction;
+            c.PredictedTrack = item.TrackId;
+            result.Add(c);
+            ItemsFollowed++;
+        }
+        _matcher.AllowFreeze = allowItems;
         return result;
     }
 
@@ -153,12 +178,85 @@ public sealed partial class EntityDetector
     private List<MobSpecies> SmallCoins() =>
         _smallCoins ??= Coins!.Groups.Values.Where(g => g.Frames.All(f => f.ExtentWidth <= EntityTracker.DropMaxSize && f.ExtentHeight <= EntityTracker.DropMaxSize)).ToList();
 
-    /// <summary>A meso match's anchor, from the coin's frame of that index (its client origin).</summary>
+    /// <summary>A meso match's anchor, from the coin's frame of that index (its client origin); an item's icon's place in the world.</summary>
     private DropMatch WithAnchor(DropMatch d, int camX, int camY)
     {
-        if (!d.IsMeso || d.Anchor is not null || Coins is null || !Coins.Groups.TryGetValue(d.ItemId, out var group)) return d;
+        if (!d.IsMeso) return d.PlaceWorld is null ? d with { PlaceWorld = new PointD(d.Left + camX, d.Top + camY) } : d;
+        if (d.Anchor is not null || Coins is null || !Coins.Groups.TryGetValue(d.ItemId, out var group)) return d;
         var f = group.Frames.FirstOrDefault(f => f.Index == d.IconFrame);
         return f is null ? d : d with { Anchor = new PointD(d.Left + f.OriginX, d.Top + f.OriginY), AnchorWorld = new PointD(d.Left + f.OriginX + camX, d.Top + f.OriginY + camY) };
+    }
+
+    /// <summary>Columns either side of a sliver at the floor searched for the kill's drops (they land side by side; the Wild Boar's two on fx-combat-exact's frame 58 span 48 columns).</summary>
+    public const int FloorDropSlackX = 36;
+
+    /// <summary>Rows above a sliver at the floor looked at for background the mosaic cannot vouch for, and the share of them that must be.</summary>
+    public const int HiddenRows = 24;
+    public const double HiddenShare = 0.5;
+
+    /// <summary>Drops found on the floor over hidden background, item drops followed at their place, and the time the floor search took, since construction.</summary>
+    public int FloorDrops { get; private set; }
+    public int ItemsFollowed { get; private set; }
+    public int ItemsLost { get; private set; }
+    public double FloorDropMs { get; private set; }
+
+    /// <summary>Whether the rows above a box are mostly background the mosaic cannot vouch for (parallax, steam): what stands there shows no foreground.</summary>
+    private bool HiddenAbove(CaptureRect box, int camX, int camY)
+    {
+        var m = _mosaic;
+        int hidden = 0, n = 0;
+        for (var y = box.Y - HiddenRows; y < box.Y; y++)
+            for (var x = box.X; x < box.X + box.Width; x++)
+            {
+                n++;
+                int mx = camX + x - m.OriginX, my = camY + y - m.OriginY;
+                if ((uint)mx >= (uint)m.Width || (uint)my >= (uint)m.Height || m.ForegroundUsable[my * m.Width + mx] == 0) hidden++;
+            }
+        return n > 0 && hidden >= HiddenShare * n;
+    }
+
+    /// <summary>
+    /// Whether an identified drop lies beside a candidate on its floor (bottoms within a few rows, within <see cref="FloorDropSlackX"/>
+    /// columns): a kill's drops land side by side, and the leftover of one beside another is a drop too (fx-combat-exact's frame 751:
+    /// the Leaf, 04000011, followed where it lay, left the Tree Branch beside it, 04000005, as a 14x13 blob).
+    /// </summary>
+    private static bool BesideDrop(Candidate c, List<Candidate> candidates) =>
+        candidates.Any(o => o.Drop is not null && !ReferenceEquals(o, c) && Math.Abs(o.Box.Y + o.Box.Height - c.Box.Y - c.Box.Height) <= 6
+            && o.Box.X <= c.Box.X + c.Box.Width + FloorDropSlackX && c.Box.X <= o.Box.X + o.Box.Width + FloorDropSlackX);
+
+    /// <summary>
+    /// A kill's drops lying where the mosaic cannot vouch for the background show only where the floor's rows are known: the Wild
+    /// Boar killed on fx-combat-exact's first video frames left items 04010003 and 04000049 over parallax rock, and frame 58 showed a
+    /// 13x5 blob at the ore's foot, which a player's track took up (see <see cref="EntityTracker"/>). Every icon is placed on the floor
+    /// row around the sliver (<see cref="DropMatcher.FindOnFloor"/>); the find over the sliver is its drop (returned), the others
+    /// become candidates of their own (added to <paramref name="found"/>), unless a drop already stands there.
+    /// </summary>
+    private DropMatch? DropsOnFloor(Candidate c, List<Candidate> candidates, List<Candidate> found, ReadOnlySpan<byte> frame, int frameWidth, DetectionContext ctx, int camX, int camY)
+    {
+        var cx = c.Box.X + c.Box.Width / 2.0;
+        if (ctx.Footholds.Nearest(new PointD(camX + cx, camY + c.Box.Y + c.Box.Height), 12) is not { } hit) return null;
+        var floorRow = (int)Math.Round(hit.SurfaceY - camY);
+        var finds = _drops!.FindOnFloor(frame, frameWidth, _mask, c.Box.X - FloorDropSlackX, c.Box.X + c.Box.Width - 1 + FloorDropSlackX, floorRow);
+        DropMatch? mine = null;
+        foreach (var d in finds)
+        {
+            var f = _drops.Icon(d.ItemId, d.IconFrame)!.Value.Frame;
+            var box = new CaptureRect(d.Left + f.X0, d.Top + f.Y0, f.ExtentWidth, f.ExtentHeight);
+            bool Holds(CaptureRect b) => b.X < box.X + box.Width && box.X < b.X + b.Width && b.Y < box.Y + box.Height && box.Y < b.Y + b.Height;
+            if (candidates.Concat(found).Any(o => o.Drop is not null && Holds(o.Box))) continue;
+            FloorDrops++;
+            if (mine is null && Holds(c.Box))
+            {
+                mine = d;
+                c.Box = box;
+                Place(c, new PointD(box.X + (box.Width - 1) / 2.0, box.Y + box.Height), ctx, camX, camY);
+                continue;
+            }
+            var other = MakeCandidate(ctx, camX, camY, box, new PointD(box.X + (box.Width - 1) / 2.0, box.Y + box.Height), 1, null, false, false, null, _ownWorld);
+            other.Drop = WithAnchor(d, camX, camY);
+            found.Add(other);
+        }
+        return mine;
     }
 
     /// <summary>Whether a candidate stands where a recent kill's drops fly (see <see cref="DeathDropSeconds"/>).</summary>

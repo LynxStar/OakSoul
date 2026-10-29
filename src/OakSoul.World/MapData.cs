@@ -37,11 +37,35 @@ public sealed record LadderRope(int X, int Y1, int Y2, bool Ladder, int Page, in
     public string Kind => Ladder ? "ladder" : "rope";
 }
 
-/// <summary>A portal. Type 0 ("sp") are spawn points; TargetMap 999999999 means no target.</summary>
-public sealed record Portal(string Name, int Type, int X, int Y, int TargetMap, string TargetName)
+/// <summary>
+/// A portal. Type 0 ("sp") are spawn points; TargetMap 999999999 means no target; <see cref="Script"/> is the portal's
+/// script (the client's <c>script</c> property, empty for most; absent from maps exported before it was kept).
+/// </summary>
+public sealed record Portal(string Name, int Type, int X, int Y, int TargetMap, string TargetName, string Script = "")
 {
     public const int NoTarget = 999999999;
     public bool HasTarget => TargetMap != NoTarget;
+
+    /// <summary>A spawn point (type 0): where a character arrives, not something it enters.</summary>
+    public bool IsSpawn => Type == 0;
+
+    /// <summary>
+    /// The area around the portal point in which a character can enter the portal, in world units relative to the point
+    /// (y grows downward): 25 either side, 100 above and 25 below. The client's data does not hold it (Map.wz's
+    /// MapHelper.img has only the portal art and the maps' portal nodes only name, type, point, target and script); this is
+    /// the rectangle the Journey client, a reimplementation of the game's client (Gameplay/MapleMap/Portal.cpp, <c>bounds()</c>,
+    /// tested by <c>MapPortals::find_warp_at</c> against the player's position, the soles), uses. The map changes of
+    /// fx-maps-exact are consistent with it but only bound it, without fixing its edges (README, "Portal activation area").
+    /// </summary>
+    public const int ActivationLeft = -25, ActivationTop = -100, ActivationRight = 25, ActivationBottom = 25;
+
+    /// <summary>The activation area as x, y, width, height in world units, or null for a spawn point (it has none).</summary>
+    public (int X, int Y, int Width, int Height)? Activation =>
+        IsSpawn ? null : (X + ActivationLeft, Y + ActivationTop, ActivationRight - ActivationLeft, ActivationBottom - ActivationTop);
+
+    /// <summary>Whether a character whose soles are at (x, y) stands inside the activation area.</summary>
+    public bool Activates(double x, double y) =>
+        !IsSpawn && x >= X + ActivationLeft && x <= X + ActivationRight && y >= Y + ActivationTop && y <= Y + ActivationBottom;
 }
 
 /// <summary>
@@ -67,6 +91,9 @@ public sealed record MapData(int MapId, string StreetName, string MapName, int R
     IReadOnlyList<Foothold> Footholds, IReadOnlyList<LadderRope> LadderRopes, IReadOnlyList<Portal> Portals, IReadOnlyList<LifeSpawn>? Life = null,
     bool Cloud = false, IReadOnlyList<BackLayer>? Back = null)
 {
+    /// <summary>The catalog this map was loaded from (null for a map read on its own), which names the maps its portals lead to.</summary>
+    public MapCatalog? Catalog { get; init; }
+
     /// <summary>The layers drawn in front of the map (back entries with front = 1).</summary>
     public IEnumerable<BackLayer> FrontLayers => (Back ?? []).Where(b => b.Front);
 
@@ -119,7 +146,7 @@ public sealed class MapCatalog
     {
         if (_cache.TryGetValue(id, out var cached)) return cached;
         var path = Path.Combine(_dir, $"{id}.json");
-        var map = File.Exists(path) ? MapData.Load(path) : null;
+        var map = File.Exists(path) ? MapData.Load(path) with { Catalog = this } : null;
         _cache[id] = map;
         return map;
     }
@@ -180,6 +207,28 @@ public sealed class MapCatalog
     public MapData? Find(string? street, string? map) => FindIds(street, map) is [var id] ? Load(id) : null;
 
     public (string Street, string Map)? Names(int id) => _index.TryGetValue(id, out var n) ? n : null;
+
+    private HashSet<string>? _sharedNames;
+
+    /// <summary>
+    /// The name to show for a map, null when the catalog does not know the id: its map name (Deep Valley II), with the
+    /// street before it ("Hidden Street / Mushroom Garden") only where the street adds something, that is where another
+    /// street has a map of the same name or the map has no name of its own.
+    /// </summary>
+    public string? DisplayName(int id)
+    {
+        if (!_index.TryGetValue(id, out var n)) return null;
+        var (street, map) = (n.Street.Trim(), n.Map.Trim());
+        if (map.Length == 0) return street.Length == 0 ? null : street;
+        if (street.Length == 0 || Normalize(street) == Normalize(map)) return map;
+        _sharedNames ??= SharedMapNames();
+        return _sharedNames.Contains(Normalize(map)) ? $"{street} / {map}" : map;
+    }
+
+    /// <summary>Map names that more than one street uses (Mushroom Garden on Hidden Street and on Rainbow Street).</summary>
+    private HashSet<string> SharedMapNames() =>
+        _index.Values.Where(v => v.Map.Trim().Length > 0).GroupBy(v => Normalize(v.Map), v => Normalize(v.Street))
+            .Where(g => g.Distinct().Count() > 1).Select(g => g.Key).ToHashSet();
 
     internal static string Normalize(string? text) =>
         string.Join(' ', (text ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries)).ToLowerInvariant();

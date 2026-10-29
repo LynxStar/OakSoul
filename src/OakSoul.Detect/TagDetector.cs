@@ -15,6 +15,13 @@ public sealed record TagBox(int X0, int Y0, int X1, int Y1, double TextFraction,
     public int? Level { get; set; }
     public string? Name { get; set; }
     public bool FromCache { get; set; }
+
+    /// <summary>
+    /// What the tag labels, set by the detector after tracking: <c>mob</c>, <c>pet</c>, <c>player</c>, <c>self</c> (the own tag)
+    /// or <c>none</c>; a tag reading a level badge is a mob's whatever took it. <see cref="OwnerTrack"/> is the labelled entity's track.
+    /// </summary>
+    public string? Owner { get; set; }
+    public int? OwnerTrack { get; set; }
 }
 
 /// <summary>
@@ -376,21 +383,47 @@ public sealed partial class TagDetector
     /// "Lv. 23 Dark Axe Stump" to level and name. Vision reads the tiny badge as "Lv. 23", "Lv, 23", "LV.23", "Lw, 11",
     /// "Lx23", ":23" or just "23", so the level is the last number of one to three digits followed by a capitalised
     /// word, and the name is the text after it (whatever precedes it is badge debris or a neighbouring tag). A badge
-    /// whose number is lost still marks a mob, with level 0.
+    /// whose number is lost still marks a mob, with level 0. A badge with its number before a name whose first letter read
+    /// in lower case ("Lv, 25 vvild Boar" on fx-combat-exact's video frame 5, the W read as vv) gives that number: before,
+    /// the level was lost and the number became part of the name ("25 vvild Boar").
     /// </summary>
     public static (int? Level, string? Name) Parse(string? text)
     {
         if (string.IsNullOrWhiteSpace(text)) return (null, null);
+        // Pure, and asked of the same few thousand reads again and again every frame: kept, so the regexes and their strings run once per read.
+        if (ParseMemo.TryGetValue(text, out var known)) return known;
+        if (ParseMemo.Count >= MemoLimit) ParseMemo.Clear();
+        return ParseMemo[text] = ParseRead(text);
+    }
+
+    private const int MemoLimit = 50_000;
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (int? Level, string? Name)> ParseMemo = new(StringComparer.Ordinal);
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> BadgeMemo = new(StringComparer.Ordinal);
+
+    private static (int? Level, string? Name) ParseRead(string text)
+    {
         var m = LevelPattern().Matches(text).LastOrDefault();
         if (m is not null && int.TryParse(m.Groups[1].Value, out var level))
         {
             var name = CleanName(text[(m.Index + m.Length)..]);
             return (level, name);
         }
+        var numbered = NumberedBadgePattern().Matches(text).LastOrDefault();
+        if (numbered is not null && int.TryParse(numbered.Groups[1].Value, out var badgeLevel) && CleanName(text[(numbered.Index + numbered.Length)..]) is { } badgeName)
+            return (badgeLevel, badgeName);
         // A badge whose number did not read ("LV Fire"): a mob, level unknown (0).
         var badge = BadgePattern().Match(text);
         if (badge.Success) return (0, CleanName(text[(badge.Index + badge.Length)..]));
         return (null, CleanName(text));
+    }
+
+    /// <summary>Whether a read shows a level badge: one <see cref="Parse"/> gives a level for, or a badge with its number and no name ("Lw,23").</summary>
+    public static bool HasBadge(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        if (BadgeMemo.TryGetValue(text, out var known)) return known;
+        if (BadgeMemo.Count >= MemoLimit) BadgeMemo.Clear();
+        return BadgeMemo[text] = Parse(text).Level is not null || NumberedBadgePattern().IsMatch(text);
     }
 
     private static string? CleanName(string s)
@@ -406,6 +439,9 @@ public sealed partial class TagDetector
 
     [GeneratedRegex(@"^\W*L[vVwWxy][.,:;]?(?=\s|$)")]
     private static partial Regex BadgePattern();
+
+    [GeneratedRegex(@"(?<![A-Za-z])L[vVwWxy][.,:;]?\s*(\d{1,3})(?!\d)")]
+    private static partial Regex NumberedBadgePattern();
 
     [GeneratedRegex(@"\s+")]
     private static partial Regex SpacePattern();

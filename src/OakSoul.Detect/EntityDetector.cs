@@ -306,6 +306,11 @@ public sealed partial class EntityDetector
         foreach (var t in tags) _fg.Clear(t.X0 - 1, t.Y0 - 1, t.X1 + 1, t.Y1 + 1);
         var ocrBefore = _tags.OcrMilliseconds;
         _tags.Read(tags, frame, frameWidth, vp, Ocr);
+        // A name read close to a species of the map is that species' name ("Vvild Boar" is Wild Boar).
+        if (_mobs is not null && !ReferenceEquals(_tracker.Names.Species, _speciesNames))
+            _tracker.Names.Species = _speciesNames ??= _mobs.Entries.Select(e => (e.Species.Name, e.Species.Level)).DistinctBy(s => s.Name).ToList();
+        foreach (var t in tags)
+            if (t.Name is { } tn && _tracker.Names.MatchSpecies(tn, t.Level) is { } species) t.Name = species;
         var ocrMs = _tags.OcrMilliseconds - ocrBefore;
         var tTags = sw.Elapsed.TotalMilliseconds - ocrMs;
         // With the camera registered to the pixel, the own tag gives the own position exactly (the dot only to +-8).
@@ -455,6 +460,7 @@ public sealed partial class EntityDetector
                     candidates[i].SearchMs += Stopwatch.GetElapsedTime(ts).TotalMilliseconds;
                     if (rest is not null) candidates.Add(rest);
                 }
+        if (_mobs is not null) SweepFragments(candidates, frame, frameWidth, ctx, camX, camY);
         // On a temporal frame the foothold search leaves out the columns of the mobs the predictions found.
         if (_mobs is not null) SearchGaps(candidates, frame, frameWidth, ctx, camX, camY, own,
             full ? [] : predictions.Select(p => new CaptureRect(p.Match.Left + p.Match.Frame.X0, p.Match.Top + p.Match.Frame.Y0, p.Match.Frame.ExtentWidth, p.Match.Frame.ExtentHeight)).ToList());
@@ -464,6 +470,8 @@ public sealed partial class EntityDetector
         if (_mobs is not null) CapBySpawns(candidates, ctx.Frame);
         var tSprites = sw.Elapsed.TotalMilliseconds - ocrMs;
         if (_drops is not null)
+        {
+            var onFloor = new List<Candidate>();
             foreach (var c in candidates)
             {
                 if (c.Sprite is not null || c.Drop is not null || c.PetSprite is not null || c.Skill is not null || c.Pixels <= 0 || c.TouchesOwn) continue;
@@ -479,10 +487,21 @@ public sealed partial class EntityDetector
                     dm = CoinOnFoothold(c, frame, frameWidth, ctx, camX, camY);
                     CoinMs += Stopwatch.GetElapsedTime(tc).TotalMilliseconds;
                 }
+                // A sliver at the floor near a kill, under background the mosaic cannot vouch for or beside a drop identified there, is
+                // (the rest of) the kill's drops.
+                if (dm is null && onSurface && c.Box.Width <= EntityTracker.DropMaxSize && c.Box.Height <= EntityTracker.DropMaxSize && NearDeath(c, ctx.Time)
+                    && (HiddenAbove(c.Box, camX, camY) || BesideDrop(c, candidates)))
+                {
+                    var tf = Stopwatch.GetTimestamp();
+                    dm = DropsOnFloor(c, candidates, onFloor, frame, frameWidth, ctx, camX, camY);
+                    FloorDropMs += Stopwatch.GetElapsedTime(tf).TotalMilliseconds;
+                }
                 if (dm is null) continue;
                 c.Drop = WithAnchor(dm, camX, camY);
                 if (flying) { c.InFlight = true; DropsInFlight++; }
             }
+            candidates.AddRange(onFloor);
+        }
         MoveCharacterTags(candidates, ctx, camX, camY, ownWorld);
         if (own is { } ownBox) LastOwnBox = own = DropOwnSlivers(candidates, ownBox);
         if (_damage is not null) ReadDamage(candidates, frame, frameWidth, ctx, camX, camY, own);
@@ -525,6 +544,7 @@ public sealed partial class EntityDetector
                 SearchByKind[kind] = (SearchByKind.GetValueOrDefault(kind).Candidates + 1, SearchByKind.GetValueOrDefault(kind).Ms + candidates[k].SearchMs);
             }
         CreditKill(entities, ctx, ownWorld);
+        AssignTagOwners(tags, candidates, entities, own);
         if (_mobs is not null) PlaceHitboxes(entities, ctx, camX, camY);
         var bars = AttachHpBars(hpBars, entities);
         RememberPoses(entities, ctx, full);
@@ -665,9 +685,12 @@ public sealed partial class EntityDetector
             c.Box = mine;
         }
         // No frame fits the box: the box may be cut (by the own character's mask, an effect drawn over the mob, unreliable
-        // background), so the mob is searched along the foothold under it, feet on the line.
-        if (match is null && blob && rest is null && c.Pixels >= SweepMinPixels && _sweepsThisFrame++ < MaxSweepsPerFrame
-            && SweepUnder(c, frame, frameWidth, ctx, camX, camY, order) is { } swept)
+        // background), so the mob is searched along the foothold under it, feet on the line. A mob known to be hit (its tag's level
+        // badge, its HP bar) is searched for under any blob of it, its probe allowed more pixels under the skill that hit it: the
+        // frozen Wild Boar of fx-combat-exact's video frame 3 under Cold Beam's shards was a 21x5 'Mob?' at its feet.
+        var hitMob = c.HpBar || TagNames.IsMobTag(c.Tag?.Text);
+        if (match is null && blob && rest is null && (c.Pixels >= SweepMinPixels || hitMob) && _sweepsThisFrame++ < MaxSweepsPerFrame
+            && SweepUnder(c, frame, frameWidth, ctx, camX, camY, order, hitMob ? FootholdSearch.HitProbeMisses : FootholdSearch.ProbeMisses) is { } swept)
         {
             match = swept;
             feetOnly = swept.Feet;
@@ -897,6 +920,41 @@ public sealed partial class EntityDetector
     /// <summary>Pet tags taken off blobs too large for the pet since construction.</summary>
     public int PetTagsDetached { get; private set; }
 
+    /// <summary>The map's species names and levels, handed to the tracker's names (see <see cref="TagNames.Species"/>).</summary>
+    private IReadOnlyList<(string Name, int Level)>? _speciesNames;
+
+    /// <summary>
+    /// Every tag's owner, for the overlay (<see cref="TagBox.Owner"/>): the kind of the entity that carries it (a mob, the pet, a
+    /// player), the pet for a tag of the pet's on no pet (its tag alone), self for the own tag, none for the rest. A tag reading a
+    /// level badge is a mob's whatever carries it (fx-combat-exact's video frames 3 and 5: the Wild Boar's own "Lv. 25 Wild Boar",
+    /// drawn cyan like the pet, read as the pet's).
+    /// </summary>
+    private void AssignTagOwners(List<TagBox> tags, List<Candidate> candidates, List<DetectedEntity> entities, CaptureRect? own)
+    {
+        if (tags.Count == 0) return;
+        for (var k = 0; k < candidates.Count && k < entities.Count; k++)
+        {
+            if (candidates[k].Tag is not { } t) continue;
+            var e = entities[k];
+            t.OwnerTrack = e.TrackId;
+            t.Owner = e.Kind switch
+            {
+                EntityKind.Mob => "mob",
+                EntityKind.Pet => "pet",
+                EntityKind.Player => "player",
+                _ => candidates[k].PetTag || _tracker.Names.IsPetTag(t.Text) ? "pet" : null,
+            };
+        }
+        var vp = _mask.Viewport;
+        foreach (var t in tags)
+        {
+            if (TagNames.IsMobTag(t.Text)) t.Owner = "mob";
+            else if (t.Owner is null && own is { } ob && t.CentreX + vp.X >= ob.X && t.CentreX + vp.X <= ob.X + ob.Width && t.Y0 + vp.Y >= ob.Y && t.Y0 + vp.Y <= ob.Y + ob.Height + 4) t.Owner = "self";
+            else if (t.Owner is null && _tracker.Names.IsPetTag(t.Text)) t.Owner = "pet";
+            t.Owner ??= "none";
+        }
+    }
+
     private void DetachPetTags(List<Candidate> candidates, DetectionContext ctx, int camX, int camY, PointD? ownWorld)
     {
         var vp = _mask.Viewport;
@@ -942,7 +1000,8 @@ public sealed partial class EntityDetector
     /// character's box on its left and joined an ice shard on its right, so no frame fitted the box; die1/0 at its feet
     /// agrees on 60% of its pixels (the player and the shards cover the rest).
     /// </summary>
-    private SpriteMatch? SweepUnder(Candidate c, ReadOnlySpan<byte> frame, int frameWidth, DetectionContext ctx, int camX, int camY, List<MapMobSet.Entry> order)
+    private SpriteMatch? SweepUnder(Candidate c, ReadOnlySpan<byte> frame, int frameWidth, DetectionContext ctx, int camX, int camY, List<MapMobSet.Entry> order,
+        int misses = FootholdSearch.ProbeMisses)
     {
         if (_search is null) return null;
         var t0 = Stopwatch.GetTimestamp();
@@ -950,7 +1009,7 @@ public sealed partial class EntityDetector
         int bottom = c.Box.Y + c.Box.Height - 1, sx0 = c.Box.X - SweepMargin, sx1 = c.Box.X + c.Box.Width - 1 + SweepMargin;
         var hits = new List<(MobSpecies, SpriteFrame, int, int)>();
         foreach (var fh in _search.Under(ctx.Map, camX, camY, sx0, sx1, bottom - SweepAbove, bottom + SweepBelow))
-            _search.Probe(frame, frameWidth, _mask, fh, camX, camY, sx0, sx1, species, [], hits);
+            _search.Probe(frame, frameWidth, _mask, fh, camX, camY, sx0, sx1, species, [], hits, misses);
         SpriteMatch? best = null;
         if (hits.Count > 0)
             foreach (var m in _search.Score(_matcher, hits, FootholdSearch.Threshold, frame, frameWidth, _mask))
@@ -962,6 +1021,76 @@ public sealed partial class EntityDetector
         SweepUnderMs += ms;
         if (best is { } b) SweepScores.Add(b.Score);
         return best;
+    }
+
+    /// <summary>Unmatched blobs at most this far apart (pixels, on either axis) whose union stays mob-sized are searched under as one mob's fragments.</summary>
+    public const int FragmentGap = 24, FragmentMaxWidth = 100, FragmentMaxHeight = 110;
+
+    /// <summary>Fragments joined into one mob by <see cref="SweepFragments"/> since construction (groups found, blobs taken in).</summary>
+    public int FragmentGroups { get; private set; }
+    public int FragmentsJoined { get; private set; }
+
+    /// <summary>
+    /// A mob drawn in colours close to the background's falls apart into fragments: the Dark Axe Stump on the ledge at world
+    /// -400..-340, 1545 of fx-combat-exact's video frames 168 to 214, whose dark browns lie within the foreground threshold of the rock
+    /// wall behind it and whose lighter wood fits the steam test, was three blobs of 101 to 243 pixels after the open (seq 193), none
+    /// fitting a frame (the stump's is 66x77), the two at its feet too small to be searched under and the largest, its axe, 46 rows
+    /// above the ledge, out of the search's reach. Unmatched blobs within <see cref="FragmentGap"/> of each other whose union is
+    /// mob-sized and holds <see cref="SweepMinPixels"/> are searched under as one (out of the frame's sweeps); a find makes the largest
+    /// of them the mob, its blob the union, and the others leave the frame.
+    /// </summary>
+    private void SweepFragments(List<Candidate> candidates, ReadOnlySpan<byte> frame, int frameWidth, DetectionContext ctx, int camX, int camY)
+    {
+        if (_sweepsThisFrame >= MaxSweepsPerFrame) return;
+        var loose = candidates.Where(c => c.Found == FoundBy.Search && c.Sprite is null && c.Drop is null && c.PetSprite is null && c.Skill is null && c.Damage is null
+            && c.Tag is null && c.Pixels > 0 && !c.TouchesOwn).ToList();
+        if (loose.Count < 2) return;
+        // Single linkage, each group kept mob-sized.
+        var root = Enumerable.Range(0, loose.Count).ToArray();
+        var union = loose.Select(c => c.Box).ToArray();
+        int Root(int i) { while (root[i] != i) i = root[i] = root[root[i]]; return i; }
+        static int Apart(int a0, int a1, int b0, int b1) => Math.Max(0, Math.Max(b0 - a1, a0 - b1));
+        for (var i = 0; i < loose.Count; i++)
+            for (var j = i + 1; j < loose.Count; j++)
+            {
+                CaptureRect p = loose[i].Box, q = loose[j].Box;
+                if (Math.Max(Apart(p.X, p.X + p.Width, q.X, q.X + q.Width), Apart(p.Y, p.Y + p.Height, q.Y, q.Y + q.Height)) > FragmentGap) continue;
+                int a = Root(i), b = Root(j);
+                if (a == b) continue;
+                CaptureRect u = union[a], v = union[b];
+                int x0 = Math.Min(u.X, v.X), y0 = Math.Min(u.Y, v.Y), x1 = Math.Max(u.X + u.Width, v.X + v.Width), y1 = Math.Max(u.Y + u.Height, v.Y + v.Height);
+                if (x1 - x0 > FragmentMaxWidth || y1 - y0 > FragmentMaxHeight) continue;
+                root[b] = a;
+                union[a] = new CaptureRect(x0, y0, x1 - x0, y1 - y0);
+            }
+        var groups = Enumerable.Range(0, loose.Count).GroupBy(Root).Where(g => g.Count() >= 2).Select(g => (Box: union[g.Key], Parts: g.Select(i => loose[i]).ToList()))
+            .Where(g => g.Parts.Sum(c => c.Pixels) >= SweepMinPixels).OrderByDescending(g => g.Parts.Sum(c => c.Pixels)).ToList();
+        foreach (var (box, parts) in groups)
+        {
+            if (_sweepsThisFrame >= MaxSweepsPerFrame) break;
+            var pixels = parts.Sum(c => c.Pixels);
+            var probe = MakeCandidate(ctx, camX, camY, box, new PointD(box.X + (box.Width - 1) / 2.0, box.Y + box.Height), pixels, null, false, false, null, _ownWorld);
+            if (!_mobs!.HasFlyers && probe.Foothold is null && ctx.Footholds.Below(probe.World, MaxAirUnits, FloorUnits) is null) continue;
+            var (_, _, order, last) = PlanFor(probe, ctx);
+            if (order.Count == 0) continue;
+            _sweepsThisFrame++;
+            var holder = parts.MaxBy(c => c.Pixels)!;
+            var ts = Stopwatch.GetTimestamp();
+            var swept = SweepUnder(probe, frame, frameWidth, ctx, camX, camY, order);
+            holder.SearchMs += Stopwatch.GetElapsedTime(ts).TotalMilliseconds;
+            if (swept is not { } m) continue;
+            holder.Box = box;
+            holder.Pixels = pixels;
+            m = Contest(holder, m, order, last, m.Feet, (FootholdSearch.RefineX, FootholdSearch.RefineY));
+            holder.Sprite = m;
+            holder.Swept = true;
+            Place(holder, m.Feet, ctx, camX, camY);
+            holder.Floor = FloorFor(holder, ctx);
+            foreach (var c in parts) if (!ReferenceEquals(c, holder)) candidates.Remove(c);
+            SweepAttached++;
+            FragmentGroups++;
+            FragmentsJoined += parts.Count;
+        }
     }
 
     /// <summary>The share of a box that a match's visible extent covers.</summary>

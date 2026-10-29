@@ -14,6 +14,9 @@ public sealed record DropMatch(string ItemId, string Category, int IconFrame, in
 
     /// <summary>The anchor in world coordinates (the camera moves between frames; the coin lies still).</summary>
     public World.PointD? AnchorWorld { get; init; }
+
+    /// <summary>An item's icon's top-left in world coordinates (the item lies still), for following it (<see cref="EntityDetector"/>'s drops).</summary>
+    public World.PointD? PlaceWorld { get; init; }
     public override string ToString() => $"{(IsMeso ? "meso" : Category)} {ItemId}#{IconFrame} {Score:0.00}";
 }
 
@@ -170,4 +173,96 @@ public sealed class DropMatcher
 
     /// <summary>Icons scored by the cut-box pass since construction.</summary>
     public long CutTried { get; private set; }
+
+    /// <summary>An item's icon frame (and the holder it is scored as), by item id and icon frame, or null.</summary>
+    public (MobSpecies Holder, SpriteFrame Frame)? Icon(string itemId, int iconFrame)
+    {
+        _byId ??= _icons.GroupBy(i => (i.Id, i.Frame.Index)).ToDictionary(g => g.Key, g => (g.First().Holder, g.First().Frame));
+        return _byId.TryGetValue((itemId, iconFrame), out var icon) ? icon : null;
+    }
+
+    private Dictionary<(string, int), (MobSpecies, SpriteFrame)>? _byId;
+
+    /// <summary>Rows a drop's icon may sit above or below the floor row (it settles after its bounce).</summary>
+    public const int FloorBob = 2;
+
+    /// <summary>Share of an icon's colours a window must show for the icon to be placed on its floor (the icon is drawn exactly; another drop may cover some of it).</summary>
+    public const double FloorColourShare = 0.6;
+
+    /// <summary>Icons and placements tried by <see cref="FindOnFloor"/> since construction.</summary>
+    public long FloorIconsTried { get; private set; }
+
+    private Dictionary<int, List<int>>? _postings;
+
+    /// <summary>
+    /// Drops lying where the mosaic cannot vouch for the background leave no blob of their size, only a sliver where the floor's
+    /// rows are known (the two drops of the Wild Boar killed on fx-combat-exact's first video frames, item 04010003 and 04000049,
+    /// lay over parallax rock at frame 58 and showed as a 13x5 blob). Every icon showing <see cref="FloorColourShare"/> of its
+    /// colours in the window is placed with its bottom row on the floor row (<see cref="FloorBob"/> either way) at every column of
+    /// the window and scored exactly (<see cref="Threshold"/>); the passing finds, best first, that do not overlap.
+    /// </summary>
+    public List<DropMatch> FindOnFloor(ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, int x0, int x1, int floorRow)
+    {
+        var found = new List<DropMatch>();
+        int frameHeight = frame.Length / 4 / frameWidth;
+        x0 = Math.Max(0, x0); x1 = Math.Min(frameWidth - 1, x1);
+        int y0 = Math.Max(0, floorRow - MaxIcon - FloorBob), y1 = Math.Min(frameHeight - 1, floorRow + FloorBob);
+        if (x1 - x0 < 8 || y1 <= y0) return found;
+        var present = new HashSet<int>();
+        for (var y = y0; y <= y1; y++)
+            for (var x = x0; x <= x1; x++)
+            {
+                var o = (y * frameWidth + x) * 4;
+                present.Add(frame[o] | frame[o + 1] << 8 | frame[o + 2] << 16);
+            }
+        if (_postings is null)
+        {
+            _postings = [];
+            for (var i = 0; i < _colours.Count; i++)
+                foreach (var c in _colours[i])
+                {
+                    if (!_postings.TryGetValue(c, out var list)) _postings[c] = list = [];
+                    list.Add(i);
+                }
+        }
+        var counts = new int[_icons.Count];
+        foreach (var c in present)
+            if (_postings.TryGetValue(c, out var list))
+                foreach (var i in list) counts[i]++;
+        var prepared = false;
+        var hits = new List<DropMatch>();
+        for (var i = 0; i < _icons.Count; i++)
+        {
+            if (counts[i] < FloorColourShare * _colours[i].Count) continue;
+            var (id, category, holder, f) = _icons[i];
+            if (f.ExtentWidth > x1 - x0 + 1) continue;
+            if (!prepared) { _matcher.PrepareRegion(frame, frameWidth, mask, x0 - 2, y0 - 2, x1 + 2 * SpriteMatcher.SearchX + 2, y1 + 2); prepared = true; }
+            FloorIconsTried++;
+            // The icon's visible extent with its bottom on the floor row at every column of the window, a window of the matcher's
+            // width at a time (its few best coarse placements per window, so a flat icon's near misses cannot crowd out the exact one).
+            SpriteMatch? best = null;
+            for (var left = x0; left <= x1 - f.ExtentWidth + 1 + SpriteMatcher.SearchX; left += 2 * SpriteMatcher.SearchX + 1)
+            {
+                var box = new CaptureRect(left + SpriteMatcher.SearchX, floorRow - f.ExtentHeight + 1, f.ExtentWidth, f.ExtentHeight);
+                if (_matcher.Best(box, null, holder, f, Threshold, SpriteMatcher.SearchX, FloorBob) is { } m && m.Score >= Threshold && (best is null || m.Score > best.Value.Score)) best = m;
+            }
+            if (best is { } bm) hits.Add(new DropMatch(id, category, f.Index, bm.Left, bm.Top, bm.Matches, bm.Compared));
+        }
+        foreach (var h in hits.OrderByDescending(h => h.Score).ThenByDescending(h => h.Compared))
+        {
+            var hf = Icon(h.ItemId, h.IconFrame)!.Value.Frame;
+            var mine = new CaptureRect(h.Left + hf.X0, h.Top + hf.Y0, hf.ExtentWidth, hf.ExtentHeight);
+            if (found.Any(k => Overlap(k, mine) > 1 / 3.0)) continue;
+            found.Add(h);
+        }
+        return found;
+
+        double Overlap(DropMatch k, CaptureRect r)
+        {
+            var kf = Icon(k.ItemId, k.IconFrame)!.Value.Frame;
+            int ax0 = k.Left + kf.X0, ay0 = k.Top + kf.Y0, ax1 = ax0 + kf.ExtentWidth, ay1 = ay0 + kf.ExtentHeight;
+            int w = Math.Min(ax1, r.X + r.Width) - Math.Max(ax0, r.X), h = Math.Min(ay1, r.Y + r.Height) - Math.Max(ay0, r.Y);
+            return w <= 0 || h <= 0 ? 0 : (double)w * h / Math.Min(kf.ExtentWidth * kf.ExtentHeight, r.Width * r.Height);
+        }
+    }
 }

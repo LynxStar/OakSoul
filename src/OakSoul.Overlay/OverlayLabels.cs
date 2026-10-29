@@ -79,6 +79,19 @@ public static class OverlayLabels
         return $"#{track} {Title(e.Kind)}{(e.Kind == "mob" ? "?" : "")}{SheetName(e)}";
     }
 
+    /// <summary>
+    /// A portal's label: where it leads ("Deep Valley II", the destination map's name; "Ellinia (h_top00)" when it leads to
+    /// another portal of its own map; "map 10006120" when the catalog does not know the map), else "spawn" for a spawn
+    /// point, else its script, else its own name.
+    /// </summary>
+    public static string Portal(int type, string name, string? script, int? target, string? destination, string? targetName, bool sameMap)
+    {
+        if (target is { } id)
+            return destination is null ? $"map {id.ToString(CultureInfo.InvariantCulture)}" : sameMap && targetName is { Length: > 0 } ? $"{destination} ({targetName})" : destination;
+        if (type == 0) return "spawn";
+        return script is { Length: > 0 } ? script : name;
+    }
+
     /// <summary>" Lv23 Name" from the entity's own name (the tag-learned one when an identity named the species).</summary>
     private static string NameText(OverlayItem e)
     {

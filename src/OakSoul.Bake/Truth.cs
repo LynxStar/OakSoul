@@ -23,7 +23,9 @@ namespace OakSoul.Bake;
 /// have, exactly: <c>{"skillName":"Cold Beam"}</c>), <c>fieldsNot</c> (values it must not have: <c>{"state":"dying"}</c>),
 /// <c>range</c> (numeric fields within [min, max]: <c>{"fill":[0.5,0.65]}</c>), <c>count</c> (exactly this many entities
 /// of the kind, satisfying the conditions, at the place: one mob, one track), <c>minCount</c> (at least this many) and
-/// <c>hudKind</c> (a HUD item of that kind, the cursor, at the place). An entry whose frame is not in the stream because the
+/// <c>hudKind</c> (a HUD item of that kind, the cursor, at the place). Since review 3, <c>layer</c> names the layer the other
+/// conditions look at instead of the entity layer: <c>{"layer":"tags","kind":"tag","fields":{"owner":"mob"}}</c>, a tag
+/// whose owner is a mob. An entry whose frame is not in the stream because the
 /// stream cannot hold it (a video-only sequence against the keyframe stream, a keyframe the video left out) reports n/a.
 /// </summary>
 public static class Truth
@@ -120,10 +122,11 @@ public static class Truth
 
     private static (bool Ok, string Why) Check(OverlayFrame frame, Location place, JsonElement expect)
     {
-        var at = frame.Layer(OverlayLayers.Entity).Where(i => At(i, place)).ToList();
+        string? S(string name) => expect.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        // The entity layer unless the entry names another (since review 3: the tags layer, for a tag's owner).
+        var at = frame.Layer(S("layer") ?? OverlayLayers.Entity).Where(i => At(i, place)).ToList();
         var problems = new List<string>();
         string? matched = null;
-        string? S(string name) => expect.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
         if (S("kind") is { } kind)
         {
             var good = at.Where(i => i.Kind == kind).Where(i =>

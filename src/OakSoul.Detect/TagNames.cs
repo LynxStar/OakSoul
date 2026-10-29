@@ -75,12 +75,55 @@ public sealed class TagNames
     }
 
     /// <summary>
-    /// The known mob name a read most likely is, or null. With a level, names known at a different level are skipped:
-    /// "Lv. 11 Dark Stump" is not a misread "Lv. 23 Dark Axe Stump".
+    /// The species of the map (its life list) with their client levels, set by the detector: a read close to one of their names
+    /// is that name (<see cref="MatchSpecies"/>), before any name learned from reads.
+    /// </summary>
+    public IReadOnlyList<(string Name, int Level)> Species
+    {
+        get => _species;
+        set { _species = value; _speciesMemo.Clear(); }
+    }
+
+    private IReadOnlyList<(string Name, int Level)> _species = [];
+
+    /// <summary><see cref="MatchSpecies"/> by read and level: the tracker asks it of the same reads every frame.</summary>
+    private readonly Dictionary<(string, int), string?> _speciesMemo = [];
+
+    /// <summary>
+    /// The species name a read most likely is, by the rule of <see cref="SameName"/>, or null: "Vvild Boar" (the W read as vv) is
+    /// Wild Boar. With a level read, only species of that level (as for learned names: "Lv. 23 Axe StumpR", a Dark Axe Stump cut by
+    /// the screen's edge, is no Lv. 17 Axe Stump); the nearest; two species equally near ("Snail" ends both Red and Blue Snail)
+    /// name neither.
+    /// </summary>
+    public string? MatchSpecies(string? name, int? level = null)
+    {
+        if (string.IsNullOrWhiteSpace(name) || Species.Count == 0) return null;
+        var key = (name, level is > 0 ? level.Value : 0);
+        if (_speciesMemo.TryGetValue(key, out var known)) return known;
+        if (_speciesMemo.Count >= 50_000) _speciesMemo.Clear();
+        return _speciesMemo[key] = MatchSpeciesNow(name, level);
+    }
+
+    private string? MatchSpeciesNow(string name, int? level)
+    {
+        var near = Species.Where(s => level is not > 0 || s.Level == level).Select(s => (s.Name, s.Level, Score: Similarity(name, s.Name))).Where(s => s.Score <= MaxDistance).ToList();
+        if (near.Count == 0) return null;
+        var best = near.MinBy(s => s.Score);
+        return near.Count(s => s.Score == best.Score && !string.Equals(s.Name, best.Name, StringComparison.OrdinalIgnoreCase)) > 0 ? null : best.Name;
+    }
+
+    /// <summary>Whether a read is a mob's tag by its level badge: pets and players are never tagged "Lv. N".</summary>
+    public static bool IsMobTag(string? text) => TagDetector.HasBadge(text);
+
+    /// <summary>
+    /// The known mob name a read most likely is, or null: a species of the map (<see cref="MatchSpecies"/>), else a name learned
+    /// from reads. With a level, names known at a different level are skipped: "Lv. 11 Dark Stump" is not a misread
+    /// "Lv. 23 Dark Axe Stump".
     /// </summary>
     public string? MatchMob(string? name, int? level = null)
     {
         if (string.IsNullOrWhiteSpace(name)) return null;
+        if (MatchSpecies(name, level) is { } species) return species;
         string? best = null;
         var bestScore = double.MaxValue;
         foreach (var known in MobNames)
@@ -97,17 +140,20 @@ public sealed class TagNames
 
     /// <summary>
     /// Whether a read holds a piece of the pet's name: a word of three letters or more within one edit of a piece of the name
-    /// ("ara" of Mara, from "ara oar" and "ara-v, 11" where the pet's tag ran into a boar's). Only a tag at the pet's tag
-    /// position is asked: there such a read is the pet's tag, never a player's.
+    /// ("ara" of Mara, from "ara oar" and "ara-v, 11" where the pet's tag ran into a boar's), or holding the whole name with more
+    /// run into it ("JarMara" on fx-combat-exact's video frame 35: the end of a dying boar's "Boar" read into the pet's tag, which
+    /// as a tag alone made a player "Jar"). Only a tag at the pet's tag position is asked: there such a read is the pet's tag,
+    /// never a player's. A read with a level badge is a mob's tag (<see cref="IsMobTag"/>), never a piece of the pet's.
     /// </summary>
     public bool IsPetFragment(string? text)
     {
-        if (PetName is null || string.IsNullOrWhiteSpace(text)) return false;
+        if (PetName is null || string.IsNullOrWhiteSpace(text) || IsMobTag(text)) return false;
         var name = Normalize(PetName);
         foreach (var raw in text.Split([' ', '-', ',', '.', ':', ';', '\'', '"'], StringSplitOptions.RemoveEmptyEntries))
         {
             var w = Normalize(raw);
             if (w.Length < 3 || w.Any(char.IsDigit)) continue;
+            if (name.Length >= 3 && w.Length > name.Length && w.Contains(name, StringComparison.Ordinal)) return true;
             for (var len = Math.Max(2, w.Length - 1); len <= Math.Min(name.Length, w.Length + 1); len++)
                 for (var i = 0; i + len <= name.Length; i++)
                     if (Distance(w, name.Substring(i, len)) <= 1) return true;
@@ -148,7 +194,8 @@ public sealed class TagNames
         return (double)Distance(a, b) / Math.Max(1, b.Length);
     }
 
-    private static string Normalize(string s) => new(s.ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray());
+    /// <summary>Lower case, letters and digits only, and "vv" as the "w" OCR split it into ("Vvild Boar" on fx-combat-exact's first frames).</summary>
+    private static string Normalize(string s) => new string(s.ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray()).Replace("vv", "w", StringComparison.Ordinal);
 
     private static int Distance(string a, string b)
     {

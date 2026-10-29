@@ -23,7 +23,7 @@ public sealed record RenderOptions(int Scale, IReadOnlySet<string> Layers, Func<
 /// with every layer drawn (entities labelled "#116 Dark Stump move/3 R 0.97", "~" carried, "?" unverified, the rival
 /// species when close); and a footer listing every entity with its rect and feet, so a label can be matched to its item.
 /// Drawn with Detect's Canvas and 5x7 font; the colours are the contact sheets' (Unknown grey, Mob red, Player blue, Pet
-/// cyan, Drop yellow, Effect purple, cyan tag boxes, white own character).
+/// cyan, Drop yellow, Effect purple, tag boxes in their owner's colour, white own character).
 /// </summary>
 public static class FrameRenderer
 {
@@ -44,12 +44,21 @@ public static class FrameRenderer
     public static ItemStyle DefaultStyle(OverlayItem item, int scale) => item.Layer switch
     {
         OverlayLayers.Entity => new ItemStyle(KindColour(item.Kind), Math.Max(1, scale)),
-        OverlayLayers.Tags => new ItemStyle(Cyan, Math.Max(1, scale / 2 + scale % 2), Labelled: false),
+        OverlayLayers.Tags => new ItemStyle(TagColour(item.Str("owner")), Math.Max(1, scale / 2 + scale % 2), Labelled: false),
         OverlayLayers.Self => new ItemStyle(White, item.Kind == "tag" ? 1 : Math.Max(1, scale)),
-        OverlayLayers.World => new ItemStyle(item.Kind switch { "foothold" => Foothold, "portal" => Portal, _ => Rope }, WorldLine(scale), item.Kind == "portal"),
+        OverlayLayers.World => new ItemStyle(item.Kind switch { "foothold" => Foothold, "portal" => Portal, _ => Rope }, item.Kind == "portal" ? Math.Max(1, scale) : WorldLine(scale), item.Kind == "portal"),
         OverlayLayers.Minimap => new ItemStyle(item.Kind == "dot" ? DotColour(item.Str("dot")) : MinimapLine, 1, item.Kind == "names"),
         OverlayLayers.Hud => new ItemStyle(HudGrey, 1, item.Kind == "region"),
         _ => new ItemStyle(White, 1, false),
+    };
+
+    /// <summary>A tag box in its owner's colour (a mob's red, the pet's cyan, a player's blue, the own white, none grey); cyan in streams without owners.</summary>
+    public static uint TagColour(string? owner) => owner switch
+    {
+        "mob" or "pet" or "player" => KindColour(owner),
+        "self" => White,
+        "none" => KindColour("unknown"),
+        _ => Cyan,
     };
 
     /// <summary>Width of footholds, ropes and ladders in output pixels: 5 at the default 2x (2.5 per game pixel, rounded).</summary>
@@ -114,7 +123,8 @@ public static class FrameRenderer
         if (item.Line() is { Length: >= 2 } line)
             for (var i = 1; i < line.Length; i++)
                 DrawLine(c, line[i - 1][0] * s + s / 2, line[i - 1][1] * s + s / 2, line[i][0] * s + s / 2, line[i][1] * s + s / 2, col, style.Thickness);
-        if (item.Point("point") is { } p)
+        // A portal with its activation area (rect) is the area; its point is only drawn where there is no area (a spawn point, or a stream from before).
+        if (item.Point("point") is { } p && !(item.Layer == OverlayLayers.World && item.Kind == "portal" && item.Rect is not null))
         {
             var size = item.Layer == OverlayLayers.Minimap ? 2 * s : 4 * s;
             c.Rect(p.X * s - size, p.Y * s - size, 2 * size + 1, 2 * size + 1, col);
@@ -192,9 +202,9 @@ public static class FrameRenderer
             x += 12 * ts + Canvas.TextWidth(name, ts) + 8 * ts;
         }
         foreach (var k in new[] { "mob", "player", "pet", "drop", "effect", "damage", "unknown" }) Swatch(OverlayLabels.Title(k), KindColour(k));
-        Swatch("tag box", Cyan);
+        Swatch("tag box: its owner's", TagColour("none"));
         Swatch("own character", White);
-        if (layers.Contains(OverlayLayers.World)) { Swatch("foothold", Foothold); Swatch("rope/ladder", Rope); Swatch("portal", Portal); }
+        if (layers.Contains(OverlayLayers.World)) { Swatch("foothold", Foothold); Swatch("rope/ladder", Rope); Swatch("portal activation area", Portal); }
         c.Text(x, y, "mob box: client hitbox (lt/rb); #track name anim/frame facing score; [p] predicted, [t] transition, [s] search; ~carried (last match); ? unverified; + feet", Dim, ts, null);
     }
 

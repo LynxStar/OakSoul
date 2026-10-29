@@ -247,6 +247,10 @@ public sealed class EntityTracker
     public List<LiveCoin> LiveCoins(double time, double memory) =>
         _tracks.Where(t => t.Drop is { IsMeso: true, AnchorWorld: not null } && time - t.LastTime <= memory).Select(t => new LiveCoin(t.Id, t.Drop!, t.LastTime)).ToList();
 
+    /// <summary>The identified item drop tracks (not meso) seen within <paramref name="memory"/> seconds, with the icon's last place in the world.</summary>
+    public List<LiveCoin> LiveItems(double time, double memory) =>
+        _tracks.Where(t => t.Drop is { IsMeso: false, PlaceWorld: not null } && time - t.LastTime <= memory).Select(t => new LiveCoin(t.Id, t.Drop!, t.LastTime)).ToList();
+
     /// <summary>
     /// The identified mob tracks whose sprite matched within <paramref name="memory"/> seconds (the pet excluded; a dead track
     /// only while its die pose may still show), most verified first.
@@ -340,8 +344,9 @@ public sealed class EntityTracker
 
     private static double Gate(Track tr, double dt)
     {
-        // A drop that just popped out of a killed mob flies in an arc before it lands.
-        var speed = tr.Drop is not null && tr.LastTime - tr.FirstTime <= DropFlightSeconds ? DropFlightPerSecond
+        // A drop that just popped out of a killed mob flies in an arc before it lands; one seen lying still has landed (an item
+        // followed where it lay, fx-combat-exact's video frames 58 to 84, took up a sliver 147 units away 0.6 s after it was looted).
+        var speed = tr.Drop is not null && tr.LastTime - tr.FirstTime <= DropFlightSeconds && !(tr.Age >= 3 && tr.Moved == 0) ? DropFlightPerSecond
             : tr.Age >= 3 && tr.Moved == 0 ? StillPerSecond : GatePerSecond;
         return GateBase + speed * Math.Min(dt, MaxMissedSeconds) + speed / 2 * Math.Max(0, dt - MaxMissedSeconds);
     }
@@ -412,6 +417,10 @@ public sealed class EntityTracker
                 // and its identity on 44 detections), and a verified mob or drop never continues the pet's.
                 if (characterTag[c] && (tr.MobId is not null || tr.Drop is not null || tr.Level is not null || Names.MatchMob(tr.Name) is not null)) continue;
                 if ((cand.Sprite is not null || cand.Drop is not null) && Names.IsPet(tr.Name)) continue;
+                // A player is one by its tag, which the client draws on every player: a player's track does not continue on a
+                // drop-sized blob without one (fx-combat-exact's video frame 58: a tag alone read "JarMara" on frame 35 had made a
+                // player "Jar", whose track took up a 13x5 sliver at the foot of two drops 0.8 s later).
+                if (tr.Kind == EntityKind.Player && cand.Tag is null && cand.Pixels > 0 && cand.Box.Width <= DropMaxSize && cand.Box.Height <= DropMaxSize) { Refuse("player"); continue; }
                 // A damage number continues only a damage number of the same value and kind, and nothing else continues one.
                 if ((cand.Damage is { } dm) != (tr.Damage is not null)) continue;
                 if (cand.Damage is { } dmg && (tr.Damage!.Digits != dmg.Digits || tr.Damage.Family != dmg.Family)) continue;

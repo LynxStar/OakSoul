@@ -77,7 +77,7 @@ internal static partial class MapExtractor
     private static List<Portal> Portals(WzNode? node) =>
         Ordered(node).Select(n => new Portal(
             n.GetString("pn") ?? string.Empty, n.GetInt("pt"), n.GetInt("x"), n.GetInt("y"),
-            n.GetInt("tm", 999999999), n.GetString("tn") ?? string.Empty)).ToList();
+            n.GetInt("tm", 999999999), n.GetString("tn") ?? string.Empty, n.GetString("script") ?? string.Empty)).ToList();
 
     private static List<Life> Life(WzNode? node) =>
         Ordered(node).Select(n => new Life(

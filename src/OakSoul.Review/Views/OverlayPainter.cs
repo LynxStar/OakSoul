@@ -52,7 +52,7 @@ public static class OverlayPainter
         OverlayLayers.Tags => 1.5,
         OverlayLayers.Self => item.Kind == "tag" ? 1 : 2,
         // Footholds, ropes and ladders: Bake draws them 2.5 game pixels wide; here at most 4 screen pixels so the frame shows through.
-        OverlayLayers.World => Math.Clamp(1.25 * zoom, 1.5, 4),
+        OverlayLayers.World => item.Kind == "portal" ? 2 : Math.Clamp(1.25 * zoom, 1.5, 4),
         _ => 1,
     };
 
@@ -95,7 +95,8 @@ public static class OverlayPainter
                     for (var i = 1; i < line.Length; i++)
                         dc.DrawLine(pen, P(line[i - 1][0] + 0.5, line[i - 1][1] + 0.5), P(line[i][0] + 0.5, line[i][1] + 0.5));
                 }
-                if (item.Point("point") is { } p)
+                // A portal with its activation area (rect) is the area; its point is only drawn where there is no area (a spawn point, or a stream from before).
+                if (item.Point("point") is { } p && !(item.Layer == OverlayLayers.World && item.Kind == "portal" && item.Rect is not null))
                 {
                     var size = Math.Max(3, (item.Layer == OverlayLayers.Minimap ? 2 : 4) * zoom);
                     var c = P(p.X + 0.5, p.Y + 0.5);

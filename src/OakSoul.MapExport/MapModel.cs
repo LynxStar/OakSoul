@@ -31,8 +31,8 @@ internal sealed record Foothold(int Id, int Layer, int Group, int X1, int Y1, in
 /// <summary>A vertical climbable: ladder when l == 1, rope otherwise. uf is "upper floor" (can climb off the top).</summary>
 internal sealed record LadderRope(int X, int Y1, int Y2, bool Ladder, int Page, int Uf);
 
-/// <summary>pt is the portal type; targetMap 999999999 means no destination.</summary>
-internal sealed record Portal(string Name, int Type, int X, int Y, int TargetMap, string TargetName);
+/// <summary>pt is the portal type; targetMap 999999999 means no destination; script is the portal's script, empty for most.</summary>
+internal sealed record Portal(string Name, int Type, int X, int Y, int TargetMap, string TargetName, string Script);
 
 /// <summary>type "m" is a mob, "n" an NPC; id kept as stored (may have leading zeros); fh is the foothold id.</summary>
 internal sealed record Life(string Type, string Id, int X, int Y, int Fh);
