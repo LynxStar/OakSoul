@@ -305,6 +305,7 @@ public static class WatchProgram
         entityWatch?.WriteSheets();
         if (entityWatch is not null) Console.WriteLine(entityWatch.SkipSummary());
         if (entityReport && entityWatch is not null) EntityReport.Print(Console.Out, entityWatch);
+        if (entityReport) entityWatch?.PrintGapFiller(Console.Out);
         // The detector compares exact frames with the mosaic, so only a pixel-exact session builds one. A video of such a session
         // votes (a lossy one too: its errors spread around the true value), and its keyframes then replace the voted pixels they
         // saw with their own values (MosaicBuilder.ExactRefine).

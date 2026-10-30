@@ -220,6 +220,11 @@ public sealed class EntityWatch
                     // OAKSOUL_TEMPORAL=off runs the full search alone on every frame; OAKSOUL_TEMPORAL_FULL_EVERY=N sets how often it runs.
                     Temporal = Environment.GetEnvironmentVariable("OAKSOUL_TEMPORAL") is not ("off" or "0"),
                     FullEvery = int.TryParse(Environment.GetEnvironmentVariable("OAKSOUL_TEMPORAL_FULL_EVERY"), out var every) && every > 0 ? every : EntityDetector.DefaultFullEvery,
+                    // OAKSOUL_GAP_FILLER=on searches the floor band a moving camera leaves Ignored with the slice matcher (off by default);
+                    // OAKSOUL_GAP_FILLER_BUDGET_MS sets its time per frame, OAKSOUL_GAP_FINDS_DIR collects crops of the finds that start tracks.
+                    GapFiller = Environment.GetEnvironmentVariable("OAKSOUL_GAP_FILLER") is "on" or "1",
+                    GapFillerBudgetMs = double.TryParse(Environment.GetEnvironmentVariable("OAKSOUL_GAP_FILLER_BUDGET_MS"), System.Globalization.CultureInfo.InvariantCulture, out var budget) && budget > 0 ? budget : 2.0,
+                    GapFindsDir = Environment.GetEnvironmentVariable("OAKSOUL_GAP_FINDS_DIR") is { Length: > 0 } gapDir ? gapDir : null,
                     // A map with info/cloud draws drifting clouds over its mobs; the matcher sees through them.
                     Clouds = map.Cloud && _clouds is not null ? new CloudLayer(_clouds, map.Vr.Left, map.Vr.Right) : null,
                 };
@@ -280,6 +285,43 @@ public sealed class EntityWatch
             _lastSummary = summary;
         }
         return refined;
+    }
+
+    /// <summary>
+    /// The gap filler's report (OAKSOUL_GAP_FILLER): per moving frame its time against the budget, the share of the blind band's
+    /// slices it searched, its finds and what the tracker made of them; nothing when it was off.
+    /// </summary>
+    public void PrintGapFiller(TextWriter o)
+    {
+        var detectors = Detectors.Where(d => d.GapFiller).ToList();
+        if (detectors.Count == 0) return;
+        static double Pct(List<double> v, double p)
+        {
+            if (v.Count == 0) return 0;
+            var s = v.OrderBy(x => x).ToList();
+            return s[(int)Math.Clamp(Math.Round(p / 100 * (s.Count - 1)), 0, s.Count - 1)];
+        }
+        var frames = detectors.SelectMany(d => d.GapFrames).ToList();
+        var budget = detectors[0].GapFillerBudgetMs;
+        var ms = frames.Select(g => g.Ms).ToList();
+        var withBand = frames.Where(g => g.Available > 0).ToList();
+        var coverage = withBand.Select(g => (double)g.Searched / g.Available).ToList();
+        o.WriteLine($"== gap filler (budget {budget:0.0} ms per moving frame) ==");
+        o.WriteLine($"  moving frames {frames.Count}, still frames {detectors.Sum(d => d.GapStillFrames)}; time per moving frame: median {Pct(ms, 50):0.00} ms, p90 {Pct(ms, 90):0.00}, max {(ms.Count == 0 ? 0 : ms.Max()):0.00}," +
+                    $" over budget on {ms.Count(m => m > budget)} of {ms.Count}; total {detectors.Sum(d => d.GapFillerMs):0} ms");
+        o.WriteLine($"    of which (median per moving frame): masks and slicing {Pct(frames.Select(g => g.PrepMs).ToList(), 50):0.00} ms (max {frames.Select(g => g.PrepMs).DefaultIfEmpty(0).Max():0.00})," +
+                    $" mob searches {Pct(frames.Select(g => g.MobMs).ToList(), 50):0.00}, coin searches {Pct(frames.Select(g => g.MesoMs).ToList(), 50):0.00}");
+        o.WriteLine($"  blind slices: on {withBand.Count} of {frames.Count} moving frames; available per such frame median {Pct(withBand.Select(g => (double)g.Available).ToList(), 50):0}, searched median {Pct(withBand.Select(g => (double)g.Searched).ToList(), 50):0};" +
+                    $" coverage (searched / available) median {Pct(coverage, 50):0.0000}, p90 {Pct(coverage, 90):0.0000}, max {(coverage.Count == 0 ? 0 : coverage.Max()):0.0000}; total {frames.Sum(g => (long)g.Searched):N0} of {frames.Sum(g => (long)g.Available):N0}");
+        o.WriteLine($"  finds {frames.Sum(g => g.Finds)} on {frames.Count(g => g.Finds > 0)} frames: {frames.Sum(g => g.Duplicates)} already shown by a candidate, {frames.Sum(g => g.Attached)} verified an unmatched blob, {frames.Sum(g => g.Added)} added;" +
+                    $" of the {frames.Sum(g => g.Attached + g.Added)} passed on, {frames.Sum(g => g.NewTracks)} started a new track, {frames.Sum(g => g.MatchedTracks)} joined a track that existed, {frames.Sum(g => g.Absorbed)} absorbed by the tracker into another candidate");
+        o.WriteLine($"  slice searches: mobs {string.Join("; ", detectors.Select(d => d.GapMobStats))}; coins {string.Join("; ", detectors.Select(d => d.GapMesoStats))}");
+        var moving = frames.Select(g => g.DetectorMs).ToList();
+        var movingSet = frames.Select(g => g.Frame).ToHashSet();
+        var still = Rows.Where(r => r.Result.Camera is not null && !movingSet.Contains(r.Result.Frame)).Select(r => r.Result.Milliseconds).ToList();
+        o.WriteLine($"  detector ms per frame (gap filler included): moving frames median {Pct(moving, 50):0.0}, p90 {Pct(moving, 90):0.0}; other detected frames median {Pct(still, 50):0.0}, p90 {Pct(still, 90):0.0}");
+        foreach (var nt in detectors.SelectMany(d => d.GapNewTracks))
+            o.WriteLine($"    new track #{nt.TrackId} ({nt.Kind.ToString().ToLowerInvariant()}) seq {nt.Sequence}: {nt.Name} {nt.FrameKey} box {nt.Box.Width}x{nt.Box.Height}+{nt.Box.X}+{nt.Box.Y}, distance {nt.Distance:0.000}");
     }
 
     /// <summary>The skipped frames by reason, as one line.</summary>
