@@ -225,6 +225,8 @@ public sealed class EntityWatch
                     GapFiller = Environment.GetEnvironmentVariable("OAKSOUL_GAP_FILLER") is "on" or "1",
                     GapFillerBudgetMs = double.TryParse(Environment.GetEnvironmentVariable("OAKSOUL_GAP_FILLER_BUDGET_MS"), System.Globalization.CultureInfo.InvariantCulture, out var budget) && budget > 0 ? budget : 2.0,
                     GapFindsDir = Environment.GetEnvironmentVariable("OAKSOUL_GAP_FINDS_DIR") is { Length: > 0 } gapDir ? gapDir : null,
+                    // OAKSOUL_GAP_PROBE_EVERY=N times a 1-slice and a 40-slice search on every Nth moving frame, outside the frame's time.
+                    GapProbeEvery = int.TryParse(Environment.GetEnvironmentVariable("OAKSOUL_GAP_PROBE_EVERY"), out var probe) && probe > 0 ? probe : 0,
                     // A map with info/cloud draws drifting clouds over its mobs; the matcher sees through them.
                     Clouds = map.Cloud && _clouds is not null ? new CloudLayer(_clouds, map.Vr.Left, map.Vr.Right) : null,
                 };
@@ -316,6 +318,22 @@ public sealed class EntityWatch
         o.WriteLine($"  finds {frames.Sum(g => g.Finds)} on {frames.Count(g => g.Finds > 0)} frames: {frames.Sum(g => g.Duplicates)} already shown by a candidate, {frames.Sum(g => g.Attached)} verified an unmatched blob, {frames.Sum(g => g.Added)} added;" +
                     $" of the {frames.Sum(g => g.Attached + g.Added)} passed on, {frames.Sum(g => g.NewTracks)} started a new track, {frames.Sum(g => g.MatchedTracks)} joined a track that existed, {frames.Sum(g => g.Absorbed)} absorbed by the tracker into another candidate");
         o.WriteLine($"  slice searches: mobs {string.Join("; ", detectors.Select(d => d.GapMobStats))}; coins {string.Join("; ", detectors.Select(d => d.GapMesoStats))}");
+        var calls = detectors.SelectMany(d => d.GapCalls).ToList();
+        o.WriteLine($"  searches {calls.Count} ({calls.Count / (double)Math.Max(1, frames.Count):0.00} per moving frame), slices per search median {Pct(calls.Select(c => (double)c.Slices).ToList(), 50):0}, p10 {Pct(calls.Select(c => (double)c.Slices).ToList(), 10):0}, max {calls.Select(c => c.Slices).DefaultIfEmpty(0).Max()};" +
+                    $" ms per search (mobs + coins) median {Pct(calls.Select(c => c.MobMs + c.MesoMs).ToList(), 50):0.00}; cost model at the end: fixed {string.Join("/", detectors.Select(d => d.GapFixedMs.ToString("0.000", System.Globalization.CultureInfo.InvariantCulture)))} ms per search," +
+                    $" marginal {string.Join("/", detectors.Select(d => d.GapMarginalMs.ToString("0.0000", System.Globalization.CultureInfo.InvariantCulture)))} ms per slice");
+        if (calls.Count > 0)
+        {
+            // Each search's time beyond the fixed part, per slice, over the whole run.
+            var fixedMs = detectors[0].GapFixedMs;
+            var rates = calls.Select(c => Math.Max(c.MobMs + c.MesoMs - fixedMs, 0) / c.Slices).ToList();
+            o.WriteLine($"    per slice beyond the fixed {fixedMs:0.00} ms, over all {calls.Count} searches: median {Pct(rates, 50):0.0000} ms, p90 {Pct(rates, 90):0.0000}, max {rates.Max():0.0000}");
+        }
+        var probes = detectors.SelectMany(d => d.GapProbes).ToList();
+        if (probes.Count > 0)
+            o.WriteLine($"  probes ({probes.Count} moving frames, outside the frame's time; median ms): 1 slice mobs {Pct(probes.Select(p => p.Mob1).ToList(), 50):0.000} + coins {Pct(probes.Select(p => p.Meso1).ToList(), 50):0.000}," +
+                        $" {EntityDetector.GapProbeSlices} slices mobs {Pct(probes.Select(p => p.Mob40).ToList(), 50):0.000} + coins {Pct(probes.Select(p => p.Meso40).ToList(), 50):0.000};" +
+                        $" marginal from the medians {(Pct(probes.Select(p => p.Mob40 + p.Meso40).ToList(), 50) - Pct(probes.Select(p => p.Mob1 + p.Meso1).ToList(), 50)) / (EntityDetector.GapProbeSlices - 1):0.0000} ms per slice");
         var moving = frames.Select(g => g.DetectorMs).ToList();
         var movingSet = frames.Select(g => g.Frame).ToHashSet();
         var still = Rows.Where(r => r.Result.Camera is not null && !movingSet.Contains(r.Result.Frame)).Select(r => r.Result.Milliseconds).ToList();

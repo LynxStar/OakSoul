@@ -149,7 +149,12 @@ public sealed partial class EntityDetector
     }
 
     /// <summary>Builds what the detector's sprite sets need before the first frame (the effects' anchor index), so no frame pays for it.</summary>
-    public void Prepare() => BuildEffectIndex();
+    public void Prepare()
+    {
+        BuildEffectIndex();
+        // The gap filler's candidate sets (a dozen milliseconds), when it is on.
+        if (GapFiller) PrepareGapSets();
+    }
 
     /// <summary>Mobs found by the foothold search: new ones where no blob was (over parallax background), and blobs no box alignment matched.</summary>
     public int SweepFinds { get; private set; }

@@ -22,8 +22,10 @@ public sealed partial class EntityDetector
     public bool GapFiller { get; set; }
 
     /// <summary>
-    /// The gap filler's time per frame, its slicing included. The stopwatch is checked between searches; the first search of a
-    /// frame (one slice at least) always runs, so a frame can overrun by what that search costs.
+    /// The gap filler's time per frame, its slicing included. The first <see cref="GapFirstChunk"/> slices of a moving frame are
+    /// always searched; further searches run while the cost model (<see cref="GapFixedMs"/>, <see cref="GapMarginalMs"/>) says the
+    /// budget left buys <see cref="GapMinChunk"/> slices or more. A frame overruns by what its searches cost beyond the model: a
+    /// slice's cost depends on what lies on it.
     /// </summary>
     public double GapFillerBudgetMs { get; set; } = 2.0;
 
@@ -81,11 +83,11 @@ public sealed partial class EntityDetector
 
     private HudLayout? _gapLayout;
     private ScreenMask? _gapMask, _gapMatchMask;
-    private byte[] _gapExplained = [];
     private (int X, int Y)? _gapLastCamera;
     private MapData? _gapMap;
     private Dictionary<int, int> _gapFloorOf = [];
     private List<SliceMatcher.Candidate>? _gapMobs, _gapMesos;
+    private SliceMatcher.CandidateSet? _gapMobSet, _gapMesoSet;
     private Dictionary<SpriteFrame, MobSpecies> _gapSpecies = new(ReferenceEqualityComparer.Instance);
     private Dictionary<SpriteFrame, string> _gapCoinOf = new(ReferenceEqualityComparer.Instance);
     private static readonly SliceMatcher.Options MesoSliceOptions = new() { FloorRows = 8 };
@@ -93,23 +95,62 @@ public sealed partial class EntityDetector
     /// <summary>Where the next frame's walk starts: a floor (its index in <see cref="FootholdSlices.Floors"/>) and a world column on it.</summary>
     private (int Floor, int Wx) _gapCursor;
 
-    /// <summary>Running estimate of a searched slice's cost (ms), mobs and coins together, to size each search to the budget left.</summary>
-    private double _gapMsPerSlice = 1.0;
+    /// <summary>
+    /// Slices every moving frame searches, whatever the budget left says, in one search where the runs allow (<see cref="GapChunkRows"/>):
+    /// a search carries a fixed cost (the screen cells for the rows its slices reach, both for the mobs and the coins, about 0.5 ms),
+    /// so searches of one to three slices had spent the budget on that overhead. 40 slices cost a typical 0.5 + 40 x 0.02 ms, which
+    /// with the masks and the slicing (about 0.2 ms) fits the 2 ms budget; sizing the first search by the cost model instead
+    /// overran the budget on most frames at the median rate and searched about 24 slices at its 75th percentile.
+    /// </summary>
+    public const int GapFirstChunk = 40;
+
+    /// <summary>
+    /// The most rows a search's slices' lines may spread over (runs further apart in height go to the next search, which pays the
+    /// fixed cost again). At 48 the 40 slices every frame searches took 1.52 searches per moving frame over fx-combat-exact (a tenth
+    /// of the searches 11 slices or fewer); the screen a search prepares spans the sprites' height besides, so a wider spread costs
+    /// less than a second search.
+    /// </summary>
+    public const int GapChunkRows = 128;
+
+    /// <summary>A later search of the frame runs only if the budget left buys at least this many slices beyond its fixed cost.</summary>
+    public const int GapMinChunk = 8;
+
+    /// <summary>
+    /// The cost model a search is sized by: <see cref="GapFixedMs"/> per search (mobs and coins over the same slices) plus
+    /// <see cref="GapMarginalMs"/> per slice. The fixed part is set, not fitted: a 1-slice search of both lists took a median
+    /// 0.54 ms on the first 15 s of fx-combat-exact (the probes, <see cref="GapProbeEvery"/>), which is nearly all fixed cost.
+    /// The marginal rate is the median, over the last <see cref="GapFitWindow"/> searches, of each one's time beyond the fixed
+    /// part per slice: a slice's cost depends on what lies on it (over mist the lift index retrieves many placements), so a
+    /// least-squares fit on searches of nearly equal sizes was dominated by that spread and drove the fixed part to 17 ms.
+    /// </summary>
+    public double GapFixedMs { get; } = 0.5;
+    public double GapMarginalMs { get; private set; } = 0.03;
+    public const int GapFitWindow = 64;
+    private readonly Queue<double> _gapFit = new();
+
+    /// <summary>Every search the gap filler ran: its slices and its milliseconds for the mobs and for the coins.</summary>
+    public List<(int Slices, double MobMs, double MesoMs)> GapCalls { get; } = [];
+
+    /// <summary>
+    /// Diagnostics (EntityWatch: OAKSOUL_GAP_PROBE_EVERY=N): on every Nth moving frame, after the frame is done and outside its time,
+    /// one search of 1 slice and one of 40 on the frame's longest run (mobs, then coins), timed; their finds are dropped. 0 is off.
+    /// </summary>
+    public int GapProbeEvery { get; set; }
+    public const int GapProbeSlices = 40;
+
+    /// <summary>The probes: milliseconds of the mob and the coin search over 1 slice and over <see cref="GapProbeSlices"/>.</summary>
+    public List<(double Mob1, double Meso1, double Mob40, double Meso40)> GapProbes { get; } = [];
+    private List<FootholdSlices.Run> _gapRuns = [];
+    private int _gapMoving;
 
     /// <summary>This frame's gap candidates, and what each was, for counting the tracker's answer.</summary>
     private readonly List<(Candidate Candidate, SliceMatcher.Find Find, bool Attached)> _gapCandidates = [];
     private GapFrame? _gapPending;
 
-    /// <summary>The candidate lists, once per map: every frame of the map's ground mobs (not flyers), named by species, and every meso coin frame.</summary>
-    private void PrepareGapCandidates(MapData map)
+    /// <summary>The candidate lists and their sets (the matcher's layout and seed index), laid out once: every frame of the map's ground mobs (not flyers), named by species, and every meso coin frame.</summary>
+    private void PrepareGapSets()
     {
-        if (ReferenceEquals(_gapMap, map)) return;
-        _gapMap = map;
-        var floors = FootholdSlices.Floors(map.Footholds);
-        _gapFloorOf = [];
-        for (var i = 0; i < floors.Count; i++)
-            foreach (var fh in floors[i]) _gapFloorOf[fh.Id] = i;
-        _gapCursor = (0, int.MinValue);
+        if (_gapMobs is not null) return;
         _gapSpecies = new(ReferenceEqualityComparer.Instance);
         _gapCoinOf = new(ReferenceEqualityComparer.Instance);
         _gapMobs = [];
@@ -129,6 +170,25 @@ public sealed partial class EntityDetector
                 if (!_gapCoinOf.TryAdd(f, key)) continue;
                 _gapMesos.Add(new SliceMatcher.Candidate("meso", f));
             }
+        _gapMobSet = new SliceMatcher.CandidateSet(_gapMobs, new SliceMatcher.Options().SeedPixels);
+        _gapMesoSet = new SliceMatcher.CandidateSet(_gapMesos, MesoSliceOptions.SeedPixels);
+        GapMobStats.IndexMs += _gapMobSet.BuildMs;
+        GapMesoStats.IndexMs += _gapMesoSet.BuildMs;
+    }
+
+    /// <summary>The map's floors by foothold, for the cursor.</summary>
+    private void PrepareGapMap(MapData map)
+    {
+        if (ReferenceEquals(_gapMap, map)) return;
+        _gapMap = map;
+        // Floors ranked top to bottom by their mean line, so the walk goes from a floor to the one nearest it in height and a search
+        // over consecutive runs reaches few rows.
+        var floors = FootholdSlices.Plan.Of(map.Footholds).Floors
+            .Select(f => (f, Mean: f.Line.Where(l => l != int.MinValue).Average())).OrderBy(f => f.Mean).ToList();
+        _gapFloorOf = [];
+        for (var i = 0; i < floors.Count; i++)
+            foreach (var id in floors[i].f.FootholdId) _gapFloorOf.TryAdd(id, i);
+        _gapCursor = (0, int.MinValue);
     }
 
     /// <summary>
@@ -140,44 +200,58 @@ public sealed partial class EntityDetector
     {
         _gapCandidates.Clear();
         _gapPending = null;
+        _gapRuns = [];
         var last = _gapLastCamera;
         _gapLastCamera = (camX, camY);
         if (last == (camX, camY)) { GapStillFrames++; return 0; }
         var t0 = Stopwatch.GetTimestamp();
         double Elapsed() => Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
-        PrepareGapCandidates(ctx.Map);
+        PrepareGapSets();
+        PrepareGapMap(ctx.Map);
         var vp = _mask.Viewport;
         int w = _mask.Width, h = _mask.Height, n = w * h;
         _gapMask ??= new ScreenMask(_gapLayout!, [LogRegion]);
         _gapMatchMask ??= new ScreenMask(_gapLayout!, [LogRegion]);
-        if (_gapExplained.Length != n) _gapExplained = new byte[n];
-        else Array.Clear(_gapExplained);
-        // The predicted sprites' pixels: the temporal pass's explained buffer (a temporal frame), and every verified prediction's
-        // opaque pixels (on a full frame the buffer is not kept).
-        if (_matcher.Explained is { } ex && ex.Length == n)
-            for (var p = 0; p < n; p++) _gapExplained[p] = ex[p];
-        foreach (var pr in predictions)
-        {
-            var m = pr.Match;
-            for (var i = 0; i < m.Frame.PixelX.Length; i++)
-            {
-                int x = m.Left + m.Frame.PixelX[i] - vp.X, y = m.Top + m.Frame.PixelY[i] - vp.Y;
-                if ((uint)x < (uint)w && (uint)y < (uint)h) _gapExplained[y * w + x] = 1;
-            }
-        }
-        // The matcher compares every pixel but the masked and the predicted; the slices are built only over the Ignored pixels
-        // nothing explains (every other pixel is known to the slicing).
+        // One pass over the pixels: the matcher compares every pixel but the masked and the predicted (the temporal pass's
+        // explained buffer, read in place); the slices are built only over the Ignored pixels nothing explains.
         var bits = _mask.Bits;
         var cls = _fg.Classes;
         var gapBits = _gapMask.Bits;
         var matchBits = _gapMatchMask.Bits;
-        for (var p = 0; p < n; p++)
+        var ex = _matcher.Explained is { } e0 && e0.Length == n ? e0 : null;
         {
-            var known = (byte)(bits[p] | _gapExplained[p]);
-            matchBits[p] = known;
-            gapBits[p] = (byte)(known | (cls[p] != (byte)PixelClass.Ignored ? 1 : 0));
+            var vs = System.Numerics.Vector<byte>.Count;
+            var ignored = new System.Numerics.Vector<byte>((byte)PixelClass.Ignored);
+            var one = new System.Numerics.Vector<byte>(1);
+            var p = 0;
+            for (; p <= n - vs; p += vs)
+            {
+                var known = new System.Numerics.Vector<byte>(bits, p);
+                if (ex is not null) known |= new System.Numerics.Vector<byte>(ex, p);
+                known.CopyTo(matchBits, p);
+                (known | ~System.Numerics.Vector.Equals(new System.Numerics.Vector<byte>(cls, p), ignored) & one).CopyTo(gapBits, p);
+            }
+            for (; p < n; p++)
+            {
+                var known = (byte)(bits[p] | (ex is null ? 0 : ex[p]));
+                matchBits[p] = known;
+                gapBits[p] = (byte)(known | (cls[p] != (byte)PixelClass.Ignored ? 1 : 0));
+            }
         }
+        // On a full frame the predictions explain nothing in the buffer: their opaque pixels are marked here.
+        if (ex is null)
+            foreach (var pr in predictions)
+            {
+                var m = pr.Match;
+                for (var i = 0; i < m.Frame.PixelX.Length; i++)
+                {
+                    int x = m.Left + m.Frame.PixelX[i] - vp.X, y = m.Top + m.Frame.PixelY[i] - vp.Y;
+                    if ((uint)x < (uint)w && (uint)y < (uint)h) matchBits[y * w + x] = gapBits[y * w + x] = 1;
+                }
+            }
         var runs = FootholdSlices.Build(frame, frameWidth, _gapMask, _mosaic, camX, camY, ctx.Map.Footholds, GapMinRun);
+        _gapRuns = runs;
+        runs.Sort((a, b) => (_gapFloorOf.GetValueOrDefault(a.Slices[0].FootholdId, int.MaxValue), a.X0).CompareTo((_gapFloorOf.GetValueOrDefault(b.Slices[0].FootholdId, int.MaxValue), b.X0)));
         var available = runs.Sum(r => r.Width);
         var prepMs = Elapsed();
         double mobMs = 0, mesoMs = 0;
@@ -185,7 +259,7 @@ public sealed partial class EntityDetector
         var searched = 0;
         if (available > 0 && (_gapMobs!.Count > 0 || _gapMesos!.Count > 0))
         {
-            // The walk starts at the first slice at or after the cursor, in the runs' order (floor by floor, left to right).
+            // The walk starts at the first slice at or after the cursor, in the runs' order (floor by floor top to bottom, left to right).
             int Floor(FootholdSlices.Slice s) => _gapFloorOf.GetValueOrDefault(s.FootholdId, int.MaxValue);
             (int, int) Key(FootholdSlices.Slice s) => (Floor(s), camX + s.X);
             int ri = 0, si = 0;
@@ -194,27 +268,47 @@ public sealed partial class EntityDetector
                 for (var s = 0; s < runs[r].Slices.Count && !found; s++)
                     if (Key(runs[r].Slices[s]).CompareTo(_gapCursor) >= 0) { ri = r; si = s; found = true; }
             FootholdSlices.Slice? lastSearched = null;
+            var chunk = new List<FootholdSlices.Run>();
             while (searched < available)
             {
+                // The first GapFirstChunk slices always; then what the budget left buys beyond one search's fixed cost.
                 var left = GapFillerBudgetMs - Elapsed();
-                if (searched > 0 && left < _gapMsPerSlice) break;
-                var run = runs[ri];
-                var take = Math.Clamp((int)(left / _gapMsPerSlice), 1, Math.Min(run.Slices.Count - si, available - searched));
-                var chunk = new FootholdSlices.Run(run.Slices.Skip(si).Take(take).ToArray());
+                var buys = (int)Math.Min(int.MaxValue / 2, Math.Max(0, (left - GapFixedMs) / GapMarginalMs));
+                int take;
+                if (searched < GapFirstChunk) take = GapFirstChunk - searched;
+                else if (buys < GapMinChunk) break;
+                else take = buys;
+                take = Math.Min(take, available - searched);
+                // Whole runs, or a run's stretch, from the walk's place on (wrapping to the first run), as long as their lines stay
+                // within GapChunkRows of each other: a search prepares the screen for every row its slices can reach.
+                chunk.Clear();
+                int got = 0, lineMin = int.MaxValue, lineMax = int.MinValue;
+                while (got < take)
+                {
+                    var run = runs[ri];
+                    var k = Math.Min(take - got, run.Slices.Count - si);
+                    int lo = lineMin, hi = lineMax;
+                    for (var j = si; j < si + k; j++) { lo = Math.Min(lo, run.Slices[j].LineY); hi = Math.Max(hi, run.Slices[j].LineY); }
+                    if (got > 0 && hi - lo > GapChunkRows) break;
+                    lineMin = lo; lineMax = hi;
+                    chunk.Add(si == 0 && k == run.Slices.Count ? run : new FootholdSlices.Run(run.Slices.Skip(si).Take(k).ToArray()));
+                    lastSearched = run.Slices[si + k - 1];
+                    got += k;
+                    si += k;
+                    if (si >= run.Slices.Count) { si = 0; ri = (ri + 1) % runs.Count; }
+                }
+                take = got;
                 var c0 = Elapsed();
                 if (_gapMobs!.Count > 0)
-                    foreach (var f in SliceMatcher.Search(frame, frameWidth, _gapMatchMask, _mosaic, camX, camY, [chunk], _gapMobs, null, GapMobStats)) Keep(f, false);
+                    foreach (var f in SliceMatcher.Search(frame, frameWidth, _gapMatchMask, _mosaic, camX, camY, chunk, _gapMobSet!, null, GapMobStats)) Keep(f, false);
                 var c1 = Elapsed();
                 if (_gapMesos!.Count > 0)
-                    foreach (var f in SliceMatcher.Search(frame, frameWidth, _gapMatchMask, _mosaic, camX, camY, [chunk], _gapMesos, MesoSliceOptions, GapMesoStats)) Keep(f, true);
+                    foreach (var f in SliceMatcher.Search(frame, frameWidth, _gapMatchMask, _mosaic, camX, camY, chunk, _gapMesoSet!, MesoSliceOptions, GapMesoStats)) Keep(f, true);
                 var c2 = Elapsed();
                 mobMs += c1 - c0; mesoMs += c2 - c1;
-                var cost = (c2 - c0) / take;
-                _gapMsPerSlice = 0.5 * _gapMsPerSlice + 0.5 * Math.Max(cost, 1e-3);
+                GapCalls.Add((take, c1 - c0, c2 - c1));
+                FitGapCost(take, c2 - c0);
                 searched += take;
-                lastSearched = run.Slices[si + take - 1];
-                si += take;
-                if (si >= run.Slices.Count) { si = 0; ri = (ri + 1) % runs.Count; }
             }
             if (lastSearched is { } ls) _gapCursor = searched >= available ? _gapCursor : (Floor(ls), camX + ls.X + 1);
         }
@@ -274,6 +368,34 @@ public sealed partial class EntityDetector
         return (double)w * h / Math.Max(1, Math.Min(a.Width * a.Height, b.Width * b.Height));
     }
 
+    /// <summary>Adds a search to the cost model: the marginal rate is the median of the recent searches' time beyond the fixed part, per slice.</summary>
+    private void FitGapCost(int slices, double ms)
+    {
+        _gapFit.Enqueue(Math.Max(ms - GapFixedMs, 0) / slices);
+        if (_gapFit.Count > GapFitWindow) _gapFit.Dequeue();
+        var sorted = _gapFit.OrderBy(r => r).ToList();
+        GapMarginalMs = Math.Max(sorted[sorted.Count / 2], 0.002);
+    }
+
+    /// <summary>The probe (<see cref="GapProbeEvery"/>): one search of 1 slice and one of <see cref="GapProbeSlices"/> on the frame's longest run, timed apart.</summary>
+    private void ProbeGapCost(ReadOnlySpan<byte> frame, int frameWidth, int camX, int camY)
+    {
+        if (_gapRuns.Count == 0 || _gapMobSet is null || _gapMesoSet is null) return;
+        var run = _gapRuns.MaxBy(r => r.Width)!;
+        if (run.Width < GapProbeSlices) return;
+        double Time(ReadOnlySpan<byte> fr, FootholdSlices.Run r, bool meso)
+        {
+            var t = Stopwatch.GetTimestamp();
+            if (meso) SliceMatcher.Search(fr, frameWidth, _gapMatchMask!, _mosaic, camX, camY, [r], _gapMesoSet, MesoSliceOptions, new SliceMatcher.Stats());
+            else SliceMatcher.Search(fr, frameWidth, _gapMatchMask!, _mosaic, camX, camY, [r], _gapMobSet, null, new SliceMatcher.Stats());
+            return Stopwatch.GetElapsedTime(t).TotalMilliseconds;
+        }
+        var mid = (run.Width - GapProbeSlices) / 2;
+        var r1 = new FootholdSlices.Run(run.Slices.Skip(mid).Take(1).ToArray());
+        var r40 = new FootholdSlices.Run(run.Slices.Skip(mid).Take(GapProbeSlices).ToArray());
+        GapProbes.Add((Time(frame, r1, false), Time(frame, r1, true), Time(frame, r40, false), Time(frame, r40, true)));
+    }
+
     /// <summary>After the tracker: which gap candidates started a track and which joined one; the frame's counters; crops of the new ones.</summary>
     private void CountGapTracks(List<Candidate> candidates, List<DetectedEntity> entities, ReadOnlySpan<byte> frame, int frameWidth, DetectionContext ctx, double detectorMs)
     {
@@ -295,6 +417,7 @@ public sealed partial class EntityDetector
             else matched++;
         }
         GapFrames.Add(g with { DetectorMs = detectorMs, NewTracks = fresh, MatchedTracks = matched, Absorbed = absorbed });
+        if (GapProbeEvery > 0 && ++_gapMoving % GapProbeEvery == 0 && ctx.Camera is not null && _gapLastCamera is { } cam) ProbeGapCost(frame, frameWidth, cam.X, cam.Y);
         _gapPending = null;
         _gapCandidates.Clear();
     }
