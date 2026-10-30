@@ -4,9 +4,10 @@ using OakSoul.Vision;
 namespace OakSoul.Detect;
 
 /// <summary>
-/// Which pixels of the world viewport belong to the world, per frame: the HUD regions drawn over it and the own
-/// character are excluded from both the background mosaic and detection. One byte per viewport pixel, 1 = excluded.
-/// The fixed HUD part is computed once; <see cref="Reset"/> restores it before the per-frame rectangles are added.
+/// Which pixels of the world viewport (the whole frame) belong to the world, per frame: the HUD regions drawn over it, the
+/// window's rounded bottom corners and the own character are excluded from both the background mosaic and detection. One
+/// byte per viewport pixel, 1 = excluded. The fixed part is computed once; <see cref="Reset"/> restores it before the
+/// per-frame rectangles are added.
 /// </summary>
 public sealed class ScreenMask
 {
@@ -18,10 +19,11 @@ public sealed class ScreenMask
     public static readonly string[] FixedHudRegions = ["buffs.row1", "quickslot", "exp_loot_log"];
 
     /// <summary>
-    /// The chat bar's frame starts two rows above the viewport's bottom edge (row 700 from x 284, measured on the
-    /// fx-combat keyframes), so its top rows, which the layout counts as world, are masked too.
+    /// Regions masked exactly as measured, without the fixed regions' padding: the bottom HUD (chat bar, chat icons and
+    /// status bar, x 279 to 1086 from row 695 to the frame's last row, their shadow included) and the window's two rounded
+    /// bottom corners. Beside the bottom HUD the map shows down to the last row, so the corners are world.
     /// </summary>
-    public static readonly CaptureRect ChatBarTop = new(282, 696, 804, 6);
+    public static readonly string[] ExactHudRegions = ["hud.bottom", "window.corner_left", "window.corner_right"];
 
     /// <summary>The largest minimap panel seen on the fixtures (about 260x230 at the top-left), used when the reader found none.</summary>
     public static readonly CaptureRect DefaultMinimapPanel = new(0, 0, 262, 232);
@@ -38,7 +40,8 @@ public sealed class ScreenMask
         Bits = new byte[_fixed.Length];
         foreach (var name in FixedHudRegions)
             if (unmasked?.Contains(name) != true && layout.TryGet(name, out var region)) Fill(_fixed, region.Rect, 2);
-        Fill(_fixed, ChatBarTop, 0);
+        foreach (var name in ExactHudRegions)
+            if (layout.TryGet(name, out var region)) Fill(_fixed, region.Rect, 0);
         Reset();
     }
 

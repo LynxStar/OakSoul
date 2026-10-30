@@ -22,6 +22,12 @@ public sealed class NameTagLocator
     public const int TextLuma = 140, GapLuma = 130;
 
     /// <summary>
+    /// The layout region the tag is learned and searched in: the rows above the chat bar (the world viewport before it took the
+    /// whole frame), not the world viewport itself, whose bottom rows hold the status bar, where OCR reads the name too.
+    /// </summary>
+    public const string SearchRegion = "own_tag.search";
+
+    /// <summary>
     /// Share of the template's text columns that must match pixel for pixel (every text pixel bright, every gap pixel
     /// dark) for a partly hidden tag. On fx-exact an unhidden tag matches all its columns; tags under a lightning bolt,
     /// a rope with the pet's tag, or the pet itself kept 0.53 to 0.88 of them, while the best place anywhere else in the
@@ -97,7 +103,7 @@ public sealed class NameTagLocator
     /// </summary>
     public bool TryLearn(FrameGeometry geometry, ReadOnlySpan<byte> frame)
     {
-        var viewport = geometry.Layout["world.viewport"];
+        var viewport = geometry.Layout[SearchRegion];
         var native = geometry.ExtractNative(frame, viewport);
         var lines = TextRecognizer.Recognize(OcrInput.ForOcr(geometry, frame, native, viewport.Width, viewport.Height), viewport.Width, viewport.Height, upscale: 2);
         var notes = new List<string>();
@@ -272,7 +278,7 @@ public sealed class NameTagLocator
 
     private NameTagHit? Find(FrameGeometry geometry, ReadOnlySpan<byte> frame, double minTextFraction, double minCombinedFraction)
     {
-        var viewport = geometry.Layout["world.viewport"];
+        var viewport = geometry.Layout[SearchRegion];
         var native = geometry.ExtractNative(frame, viewport);
         int w = viewport.Width, h = viewport.Height;
 

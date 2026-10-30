@@ -6,7 +6,7 @@ namespace OakSoul.World;
 ///
 /// Measured on fx-combat (Deep Valley I, vr -823,26 to 2083,2215) and fx-maps:
 /// <list type="bullet">
-/// <item>View size 1366x768, the whole native frame, not the 702-row world viewport above the HUD. Horizontally, with
+/// <item>View size 1366x768, the whole native frame, not the 702 rows above the chat bar. Horizontally, with
 /// the player at the left edge the dot matched cameraX = vr.Left on every clamped keyframe, and at the right edge
 /// (rope at x 1981) cameraX = vr.Right - 1366. Vertically, standing on the bottom floor (y 2025) the tag feet read
 /// 582 on all 18 such keyframes: 2025 - 582 + 4 = 1447 = vr.Bottom - 768 (a 702-row view would put the feet at 516).</item>

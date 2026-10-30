@@ -19,6 +19,10 @@
     {"id": 16, "name": "exp_loot_log",         "kind": "fixed",       "rect": [1140, 520, 226, 110], "read": "right-aligned log of EXP gained and items picked up; OCR to attribute exp and loot per kill"},
     {"id": 17, "name": "chat.history",         "kind": "provisional", "rect": [290, 560, 792, 140], "read": "expanded chat log; collapsed in this frame; ignore unless party chat is needed"},
     {"id": 18, "name": "own_character",        "kind": "dynamic",     "rect": [728, 578, 70, 72],  "read": "found each frame by own name tag (white text on dark box); feet = tag top minus a fixed offset; camera-to-world anchor"},
-    {"id": 19, "name": "world.viewport",       "kind": "fixed",       "rect": [0, 0, 1366, 702],   "read": "detectors for mobs, drops, players, ladders run here with regions 1, 13, 14 masked out"}
+    {"id": 19, "name": "world.viewport",       "kind": "fixed",       "rect": [0, 0, 1366, 768],   "read": "the whole frame: detectors for mobs, drops, players, ladders run here with regions 1, 13, 14, 20, 21 and 22 masked out; the map shows down to the last row beside the bottom HUD"},
+    {"id": 20, "name": "hud.bottom",           "kind": "fixed",       "rect": [279, 695, 808, 73], "read": "chat bar, chat icons and status bar with its buttons (outline x 283..1082 from row 700, rounded corners), and the shadow the client draws around them: 4 columns either side (x 279..282, 1083..1086) and 5 rows above (695..699), measured on fx-combat-exact against the mosaic; masked as drawn, no padding"},
+    {"id": 21, "name": "window.corner_left",   "kind": "fixed",       "rect": [0, 756, 12, 12],    "read": "the macOS window's rounded bottom-left corner: white and anti-aliased pixels, up to 12 wide on the last row; masked"},
+    {"id": 22, "name": "window.corner_right",  "kind": "fixed",       "rect": [1354, 756, 12, 12], "read": "the macOS window's rounded bottom-right corner, as region 21; masked"},
+    {"id": 23, "name": "own_tag.search",       "kind": "fixed",       "rect": [0, 0, 1366, 702],   "read": "where the own name tag is learned (OCR) and searched: the rows above the chat bar, since the status bar shows the name too"}
   ]
 }
