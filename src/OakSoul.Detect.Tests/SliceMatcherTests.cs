@@ -18,10 +18,17 @@ public sealed class SliceMatcherTests(ITestOutputHelper output)
     public void FindsEveryTargetAndNothingElse()
     {
         if (FrameFixture.Load(Frame511) is not { } f) { output.WriteLine("fixture data not on this machine; nothing checked"); return; }
+        // The narrowest widths load the mob library: outside the timing.
+        int mobWidth = f.NarrowestMob(), mesoWidth = f.NarrowestMeso();
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        var mobRuns = FootholdSlices.Build(f.Frame, f.Width, f.Mask, f.Mosaic, f.CameraX, f.CameraY, f.Map.Footholds, f.NarrowestMob());
-        var mesoRuns = FootholdSlices.Build(f.Frame, f.Width, f.Mask, f.Mosaic, f.CameraX, f.CameraY, f.Map.Footholds, f.NarrowestMeso());
+        var mobRuns = FootholdSlices.Build(f.Frame, f.Width, f.Mask, f.Mosaic, f.CameraX, f.CameraY, f.Map.Footholds, mobWidth);
+        var mesoRuns = FootholdSlices.Build(f.Frame, f.Width, f.Mask, f.Mosaic, f.CameraX, f.CameraY, f.Map.Footholds, mesoWidth);
         var slicesMs = sw.Elapsed.TotalMilliseconds;
+        // Again, warm (the floors' plan laid out and the code compiled): what a frame costs in a live run.
+        sw.Restart();
+        FootholdSlices.Build(f.Frame, f.Width, f.Mask, f.Mosaic, f.CameraX, f.CameraY, f.Map.Footholds, mobWidth);
+        FootholdSlices.Build(f.Frame, f.Width, f.Mask, f.Mosaic, f.CameraX, f.CameraY, f.Map.Footholds, mesoWidth);
+        var slicesWarmMs = sw.Elapsed.TotalMilliseconds;
         List<SliceMatcher.Candidate> mobs = f.MobCandidates(), mesos = f.MesoCandidates();
         var mobStats = new SliceMatcher.Stats();
         var mesoStats = new SliceMatcher.Stats();
@@ -33,7 +40,7 @@ public sealed class SliceMatcherTests(ITestOutputHelper output)
         var mesoFinds = SliceMatcher.Search(f.Frame, f.Width, f.Mask, f.Mosaic, f.CameraX, f.CameraY, mesoRuns, mesos, new SliceMatcher.Options { FloorRows = 8 }, stats: mesoStats);
         var mesoMs = sw.Elapsed.TotalMilliseconds;
         var finds = mobFinds.Concat(mesoFinds).ToList();
-        output.WriteLine($"slices {slicesMs:0.0} ms ({mobRuns.Sum(r => r.Slices.Count(s => s.Kind == FootholdSlices.Kind.Live))} live mob slices, " +
+        output.WriteLine($"slices {slicesMs:0.0} ms, warm {slicesWarmMs:0.0} ms ({mobRuns.Sum(r => r.Slices.Count(s => s.Kind == FootholdSlices.Kind.Live))} live mob slices, " +
             $"{mesoRuns.Sum(r => r.Slices.Count(s => s.Kind == FootholdSlices.Kind.Live))} live meso slices); {finds.Count} finds");
         output.WriteLine($"mobs: {mobMs:0.0} ms over {mobs.Count} frames: {mobStats}");
         output.WriteLine($"mesos: {mesoMs:0.0} ms over {mesos.Count} frames: {mesoStats}");
