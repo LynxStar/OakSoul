@@ -6,7 +6,7 @@ using OakSoul.World;
 namespace OakSoul.Detect;
 
 /// <summary>
-/// The gap filler (off by default; <see cref="GapFiller"/>). While the camera moves, the pixels the mosaic cannot vouch for are
+/// The gap filler (on by default; <see cref="GapFiller"/>). While the camera moves, the pixels the mosaic cannot vouch for are
 /// classed Ignored (<see cref="ForegroundExtractor.Difference"/>) and the blob stage sees nothing there; the tracker's predictions
 /// carry the known mobs through, but a new one is missed until the camera stops. On a frame whose camera moved since the last
 /// one, after the temporal pass and the blob stage and before the tracker, the floor band's Ignored pixels that no prediction
@@ -18,8 +18,11 @@ namespace OakSoul.Detect;
 /// </summary>
 public sealed partial class EntityDetector
 {
-    /// <summary>Runs the gap filler on frames whose camera moved (EntityWatch: OAKSOUL_GAP_FILLER=on or 1). Off by default.</summary>
-    public bool GapFiller { get; set; }
+    /// <summary>
+    /// Runs the gap filler on frames whose camera moved. On by default since 2026-10-30, after its measured run on fx-combat-exact
+    /// (README, "Floor slices"); EntityWatch turns it off with OAKSOUL_GAP_FILLER=off or 0.
+    /// </summary>
+    public bool GapFiller { get; set; } = true;
 
     /// <summary>
     /// The gap filler's time per frame, its slicing included: the matcher's own budget (<see cref="SliceMatcher.Options.BudgetMs"/>)

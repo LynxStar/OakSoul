@@ -34,7 +34,7 @@ public enum FoundBy : byte
     /// <summary>The pet found by its tag alone (its sprite did not verify in this frame).</summary>
     Tag,
     /// <summary>
-    /// The gap filler (EntityDetector.GapFiller, off by default): a ground mob's or a meso coin's frame found by the slice search
+    /// The gap filler (EntityDetector.GapFiller, on by default): a ground mob's or a meso coin's frame found by the slice search
     /// (<see cref="SliceMatcher"/>) on the floor band the moving camera left Ignored, where the blob stage sees nothing.
     /// </summary>
     Slice,

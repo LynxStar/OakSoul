@@ -220,9 +220,10 @@ public sealed class EntityWatch
                     // OAKSOUL_TEMPORAL=off runs the full search alone on every frame; OAKSOUL_TEMPORAL_FULL_EVERY=N sets how often it runs.
                     Temporal = Environment.GetEnvironmentVariable("OAKSOUL_TEMPORAL") is not ("off" or "0"),
                     FullEvery = int.TryParse(Environment.GetEnvironmentVariable("OAKSOUL_TEMPORAL_FULL_EVERY"), out var every) && every > 0 ? every : EntityDetector.DefaultFullEvery,
-                    // OAKSOUL_GAP_FILLER=on searches the floor band a moving camera leaves Ignored with the slice matcher (off by default);
-                    // OAKSOUL_GAP_FILLER_BUDGET_MS sets its time per frame, OAKSOUL_GAP_FINDS_DIR collects crops of the finds that start tracks.
-                    GapFiller = Environment.GetEnvironmentVariable("OAKSOUL_GAP_FILLER") is "on" or "1",
+                    // The gap filler searches the floor band a moving camera leaves Ignored with the slice matcher (on by default;
+                    // OAKSOUL_GAP_FILLER=off turns it off); OAKSOUL_GAP_FILLER_BUDGET_MS sets its time per frame, OAKSOUL_GAP_FINDS_DIR
+                    // collects crops of the finds that start tracks.
+                    GapFiller = Environment.GetEnvironmentVariable("OAKSOUL_GAP_FILLER") is not ("off" or "0"),
                     GapFillerBudgetMs = double.TryParse(Environment.GetEnvironmentVariable("OAKSOUL_GAP_FILLER_BUDGET_MS"), System.Globalization.CultureInfo.InvariantCulture, out var budget) && budget > 0 ? budget : 2.0,
                     GapFindsDir = Environment.GetEnvironmentVariable("OAKSOUL_GAP_FINDS_DIR") is { Length: > 0 } gapDir ? gapDir : null,
                     // A map with info/cloud draws drifting clouds over its mobs; the matcher sees through them.
