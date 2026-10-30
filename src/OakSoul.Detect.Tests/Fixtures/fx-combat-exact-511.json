@@ -1,0 +1,24 @@
+{
+  "session": "fx-combat-exact",
+  "seq": 511,
+  "keyframe": "recordings/fx-combat-exact/keyframes/0000511.png",
+  "mapId": 10004100,
+  "camera": [-823, 958],
+  "ownBox": [233, 336, 80, 96],
+  "minimapPanel": [1, 2, 191, 220],
+  "complete": true,
+  "note": "Arthur, 2026-10-30: these 11 are everything on the frame; anything else is the own character or fixed UI. Boxes are approximate (the detector's hitboxes for its sprite matches, Arthur's review boxes for the two under the cloud, the icon boxes for the mesos).",
+  "targets": [
+    { "track": 117, "kind": "mob", "name": "Blue Snail", "rect": [50, 357, 39, 34], "source": "truth r2-cloud-511-snail (Arthur, review 2)" },
+    { "track": 125, "kind": "mob", "name": "Wild Boar", "rect": [57, 343, 71, 47], "source": "truth r2-cloud-511-boar (Arthur, review 2)" },
+    { "track": 114, "kind": "mob", "name": "Dark Stump", "rect": [290, 321, 62, 51], "source": "detector: move/0 R, 1.00" },
+    { "track": 23, "kind": "mob", "name": "Dark Stump", "rect": [762, 308, 61, 51], "source": "detector: move/2 R, 1.00" },
+    { "track": 19, "kind": "mob", "name": "Dark Axe Stump", "rect": [1012, 311, 65, 54], "source": "detector: move/3 L, 1.00" },
+    { "track": 18, "kind": "mob", "name": "Red Snail", "rect": [1183, 404, 39, 34], "source": "detector: move/2 R, 1.00" },
+    { "track": 73, "kind": "mob", "name": "Axe Stump", "rect": [1076, 116, 62, 51], "source": "detector: move/0 L, 1.00" },
+    { "track": 68, "kind": "mob", "name": "Dark Axe Stump", "rect": [1268, 113, 65, 54], "source": "detector: move/3 L, 0.82" },
+    { "track": 145, "kind": "mob", "name": "Dark Axe Stump", "rect": [1308, 113, 66, 54], "source": "detector: move/1 L, 1.00" },
+    { "track": 141, "kind": "meso", "name": "meso", "rect": [331, 569, 18, 20], "source": "detector: icon, 467/467" },
+    { "track": 22, "kind": "meso", "name": "meso", "rect": [926, 338, 23, 24], "source": "detector: icon, 455/455" }
+  ]
+}

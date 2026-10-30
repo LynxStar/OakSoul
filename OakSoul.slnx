@@ -3,6 +3,7 @@
     <Project Path="src/OakSoul.Bake/OakSoul.Bake.csproj" />
     <Project Path="src/OakSoul.Capture/OakSoul.Capture.csproj" />
     <Project Path="src/OakSoul.Detect/OakSoul.Detect.csproj" />
+    <Project Path="src/OakSoul.Detect.Tests/OakSoul.Detect.Tests.csproj" />
     <Project Path="src/OakSoul.MapExport/OakSoul.MapExport.csproj" />
     <Project Path="src/OakSoul.MobExport/OakSoul.MobExport.csproj" />
     <Project Path="src/OakSoul.MobInfo/OakSoul.MobInfo.csproj" />

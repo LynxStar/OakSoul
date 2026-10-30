@@ -33,10 +33,18 @@ public sealed partial class EntityDetector
     private void ClearLogText(ReadOnlySpan<byte> frame, int frameWidth)
     {
         if (_logBox is not { } box) return;
-        var vp = _mask.Viewport;
-        var mask = _fg.Mask;
-        var bits = _mask.Bits;
-        int w = _fg.Width, h = _fg.Height;
+        LogTextPixels += MaskLogText(frame, frameWidth, _mask, box, _fg.Mask);
+    }
+
+    /// <summary>
+    /// Masks the log's text and its shadow for this frame in <paramref name="mask"/> (see <see cref="LogTextChroma"/>) and, given
+    /// the frame's <paramref name="foreground"/>, takes the text out of it; returns how many foreground pixels that took out.
+    /// </summary>
+    public static int MaskLogText(ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, CaptureRect box, byte[]? foreground)
+    {
+        var vp = mask.Viewport;
+        var bits = mask.Bits;
+        int w = mask.Width, h = mask.Height, cleared = 0;
         int ya = Math.Max(box.Y, vp.Y), yb = Math.Min(box.Y + box.Height, vp.Y + h), xa = Math.Max(box.X, vp.X), xb = Math.Min(box.X + box.Width, vp.X + w);
         for (var y = ya; y < yb; y++)
         {
@@ -51,7 +59,7 @@ public sealed partial class EntityDetector
                 var yellow = !grey && Math.Abs(r - g) <= LogTextChroma && b <= Math.Min(r, g) - 48 && r >= 0x60;
                 if (!grey && !yellow) continue;
                 var i = row + x;
-                if (mask[i] != 0) { mask[i] = 0; LogTextPixels++; }
+                if (foreground is not null && foreground[i] != 0) { foreground[i] = 0; cleared++; }
                 // The light text and its black shadow (two pixels down and right, one up and left) are masked for the comparisons too,
                 // as the HUD is, foreground or not: the foothold search's probes counted them against a Horny Mushroom under the log on
                 // fx-anttunnel-open.
@@ -68,8 +76,8 @@ public sealed partial class EntityDetector
                 }
             }
         }
+        return cleared;
     }
-
 
     /// <summary>The HP bar's outer width and height (black, white, black frame around four rows of fill), and the fill's width.</summary>
     public const int HpBarWidth = 52, HpBarHeight = 10, HpBarFill = 46;
