@@ -1,0 +1,63 @@
+using Xunit;
+using Xunit.Abstractions;
+
+namespace OakSoul.Detect.Tests;
+
+/// <summary>
+/// The search on the floor slices (<see cref="SliceMatcher"/>) on fx-combat-exact's frame 511: it must find each of the frame's
+/// eleven things as what it is, and nothing else (Arthur: the rest is the own character or fixed UI).
+/// </summary>
+public sealed class SliceMatcherTests(ITestOutputHelper output)
+{
+    private const string Frame511 = "fx-combat-exact-511";
+
+    /// <summary>Rows a find's bottom may be from a target's box bottom (the boxes are not pixel exact).</summary>
+    private const int BottomRows = 8;
+
+    [Fact]
+    public void FindsEveryTargetAndNothingElse()
+    {
+        if (FrameFixture.Load(Frame511) is not { } f) { output.WriteLine("fixture data not on this machine; nothing checked"); return; }
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var mobRuns = FootholdSlices.Build(f.Frame, f.Width, f.Mask, f.Mosaic, f.CameraX, f.CameraY, f.Map.Footholds, f.NarrowestMob());
+        var mesoRuns = FootholdSlices.Build(f.Frame, f.Width, f.Mask, f.Mosaic, f.CameraX, f.CameraY, f.Map.Footholds, f.NarrowestMeso());
+        var slicesMs = sw.Elapsed.TotalMilliseconds;
+        List<SliceMatcher.Candidate> mobs = f.MobCandidates(), mesos = f.MesoCandidates();
+        var mobStats = new SliceMatcher.Stats();
+        var mesoStats = new SliceMatcher.Stats();
+        sw.Restart();
+        var mobFinds = SliceMatcher.Search(f.Frame, f.Width, f.Mask, f.Mosaic, f.CameraX, f.CameraY, mobRuns, mobs, stats: mobStats);
+        var mobMs = sw.Elapsed.TotalMilliseconds;
+        sw.Restart();
+        // A drop does not rest with its origin on the line the way a mob does: meso 141 of this frame sits 6 rows below it.
+        var mesoFinds = SliceMatcher.Search(f.Frame, f.Width, f.Mask, f.Mosaic, f.CameraX, f.CameraY, mesoRuns, mesos, new SliceMatcher.Options { FloorRows = 8 }, stats: mesoStats);
+        var mesoMs = sw.Elapsed.TotalMilliseconds;
+        var finds = mobFinds.Concat(mesoFinds).ToList();
+        output.WriteLine($"slices {slicesMs:0.0} ms ({mobRuns.Sum(r => r.Slices.Count(s => s.Kind == FootholdSlices.Kind.Live))} live mob slices, " +
+            $"{mesoRuns.Sum(r => r.Slices.Count(s => s.Kind == FootholdSlices.Kind.Live))} live meso slices); {finds.Count} finds");
+        output.WriteLine($"mobs: {mobMs:0.0} ms over {mobs.Count} frames: {mobStats}");
+        output.WriteLine($"mesos: {mesoMs:0.0} ms over {mesos.Count} frames: {mesoStats}");
+
+        var used = new HashSet<SliceMatcher.Find>();
+        var missing = new List<string>();
+        foreach (var t in f.Targets)
+        {
+            var hit = finds.Where(x => !used.Contains(x) && Covers(x, t)).OrderBy(x => x.Distance).FirstOrDefault();
+            if (hit is not null) used.Add(hit);
+            var right = hit is not null && (hit.Name == t.Name || t.Kind == "meso" && hit.Name == "meso");
+            output.WriteLine($"  {t.Track,4} {t.Name,-15} {(hit is null ? "NOT FOUND" : (right ? "found as " : "WRONG: found as ") + hit)}");
+            if (!right) missing.Add($"{t.Track} {t.Name}");
+        }
+        var extra = finds.Where(x => !used.Contains(x)).ToList();
+        foreach (var x in extra) output.WriteLine($"  extra: {x}");
+        Assert.True(missing.Count == 0 && extra.Count == 0, $"missed or wrong: {string.Join("; ", missing)}; extra: {extra.Count}");
+    }
+
+    /// <summary>Whether a find stands where a target is: they share half the narrower's columns, and their bottoms are close.</summary>
+    private static bool Covers(SliceMatcher.Find x, Target t)
+    {
+        int x0 = x.Left + x.Frame.X0, x1 = x.Left + x.Frame.X1, bottom = x.Top + x.Frame.Y1 + 1;
+        var shared = Math.Min(x1, t.Rect.X + t.Rect.Width - 1) - Math.Max(x0, t.Rect.X) + 1;
+        return shared >= 0.5 * Math.Min(x1 - x0 + 1, t.Rect.Width) && Math.Abs(bottom - t.Bottom) <= BottomRows;
+    }
+}

@@ -71,6 +71,19 @@ public sealed class FrameFixture
         };
     }
 
+    /// <summary>Every frame, both facings, of the map's ground mobs, named by species.</summary>
+    public List<SliceMatcher.Candidate> MobCandidates() =>
+        MobLibrary.Open(Path.Combine(Root, "data", "mobinfo")) is { } library
+            ? [.. MapMobSet.Build(Map, new FootholdIndex(Map), library).Entries.Where(e => e.Species.Mobility != MobMobility.Fly)
+                .SelectMany(e => e.Species.Frames.Select(f => new SliceMatcher.Candidate(e.Species.Name, f)))]
+            : [];
+
+    /// <summary>Every frame of every meso icon.</summary>
+    public List<SliceMatcher.Candidate> MesoCandidates() =>
+        SpriteSet.Mesos(Path.Combine(Root, "data", "sprites")) is { } mesos
+            ? [.. mesos.Groups.Values.SelectMany(g => g.Frames).Select(f => new SliceMatcher.Candidate("meso", f))]
+            : [];
+
     /// <summary>The narrowest visible width of any frame of the map's ground mobs (Deep Valley I: 35, the snails' move/0).</summary>
     public int NarrowestMob() =>
         MobLibrary.Open(Path.Combine(Root, "data", "mobinfo")) is { } library
