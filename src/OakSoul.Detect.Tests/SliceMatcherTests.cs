@@ -75,6 +75,47 @@ public sealed class SliceMatcherTests(ITestOutputHelper output)
         Assert.True(missing.Count == 0 && extra.Count == 0, $"missed or wrong: {string.Join("; ", missing)}; extra: {extra.Count}");
     }
 
+    /// <summary>
+    /// A budgeted search stops at a slice boundary and says where; resumed from there until it finishes, with nothing suppressed
+    /// along the way, the searches together cover every slice once and one Resolve over their finds gives the mob result whole:
+    /// every mob target as itself, nothing else.
+    /// </summary>
+    [Fact]
+    public void BudgetStopsAndResumes()
+    {
+        if (FrameFixture.Load(Frame511) is not { } f) { output.WriteLine("fixture data not on this machine; nothing checked"); return; }
+        var mobRuns = FootholdSlices.Build(f.Frame, f.Width, f.Mask, f.Mosaic, f.CameraX, f.CameraY, f.Map.Footholds, f.NarrowestMob());
+        var mobs = f.MobCandidates();
+        var o = new SliceMatcher.Options { BudgetMs = 3, KeepOverlapping = true };
+        var all = new List<SliceMatcher.Find>();
+        long slices = 0; var calls = 0;
+        while (calls < 10_000)
+        {
+            var stats = new SliceMatcher.Stats();
+            // The runs whole every time, resumed from where the last search stopped.
+            all.AddRange(SliceMatcher.Search(f.Frame, f.Width, f.Mask, f.Mosaic, f.CameraX, f.CameraY, mobRuns, mobs, o, stats));
+            slices += stats.Slices; calls++;
+            if (stats.StoppedRun < 0) break;
+            o = o with { Start = (stats.StoppedRun, stats.StoppedSlice) };
+        }
+        var kept = SliceMatcher.Resolve(f.Frame, f.Width, f.Mask, f.Mosaic, f.CameraX, f.CameraY, all);
+        output.WriteLine($"{calls} searches of at most {o.BudgetMs} ms covered {slices} slices; {all.Count} finds unsuppressed, {kept.Count} kept");
+        Assert.True(calls > 1, "the budget never stopped a search");
+        Assert.Equal(mobRuns.Sum(r => r.Slices.Count), slices);
+        var used = new HashSet<SliceMatcher.Find>();
+        var missing = new List<string>();
+        foreach (var t in f.Targets.Where(t => t.Kind == "mob"))
+        {
+            var hit = kept.Where(x => !used.Contains(x) && Covers(x, t)).OrderBy(x => x.Distance).FirstOrDefault();
+            if (hit is not null) used.Add(hit);
+            output.WriteLine($"  {t.Track,4} {t.Name,-15} {(hit is null ? "NOT FOUND" : (hit.Name == t.Name ? "found as " : "WRONG: found as ") + hit)}");
+            if (hit is null || hit.Name != t.Name) missing.Add($"{t.Track} {t.Name}");
+        }
+        var extra = kept.Where(x => !used.Contains(x)).ToList();
+        foreach (var x in extra) output.WriteLine($"  extra: {x}");
+        Assert.True(missing.Count == 0 && extra.Count == 0, $"missed or wrong: {string.Join("; ", missing)}; extra: {extra.Count}");
+    }
+
     /// <summary>Whether a find stands where a target is: they share half the narrower's columns, and their bottoms are close.</summary>
     private static bool Covers(SliceMatcher.Find x, Target t)
     {

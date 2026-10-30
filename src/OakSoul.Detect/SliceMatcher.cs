@@ -72,6 +72,18 @@ public static class SliceMatcher
         public bool LiftGates { get; init; } = false;
         /// <summary>Return every find that passes, overlapping ones included (diagnostics); off, the best per place is kept.</summary>
         public bool KeepOverlapping { get; init; } = false;
+        /// <summary>
+        /// Milliseconds a search may take, counted from its start, before it stops at the next slice boundary and reports where in
+        /// <see cref="Stats.StoppedRun"/> and <see cref="Stats.StoppedSlice"/> (the finds so far still go through the explain pass);
+        /// null searches everything. The first slice always runs.
+        /// </summary>
+        public double? BudgetMs { get; init; }
+        /// <summary>
+        /// Where to begin: the index into the runs given and the index into that run's slices, as a budgeted search reported them
+        /// when it stopped. The runs are passed whole so every placement keeps the line at its feet column, which a run cut into
+        /// pieces loses on a sloped floor.
+        /// </summary>
+        public (int Run, int Slice) Start { get; init; }
     }
 
     /// <summary>What a search did: placements seeded, seeds that passed (each then compared whole), columns and pixels compared.</summary>
@@ -82,8 +94,16 @@ public static class SliceMatcher
         public long Retrieved;
         /// <summary>Milliseconds laying out the candidate set and its seed index (zero when the set was laid out before), and querying the index.</summary>
         public double IndexMs, QueryMs;
+        /// <summary>Slices searched.</summary>
+        public long Slices;
+        /// <summary>
+        /// Where a search with <see cref="Options.BudgetMs"/> stopped: the index into the runs it was given and the index into
+        /// that run's slices of the first slice not searched. StoppedRun is -1 when the search finished.
+        /// </summary>
+        public int StoppedRun = -1, StoppedSlice;
         public override string ToString() => $"{Placements:N0} placements seeded, {SeedsPassed:N0} passed, {Columns:N0} columns and {Pixels:N0} pixels compared whole" +
-            $"; {Retrieved:N0} retrieved by the index (built in {IndexMs:0.0} ms, queried in {QueryMs:0.0} ms)";
+            $"; {Retrieved:N0} retrieved by the index (built in {IndexMs:0.0} ms, queried in {QueryMs:0.0} ms); {Slices:N0} slices" +
+            (StoppedRun >= 0 ? $", stopped at run {StoppedRun} slice {StoppedSlice}" : "");
     }
 
     /// <summary>One opaque sprite pixel as the comparison reads it: its row, its colour packed (b | g &lt;&lt; 8 | r &lt;&lt; 16) and by
@@ -307,7 +327,7 @@ public static class SliceMatcher
         public readonly ulong[] Cells;
         public readonly int Width, Y0, Rows;
 
-        public Screen(ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, BackgroundMosaic mosaic, int cameraX, int cameraY, int y0, int y1)
+        public Screen(ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, BackgroundMosaic mosaic, int cameraX, int cameraY, int y0, int y1, byte[]? explained)
         {
             var frameHeight = frame.Length / 4 / frameWidth;
             Width = frameWidth;
@@ -330,7 +350,7 @@ public static class SliceMatcher
                     var colour = (uint)(frame[o] | frame[o + 1] << 8 | frame[o + 2] << 16);
                     int mx = x - vx, wx = cameraX + x - mosaic.OriginX;
                     int cell;
-                    if (rowMasked || (uint)mx >= (uint)mw || bits[my * mw + mx] != 0) cell = Never;
+                    if (rowMasked || (uint)mx >= (uint)mw || bits[my * mw + mx] != 0 || explained is not null && explained[y * frameWidth + x] != 0) cell = Never;
                     else if (!rowInMosaic || (uint)wx >= (uint)mosaic.Width) cell = Always;
                     else
                     {
@@ -342,14 +362,15 @@ public static class SliceMatcher
             }
         }
 
-        /// <summary>Marks a kept find's opaque pixels as explained: they say nothing about any later find.</summary>
-        public void Explain(Find find)
+        /// <summary>Marks a kept find's opaque pixels as explained, here and in the caller's buffer when it gave one: they say nothing about any later find.</summary>
+        public void Explain(Find find, byte[]? explained)
         {
             var f = find.Frame;
             for (var i = 0; i < f.PixelX.Length; i++)
             {
-                int x = find.Left + f.PixelX[i], r = find.Top + f.PixelY[i] - Y0;
+                int x = find.Left + f.PixelX[i], y = find.Top + f.PixelY[i], r = y - Y0;
                 if ((uint)x < (uint)Width && (uint)r < (uint)Rows) Cells[x * Rows + r] = (ulong)unchecked((uint)Never) << 32 | (uint)Cells[x * Rows + r];
+                if (explained is not null && (uint)x < (uint)Width && y >= 0 && (y + 1) * Width <= explained.Length) explained[y * Width + x] = 1;
             }
         }
     }
@@ -377,22 +398,28 @@ public static class SliceMatcher
     /// <summary>k / 765 for every summed channel difference k: a clean pixel's distance, as the general formula gives it with no lift.</summary>
     private static readonly double[] Inv765 = [.. Enumerable.Range(0, 766).Select(k => k / 765.0)];
 
-    /// <summary>Every placement that matches, the best per place: overlapping finds keep the one with the least distance.</summary>
+    /// <summary>
+    /// Every placement that matches, the best per place: overlapping finds keep the one with the least distance. An
+    /// <paramref name="explained"/> buffer (one byte per frame pixel) carries kept finds across searches: pixels set on entry say
+    /// nothing, and every find kept here sets its pixels in it, so a sprite found by one budgeted search explains what a later
+    /// search of the same frame sees behind it.
+    /// </summary>
     public static List<Find> Search(ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, BackgroundMosaic mosaic, int cameraX, int cameraY,
-        IReadOnlyList<FootholdSlices.Run> runs, IReadOnlyList<Candidate> candidates, Options? options = null, Stats? stats = null)
+        IReadOnlyList<FootholdSlices.Run> runs, IReadOnlyList<Candidate> candidates, Options? options = null, Stats? stats = null, byte[]? explained = null)
     {
         stats ??= new Stats();
         var set = CandidateSet.Of(candidates, (options ?? new Options()).SeedPixels, out var built);
         if (built) stats.IndexMs += set.BuildMs;
-        return Search(frame, frameWidth, mask, mosaic, cameraX, cameraY, runs, set, options, stats);
+        return Search(frame, frameWidth, mask, mosaic, cameraX, cameraY, runs, set, options, stats, explained);
     }
 
     /// <summary>Every placement that matches, as the overload over a candidate list, with the candidates laid out already.</summary>
     public static List<Find> Search(ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, BackgroundMosaic mosaic, int cameraX, int cameraY,
-        IReadOnlyList<FootholdSlices.Run> runs, CandidateSet set, Options? options = null, Stats? stats = null)
+        IReadOnlyList<FootholdSlices.Run> runs, CandidateSet set, Options? options = null, Stats? stats = null, byte[]? explained = null)
     {
         var o = options ?? new Options();
         stats ??= new Stats();
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         if (set.SeedPixels != o.SeedPixels) { set = new CandidateSet(set.Candidates, o.SeedPixels); stats.IndexMs += set.BuildMs; }
         var layouts = set.Layouts;
         if (runs.Count == 0 || layouts.Length == 0) return [];
@@ -401,7 +428,7 @@ public static class SliceMatcher
         foreach (var run in runs)
             foreach (var sl in run.Slices) { minLine = Math.Min(minLine, sl.LineY); maxLine = Math.Max(maxLine, sl.LineY); }
         foreach (var l in layouts) { above = Math.Max(above, l.Frame.OriginY); below = Math.Max(below, l.Frame.Height - 1 - l.Frame.OriginY); }
-        var screen = new Screen(frame, frameWidth, mask, mosaic, cameraX, cameraY, minLine - o.FloorRows - above, maxLine + o.FloorRows + below);
+        var screen = new Screen(frame, frameWidth, mask, mosaic, cameraX, cameraY, minLine - o.FloorRows - above, maxLine + o.FloorRows + below, explained);
         var work = new Work(set.MaxColumn, set.MaxWidth);
         var tried = new HashSet<(int, int, int)>();
         int floorRows = o.FloorRows, nd = 2 * floorRows + 1;
@@ -411,7 +438,8 @@ public static class SliceMatcher
         var hits = new List<int>();
         var keyed = new List<(long Key, Find Find)>();
         var queryWatch = new System.Diagnostics.Stopwatch();
-        for (var ri = 0; ri < runs.Count; ri++)
+        var stopped = false;
+        for (var ri = Math.Max(0, o.Start.Run); ri < runs.Count && !stopped; ri++)
         {
             var run = runs[ri];
             // The line under every column of the run (a run's slices are contiguous; a gap, if any, holds int.MinValue).
@@ -422,8 +450,12 @@ public static class SliceMatcher
             int LineAt(int x) => (uint)(x - x0) < (uint)lineAt.Length ? lineAt[x - x0] : int.MinValue;
             // Every slice of a run seeds, interrupted ones too: one known pixel inside a sprite's body (a hole, or a colour the
             // background happens to share) interrupts the slice, and Dark Stump 23 of frame 511 had all three seed columns on such slices.
-            foreach (var slice in run.Slices)
+            for (var si2 = ri == o.Start.Run ? Math.Max(0, o.Start.Slice) : 0; si2 < run.Slices.Count; si2++)
             {
+                // Out of time: stop before this slice and say so; the caller resumes from here next time.
+                if (o.BudgetMs is { } budget && watch.Elapsed.TotalMilliseconds > budget) { stats.StoppedRun = ri; stats.StoppedSlice = si2; stopped = true; break; }
+                var slice = run.Slices[si2];
+                stats.Slices++;
                 hits.Clear();
                 queryWatch.Start();
                 Vote(slice);
@@ -556,18 +588,49 @@ public static class SliceMatcher
         keyed.Sort((a, b) => a.Key.CompareTo(b.Key));
         var finds = keyed.Select(e => e.Find).ToList();
         if (o.KeepOverlapping) return finds;
-        // The best first, explaining its pixels; a later find that overlaps a kept one is scored again on the pixels left and
-        // stays only if it still passes on its own (the Wild Boar half behind the Blue Snail on frame 511 does; a copy of the
-        // snail a pixel over, left with a sliver, does not).
         var layoutOf = new Dictionary<SpriteFrame, Layout>(ReferenceEqualityComparer.Instance);
         foreach (var c in layouts) layoutOf.TryAdd(c.Frame, c);
+        return Keep(screen, finds, layoutOf, o, work, explained);
+    }
+
+    /// <summary>
+    /// The best per place over finds gathered by several searches of one frame, each with <see cref="Options.KeepOverlapping"/>
+    /// on so that nothing was suppressed yet: the explain pass a single search runs, over their union, so the order the budgeted
+    /// searches found them in does not decide (a near-miss frame found a search earlier would otherwise explain the true one away).
+    /// </summary>
+    public static List<Find> Resolve(ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, BackgroundMosaic mosaic, int cameraX, int cameraY,
+        IReadOnlyList<Find> finds, Options? options = null, byte[]? explained = null)
+    {
+        var o = options ?? new Options();
+        if (finds.Count == 0) return [];
+        int y0 = int.MaxValue, y1 = int.MinValue, maxColumn = 0, maxWidth = 0;
+        var layoutOf = new Dictionary<SpriteFrame, Layout>(ReferenceEqualityComparer.Instance);
+        foreach (var f in finds)
+        {
+            y0 = Math.Min(y0, f.Top); y1 = Math.Max(y1, f.Top + f.Frame.Height - 1);
+            if (layoutOf.ContainsKey(f.Frame)) continue;
+            var l = new Layout(f.Name, f.Frame, o.SeedPixels);
+            layoutOf[f.Frame] = l;
+            maxColumn = Math.Max(maxColumn, l.MaxColumn); maxWidth = Math.Max(maxWidth, l.Order.Length);
+        }
+        var screen = new Screen(frame, frameWidth, mask, mosaic, cameraX, cameraY, y0, y1, explained);
+        return Keep(screen, finds, layoutOf, o, new Work(maxColumn, maxWidth), explained);
+    }
+
+    /// <summary>
+    /// The best first, explaining its pixels; a later find that overlaps a kept one is scored again on the pixels left and
+    /// stays only if it still passes on its own (the Wild Boar half behind the Blue Snail on frame 511 does; a copy of the
+    /// snail a pixel over, left with a sliver, does not).
+    /// </summary>
+    private static List<Find> Keep(Screen screen, IEnumerable<Find> finds, Dictionary<SpriteFrame, Layout> layoutOf, Options o, Work work, byte[]? explained)
+    {
         var kept = new List<Find>();
         foreach (var f in finds.OrderBy(f => f.Distance).ThenByDescending(f => f.Matched))
         {
             var find = kept.Any(k => Overlaps(k, f)) ? Score(screen, layoutOf[f.Frame], f.Left, f.Top, o, work, null, f.Name)! : f;
             if (!Accepts(find, o)) continue;
             kept.Add(find);
-            screen.Explain(find);
+            screen.Explain(find, explained);
         }
         return kept;
     }
@@ -588,7 +651,7 @@ public static class SliceMatcher
     {
         var o = options ?? new Options();
         var c = new Layout(candidate.Name, candidate.Frame, o.SeedPixels);
-        var screen = new Screen(frame, frameWidth, mask, mosaic, cameraX, cameraY, top, top + candidate.Frame.Height - 1);
+        var screen = new Screen(frame, frameWidth, mask, mosaic, cameraX, cameraY, top, top + candidate.Frame.Height - 1, null);
         return Score(screen, c, left, top, o, new Work(c.MaxColumn, c.Order.Length), null)!;
     }
 
