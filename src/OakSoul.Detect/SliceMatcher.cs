@@ -15,6 +15,15 @@ namespace OakSoul.Detect;
 /// frame, explained by a find already kept, or exactly the trusted background where the sprite pixel has that colour too carry
 /// no information. The best find is kept first and explains its pixels; every later find that overlaps a kept one is scored
 /// again on the pixels left, so a sprite half behind another stays while a copy of the first a pixel over does not.
+/// <para>
+/// Trying every candidate on every slice made 682,274 mob placements on frame 511, of which 207,013 passed the lax check and were
+/// compared whole. Instead each slice queries a seed index (<see cref="CandidateSet"/>): its screen pixels that may hold something
+/// vote for the placements whose seed column has that exact colour on that row, the row taken from the line at the placement's
+/// feet column (five of frame 511's nine mobs stand on slopes), and, for the pixels under a cloud or steam where no colour is
+/// exact, for those whose seed column has a colour the pixel is a lift of. A placement with <see cref="Options.SeedPixels"/> votes
+/// of either kind is retrieved, then checked and scored as before, on the seed column the enumeration would have tried it on
+/// first; the index only drops placements, and the finds keep the enumeration's order.
+/// </para>
 /// </summary>
 public static class SliceMatcher
 {
@@ -69,7 +78,12 @@ public static class SliceMatcher
     public sealed class Stats
     {
         public long Placements, SeedsPassed, Columns, Pixels;
-        public override string ToString() => $"{Placements:N0} placements seeded, {SeedsPassed:N0} passed, {Columns:N0} columns and {Pixels:N0} pixels compared whole";
+        /// <summary>Placements the seed index retrieved (each then seeded unless tried already).</summary>
+        public long Retrieved;
+        /// <summary>Milliseconds laying out the candidate set and its seed index (zero when the set was laid out before), and querying the index.</summary>
+        public double IndexMs, QueryMs;
+        public override string ToString() => $"{Placements:N0} placements seeded, {SeedsPassed:N0} passed, {Columns:N0} columns and {Pixels:N0} pixels compared whole" +
+            $"; {Retrieved:N0} retrieved by the index (built in {IndexMs:0.0} ms, queried in {QueryMs:0.0} ms)";
     }
 
     /// <summary>One opaque sprite pixel as the comparison reads it: its row, its colour packed (b | g &lt;&lt; 8 | r &lt;&lt; 16) and by
@@ -174,6 +188,7 @@ public static class SliceMatcher
 
         public CandidateSet(IReadOnlyList<Candidate> candidates, int seedPixels = 3)
         {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             Candidates = [.. candidates];
             SeedPixels = seedPixels;
             // One layout per frame object (a frame listed twice is laid out once).
@@ -181,14 +196,101 @@ public static class SliceMatcher
             Layouts = [.. Candidates.Select(c => byFrame.TryGetValue(c.Frame, out var l) && l.Name == c.Name ? l : byFrame[c.Frame] = new Layout(c.Name, c.Frame, seedPixels))];
             MaxColumn = Layouts.Select(l => l.MaxColumn).DefaultIfEmpty(0).Max();
             MaxWidth = Layouts.Select(l => l.Order.Length).DefaultIfEmpty(0).Max();
+            BuildIndex();
+            BuildMs = sw.Elapsed.TotalMilliseconds;
+        }
+
+        /// <summary>Milliseconds the layout and the seed index took.</summary>
+        public double BuildMs { get; }
+
+        /// <summary>
+        /// The exact seed index: for every candidate's seed column, its coloured band pixels (max channel above 51) posted under their
+        /// colour (<see cref="ColourIds"/>; the meso icons' colours are not all multiples of 17, so the id is a lookup, not the
+        /// channels over 17), each posting the code (candidate * 3 + which of its seed columns) and the pixel's row relative to the
+        /// origin row.
+        /// </summary>
+        internal int[] PostStart = [], PostCode = [], PostRow = [];
+        /// <summary>Every posted colour (packed) and its id.</summary>
+        internal readonly Dictionary<int, int> ColourIds = [];
+        /// <summary>
+        /// The lift index: the seed columns' coloured band pixels that can be tested through steam (<see cref="SpriteMatcher.Foggable"/>),
+        /// posted under the direction of their headroom toward white (255 - t), which a lift s = t + a (255 - t) keeps: 255 - s =
+        /// (1 - a) (255 - t). The direction is the headroom's blue and green shares, <see cref="LiftQ"/> steps each.
+        /// </summary>
+        internal int[] LiftStart = [], LiftCodes = [];
+        internal LiftEntry[] LiftEntries = [];
+        /// <summary>A colour at a row of the lift index: its channels and headroom, 1 / the headroom's squared length, and the seed columns posting it (LiftCodes[CodeStart..CodeEnd)).</summary>
+        internal readonly record struct LiftEntry(int B, int G, int R, int Hb, int Hg, int Hr, double InvDen, int Row, int CodeStart, int CodeEnd);
+        internal const int LiftQ = 32, LiftBins = (LiftQ + 1) * (LiftQ + 1), LiftRows = FootholdSlices.Above + FootholdSlices.Below + 1;
+        internal static int LiftBin(int hb, int hg, int hr)
+        {
+            var sum = hb + hg + hr;
+            return hb * LiftQ / sum * (LiftQ + 1) + hg * LiftQ / sum;
+        }
+
+        /// <summary>The largest distance between a candidate's feet column and one of its seed columns.</summary>
+        internal int MaxSeedSpan;
+
+        private void BuildIndex()
+        {
+            var postings = new List<(int Colour, int Code, int Row)>();
+            var lifted = new List<(int Bin, int Code, int Row, int Art)>();
+            for (var k = 0; k < Layouts.Length; k++)
+            {
+                var c = Layouts[k];
+                for (var si = 0; si < c.SeedXs.Length; si++)
+                {
+                    var x = c.SeedXs[si];
+                    MaxSeedSpan = Math.Max(MaxSeedSpan, Math.Abs(x - c.Frame.OriginX));
+                    for (var i = c.BandStart[x]; i < c.BandEnd[x]; i++)
+                    {
+                        ref readonly var p = ref c.Pixels[i];
+                        if (Math.Max(p.B, Math.Max(p.G, p.R)) <= 51) continue;
+                        if (!ColourIds.TryGetValue(p.Packed, out var id)) ColourIds[p.Packed] = id = ColourIds.Count;
+                        postings.Add((id, k * 3 + si, p.Y - c.Frame.OriginY));
+                    }
+                    for (var i = c.BandStart[x]; i < c.BandEnd[x]; i++)
+                    {
+                        ref readonly var p = ref c.Pixels[i];
+                        if (Math.Max(p.B, Math.Max(p.G, p.R)) <= 51 || !p.Foggable) continue;
+                        lifted.Add((LiftBin(255 - p.B, 255 - p.G, 255 - p.R) * LiftRows + p.Y - c.Frame.OriginY + FootholdSlices.Above, k * 3 + si, p.Y - c.Frame.OriginY, p.Packed));
+                    }
+                }
+            }
+            // One entry per (bin, row, colour), holding every seed column that posts it: the lift is checked once per entry.
+            lifted.Sort((a, b) => a.Bin != b.Bin ? a.Bin.CompareTo(b.Bin) : a.Art != b.Art ? a.Art.CompareTo(b.Art) : a.Code.CompareTo(b.Code));
+            LiftStart = new int[LiftBins * LiftRows + 1];
+            var entries = new List<LiftEntry>();
+            LiftCodes = new int[lifted.Count];
+            for (var i = 0; i < lifted.Count; i++)
+            {
+                LiftCodes[i] = lifted[i].Code;
+                if (i > 0 && lifted[i].Bin == lifted[i - 1].Bin && lifted[i].Art == lifted[i - 1].Art) { entries[^1] = entries[^1] with { CodeEnd = i + 1 }; continue; }
+                var t = lifted[i].Art;
+                int hb = 255 - (t & 0xFF), hg = 255 - (t >> 8 & 0xFF), hr = 255 - (t >> 16);
+                entries.Add(new LiftEntry(t & 0xFF, t >> 8 & 0xFF, t >> 16, hb, hg, hr, 1.0 / (hb * hb + hg * hg + hr * hr), lifted[i].Row, i, i + 1));
+                LiftStart[lifted[i].Bin + 1]++;
+            }
+            LiftEntries = [.. entries];
+            for (var i = 0; i < LiftBins * LiftRows; i++) LiftStart[i + 1] += LiftStart[i];
+            postings.Sort((a, b) => a.Colour != b.Colour ? a.Colour.CompareTo(b.Colour) : a.Code != b.Code ? a.Code.CompareTo(b.Code) : a.Row.CompareTo(b.Row));
+            PostStart = new int[ColourIds.Count + 1];
+            PostCode = new int[postings.Count];
+            PostRow = new int[postings.Count];
+            for (var i = 0; i < postings.Count; i++) { PostStart[postings[i].Colour + 1]++; PostCode[i] = postings[i].Code; PostRow[i] = postings[i].Row; }
+            for (var i = 0; i < ColourIds.Count; i++) PostStart[i + 1] += PostStart[i];
         }
 
         /// <summary>The set of a candidate list, laid out on its first use and kept while the list lives (the list must not change after).</summary>
-        public static CandidateSet Of(IReadOnlyList<Candidate> candidates, int seedPixels)
+        public static CandidateSet Of(IReadOnlyList<Candidate> candidates, int seedPixels) => Of(candidates, seedPixels, out _);
+
+        internal static CandidateSet Of(IReadOnlyList<Candidate> candidates, int seedPixels, out bool built)
         {
+            built = false;
             if (_cache.TryGetValue(candidates, out var set) && set.SeedPixels == seedPixels && set.Candidates.Count == candidates.Count) return set;
             set = new CandidateSet(candidates, seedPixels);
             _cache.AddOrUpdate(candidates, set);
+            built = true;
             return set;
         }
     }
@@ -261,24 +363,39 @@ public static class SliceMatcher
         public readonly int[] N = new int[maxWidth];
     }
 
+    /// <summary>
+    /// The lift index's vote: a screen pixel votes for a posting when the one lift that fits it best lies between LiftMin and
+    /// LiftMax and leaves no channel more than LiftTolerance off; pixels with less headroom than LiftMinHeadroom (near white),
+    /// or whose headroom direction is too uncertain to search fewer than LiftMaxRadius bins around, do not vote. These retrieve,
+    /// they decide nothing: the lax seed test and the whole score still judge every placement retrieved. Measured on frame 511
+    /// (votes needed = SeedPixels, 3): at tolerance 3 meso 141 is retrieved up to 6 votes needed and the Blue Snail and the Wild
+    /// Boar beyond 7; at tolerance 2 the meso up to 4, the snail and the boar up to 8.
+    /// </summary>
+    private const int LiftTolerance = 3, LiftMinHeadroom = 48, LiftMaxRadius = 8;
+    private const double LiftMin = 0.1, LiftMax = 0.95;
+
     /// <summary>k / 765 for every summed channel difference k: a clean pixel's distance, as the general formula gives it with no lift.</summary>
     private static readonly double[] Inv765 = [.. Enumerable.Range(0, 766).Select(k => k / 765.0)];
 
     /// <summary>Every placement that matches, the best per place: overlapping finds keep the one with the least distance.</summary>
     public static List<Find> Search(ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, BackgroundMosaic mosaic, int cameraX, int cameraY,
-        IReadOnlyList<FootholdSlices.Run> runs, IReadOnlyList<Candidate> candidates, Options? options = null, Stats? stats = null) =>
-        Search(frame, frameWidth, mask, mosaic, cameraX, cameraY, runs, CandidateSet.Of(candidates, (options ?? new Options()).SeedPixels), options, stats);
+        IReadOnlyList<FootholdSlices.Run> runs, IReadOnlyList<Candidate> candidates, Options? options = null, Stats? stats = null)
+    {
+        stats ??= new Stats();
+        var set = CandidateSet.Of(candidates, (options ?? new Options()).SeedPixels, out var built);
+        if (built) stats.IndexMs += set.BuildMs;
+        return Search(frame, frameWidth, mask, mosaic, cameraX, cameraY, runs, set, options, stats);
+    }
 
     /// <summary>Every placement that matches, as the overload over a candidate list, with the candidates laid out already.</summary>
     public static List<Find> Search(ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, BackgroundMosaic mosaic, int cameraX, int cameraY,
         IReadOnlyList<FootholdSlices.Run> runs, CandidateSet set, Options? options = null, Stats? stats = null)
     {
         var o = options ?? new Options();
-        if (set.SeedPixels != o.SeedPixels) set = new CandidateSet(set.Candidates, o.SeedPixels);
         stats ??= new Stats();
+        if (set.SeedPixels != o.SeedPixels) { set = new CandidateSet(set.Candidates, o.SeedPixels); stats.IndexMs += set.BuildMs; }
         var layouts = set.Layouts;
-        var finds = new List<Find>();
-        if (runs.Count == 0 || layouts.Length == 0) return finds;
+        if (runs.Count == 0 || layouts.Length == 0) return [];
         // Only the rows a placement can reach: every line the runs hold, the floor rows either side, and the tallest frame.
         int minLine = int.MaxValue, maxLine = int.MinValue, above = 0, below = 0;
         foreach (var run in runs)
@@ -287,26 +404,55 @@ public static class SliceMatcher
         var screen = new Screen(frame, frameWidth, mask, mosaic, cameraX, cameraY, minLine - o.FloorRows - above, maxLine + o.FloorRows + below);
         var work = new Work(set.MaxColumn, set.MaxWidth);
         var tried = new HashSet<(int, int, int)>();
-        foreach (var run in runs)
+        int floorRows = o.FloorRows, nd = 2 * floorRows + 1;
+        var votes = new int[layouts.Length * 3 * nd];
+        var liftVotes = new int[layouts.Length * 3 * nd];
+        var touched = new List<int>();
+        var hits = new List<int>();
+        var keyed = new List<(long Key, Find Find)>();
+        var queryWatch = new System.Diagnostics.Stopwatch();
+        for (var ri = 0; ri < runs.Count; ri++)
         {
-            var lineAt = run.Slices.ToDictionary(s => s.X, s => s.LineY);
+            var run = runs[ri];
+            // The line under every column of the run (a run's slices are contiguous; a gap, if any, holds int.MinValue).
+            int x0 = run.X0, x1 = run.X1;
+            var lineAt = new int[x1 - x0 + 1];
+            Array.Fill(lineAt, int.MinValue);
+            foreach (var sl in run.Slices) lineAt[sl.X - x0] = sl.LineY;
+            int LineAt(int x) => (uint)(x - x0) < (uint)lineAt.Length ? lineAt[x - x0] : int.MinValue;
             // Every slice of a run seeds, interrupted ones too: one known pixel inside a sprite's body (a hole, or a colour the
             // background happens to share) interrupts the slice, and Dark Stump 23 of frame 511 had all three seed columns on such slices.
             foreach (var slice in run.Slices)
             {
-            for (var k = 0; k < layouts.Length; k++)
-            {
-                var c = layouts[k];
-                var f = c.Frame;
-                // The frame's feet on the slice, or its first coloured column from either side on it.
-                foreach (var seedX in c.SeedXs)
+                hits.Clear();
+                queryWatch.Start();
+                Vote(slice);
+                queryWatch.Stop();
+                stats.Retrieved += hits.Count;
+                // In the enumeration's order: candidate, seed column, row.
+                hits.Sort();
+                foreach (var hit in hits)
                 {
-                var left = slice.X - seedX;
-                var line = lineAt.TryGetValue(left + f.OriginX, out var l) ? l : slice.LineY;
-                for (var dy = -o.FloorRows; dy <= o.FloorRows; dy++)
-                {
+                    int k = hit / nd / 3, si = hit / nd % 3, dy = hit % nd - floorRows;
+                    var c = layouts[k];
+                    var f = c.Frame;
+                    var left = slice.X - c.SeedXs[si];
+                    var feetLine = LineAt(left + f.OriginX);
+                    var line = feetLine != int.MinValue ? feetLine : slice.LineY;
                     int feetY = line + dy, top = feetY - f.OriginY;
                     if (!tried.Add((k, left, top))) continue;
+                    // The seed column the enumeration would have tried this placement on: its first route through the run (the
+                    // leftmost slice from which one of its seed columns reaches it), so the index only ever drops placements.
+                    int firstX = slice.X, firstSi = si, firstDy = dy;
+                    for (var sj = 0; sj < c.SeedXs.Length; sj++)
+                    {
+                        var xj = left + c.SeedXs[sj];
+                        if (xj >= firstX || LineAt(xj) == int.MinValue) continue;
+                        var lj = feetLine != int.MinValue ? feetLine : LineAt(xj);
+                        if (Math.Abs(feetY - lj) > floorRows) continue;
+                        firstX = xj; firstSi = sj; firstDy = feetY - lj;
+                    }
+                    var seedX = c.SeedXs[firstSi];
                     stats.Placements++;
                     // The lax check: the seed column, its band rows only.
                     var seed = Column(screen, c.Pixels, c.BandStart[seedX], c.BandEnd[seedX], left + seedX, top, o.MaxLift, o.LiftGates, work);
@@ -316,12 +462,99 @@ public static class SliceMatcher
                     // explain what covers it (the boar's columns behind the snail would fail it here), so only the screen distance,
                     // the share and the pixels compared may stop a placement early.
                     var find = Score(screen, c, left, top, o, work, stats);
-                    if (find is not null && find.Columns > 0 && find.Pixels >= o.MinCompared * f.PixelX.Length && find.Share >= o.MinShare && find.Distance <= o.MaxDistance) finds.Add(find);
-                }
+                    if (find is not null && find.Columns > 0 && find.Pixels >= o.MinCompared * f.PixelX.Length && find.Share >= o.MinShare && find.Distance <= o.MaxDistance)
+                        keyed.Add(((((long)ri * 65536 + (firstX - x0 + 1024)) * layouts.Length + k) * 3 * nd + firstSi * nd + firstDy + floorRows, find));
                 }
             }
+
+            // The exact votes of one slice: every screen pixel that may hold something, in the rows a seed column's band can reach,
+            // against the postings of its colour; a vote goes to the placement it implies (the line at that placement's feet column,
+            // the posting's row and the pixel's), and a placement with SeedPixels exact votes or SeedPixels lift votes is retrieved.
+            void Vote(FootholdSlices.Slice sl)
+            {
+                int lo = sl.LineY, hi = sl.LineY;
+                for (var x = Math.Max(x0, sl.X - set.MaxSeedSpan); x <= Math.Min(x1, sl.X + set.MaxSeedSpan); x++)
+                    if (lineAt[x - x0] != int.MinValue) { lo = Math.Min(lo, lineAt[x - x0]); hi = Math.Max(hi, lineAt[x - x0]); }
+                int y0 = Math.Max(screen.Y0, lo - floorRows - FootholdSlices.Above), y1 = Math.Min(screen.Y0 + screen.Rows - 1, hi + floorRows + FootholdSlices.Below);
+                if ((uint)sl.X >= (uint)screen.Width) return;
+                var colBase = sl.X * screen.Rows - screen.Y0;
+                for (var y = y0; y <= y1; y++)
+                {
+                    var v = screen.Cells[colBase + y];
+                    var cell = (int)(v >> 32);
+                    var s = (uint)v;
+                    if (cell == Screen.Never || cell == (int)s) continue;
+                    LiftVote(sl, y, s, lo, hi);
+                    if (!set.ColourIds.TryGetValue((int)s, out var id)) continue;
+                    for (var i = set.PostStart[id]; i < set.PostStart[id + 1]; i++)
+                    {
+                        var code = set.PostCode[i];
+                        var c = layouts[code / 3];
+                        var feetX = sl.X - c.SeedXs[code % 3] + c.Frame.OriginX;
+                        var l = LineAt(feetX);
+                        var dy = y - set.PostRow[i] - (l != int.MinValue ? l : sl.LineY);
+                        if (dy < -floorRows || dy > floorRows) continue;
+                        var slot = code * nd + dy + floorRows;
+                        if (votes[slot] == 0 && liftVotes[slot] == 0) touched.Add(slot);
+                        votes[slot]++;
+                    }
+                }
+                foreach (var slot in touched)
+                {
+                    if (votes[slot] >= o.SeedPixels || liftVotes[slot] >= o.SeedPixels) hits.Add(slot);
+                    votes[slot] = 0; liftVotes[slot] = 0;
+                }
+                touched.Clear();
+            }
+
+            // The lift votes of one screen pixel: the postings whose headroom points the way the pixel's does (its bin and the bins
+            // its rounding could move it to), each checked whole: the one lift that fits the pixel best must lie between LiftMin and
+            // LiftMax and leave no channel more than LiftTolerance off.
+            void LiftVote(FootholdSlices.Slice sl, int y, uint s, int lo, int hi)
+            {
+                // Only postings on the rows that can land here: the posting's row is y less the line at its feet (lo to hi) less dy.
+                int r0 = Math.Max(0, y - hi - floorRows + FootholdSlices.Above), r1 = Math.Min(CandidateSet.LiftRows - 1, y - lo + floorRows + FootholdSlices.Above);
+                if (r0 > r1) return;
+                int sb = (int)(s & 0xFF), sg = (int)(s >> 8 & 0xFF), sr = (int)(s >> 16);
+                int hb = 255 - sb, hg = 255 - sg, hr = 255 - sr, sum = hb + hg + hr;
+                if (sum < LiftMinHeadroom || sum <= 3 * LiftTolerance) return;
+                // How far the headroom's shares can move when every channel is LiftTolerance off: |du| <= tol (1 + 3u) / (sum - 3 tol).
+                const int q = CandidateSet.LiftQ;
+                double slack = sum - 3.0 * LiftTolerance, us = (double)hb / sum, vs = (double)hg / sum;
+                int ru = (int)Math.Ceiling(q * LiftTolerance * (1 + 3 * us) / slack), rv = (int)Math.Ceiling(q * LiftTolerance * (1 + 3 * vs) / slack);
+                if (ru > LiftMaxRadius || rv > LiftMaxRadius) return;
+                int ub = hb * q / sum, vb = hg * q / sum;
+                var entries = set.LiftEntries;
+                for (var u = Math.Max(0, ub - ru); u <= Math.Min(q, ub + ru); u++)
+                for (var v = Math.Max(0, vb - rv); v <= Math.Min(q, vb + rv); v++)
+                {
+                    var bin = (u * (q + 1) + v) * CandidateSet.LiftRows;
+                    int i0 = set.LiftStart[bin + r0], i1 = set.LiftStart[bin + r1 + 1];
+                    for (var i = i0; i < i1; i++)
+                    {
+                        ref readonly var e = ref entries[i];
+                        double a = ((sb - e.B) * e.Hb + (sg - e.G) * e.Hg + (sr - e.R) * e.Hr) * e.InvDen;
+                        if (a < LiftMin || a > LiftMax) continue;
+                        if (Math.Abs(sb - e.B - a * e.Hb) > LiftTolerance || Math.Abs(sg - e.G - a * e.Hg) > LiftTolerance || Math.Abs(sr - e.R - a * e.Hr) > LiftTolerance) continue;
+                        for (var j = e.CodeStart; j < e.CodeEnd; j++)
+                        {
+                            var code = set.LiftCodes[j];
+                            var c = layouts[code / 3];
+                            var l = LineAt(sl.X - c.SeedXs[code % 3] + c.Frame.OriginX);
+                            var dy = y - e.Row - (l != int.MinValue ? l : sl.LineY);
+                            if (dy < -floorRows || dy > floorRows) continue;
+                            var slot = code * nd + dy + floorRows;
+                            if (votes[slot] == 0 && liftVotes[slot] == 0) touched.Add(slot);
+                            liftVotes[slot]++;
+                        }
+                    }
+                }
             }
         }
+        stats.QueryMs += queryWatch.Elapsed.TotalMilliseconds;
+        // The finds in the enumeration's order (run, slice of the first route, candidate, seed column, row), which breaks ties below as it always did.
+        keyed.Sort((a, b) => a.Key.CompareTo(b.Key));
+        var finds = keyed.Select(e => e.Find).ToList();
         if (o.KeepOverlapping) return finds;
         // The best first, explaining its pixels; a later find that overlaps a kept one is scored again on the pixels left and
         // stays only if it still passes on its own (the Wild Boar half behind the Blue Snail on frame 511 does; a copy of the

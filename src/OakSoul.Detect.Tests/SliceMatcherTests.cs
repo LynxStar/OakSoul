@@ -39,11 +39,26 @@ public sealed class SliceMatcherTests(ITestOutputHelper output)
         // A drop does not rest with its origin on the line the way a mob does: meso 141 of this frame sits 6 rows below it.
         var mesoFinds = SliceMatcher.Search(f.Frame, f.Width, f.Mask, f.Mosaic, f.CameraX, f.CameraY, mesoRuns, mesos, new SliceMatcher.Options { FloorRows = 8 }, stats: mesoStats);
         var mesoMs = sw.Elapsed.TotalMilliseconds;
+        // Again, warm (the code compiled, the candidate sets laid out): what a frame costs in a live run. The best of ten.
+        double warmMob = double.MaxValue, warmMeso = double.MaxValue;
+        SliceMatcher.Stats warmMobStats = new(), warmMesoStats = new();
+        for (var i = 0; i < 10; i++)
+        {
+            var ms = new SliceMatcher.Stats();
+            sw.Restart();
+            SliceMatcher.Search(f.Frame, f.Width, f.Mask, f.Mosaic, f.CameraX, f.CameraY, mobRuns, mobs, stats: ms);
+            if (sw.Elapsed.TotalMilliseconds < warmMob) (warmMob, warmMobStats) = (sw.Elapsed.TotalMilliseconds, ms);
+            ms = new SliceMatcher.Stats();
+            sw.Restart();
+            SliceMatcher.Search(f.Frame, f.Width, f.Mask, f.Mosaic, f.CameraX, f.CameraY, mesoRuns, mesos, new SliceMatcher.Options { FloorRows = 8 }, ms);
+            if (sw.Elapsed.TotalMilliseconds < warmMeso) (warmMeso, warmMesoStats) = (sw.Elapsed.TotalMilliseconds, ms);
+        }
         var finds = mobFinds.Concat(mesoFinds).ToList();
         output.WriteLine($"slices {slicesMs:0.0} ms, warm {slicesWarmMs:0.0} ms ({mobRuns.Sum(r => r.Slices.Count(s => s.Kind == FootholdSlices.Kind.Live))} live mob slices, " +
             $"{mesoRuns.Sum(r => r.Slices.Count(s => s.Kind == FootholdSlices.Kind.Live))} live meso slices); {finds.Count} finds");
         output.WriteLine($"mobs: {mobMs:0.0} ms over {mobs.Count} frames: {mobStats}");
         output.WriteLine($"mesos: {mesoMs:0.0} ms over {mesos.Count} frames: {mesoStats}");
+        output.WriteLine($"warm (best of 10): mobs {warmMob:0.0} ms ({warmMobStats.QueryMs:0.0} ms queries), mesos {warmMeso:0.0} ms ({warmMesoStats.QueryMs:0.0} ms queries), together {warmMob + warmMeso:0.0} ms");
 
         var used = new HashSet<SliceMatcher.Find>();
         var missing = new List<string>();
