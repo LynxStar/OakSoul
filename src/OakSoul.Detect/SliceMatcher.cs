@@ -663,12 +663,18 @@ public static class SliceMatcher
         // First pass: the pixels that count, and the lift that fits them best (least squares on s - t = a (255 - t)).
         long num = 0, den = 0;
         int n = 0, diff = 0;
+        // The pixels' range is the layout's own and every row is checked against the prepared rows, so the reads skip the array
+        // bounds checks; the buffers hold the tallest column.
+        ref var px0 = ref System.Runtime.InteropServices.MemoryMarshal.GetArrayDataReference(px);
+        ref var cell0 = ref System.Runtime.InteropServices.MemoryMarshal.GetArrayDataReference(cells);
+        ref var index0 = ref System.Runtime.InteropServices.MemoryMarshal.GetArrayDataReference(index);
+        ref var colour0 = ref System.Runtime.InteropServices.MemoryMarshal.GetArrayDataReference(colour);
         for (var j = start; j < end; j++)
         {
-            ref readonly var p = ref px[j];
+            ref readonly var p = ref Unsafe.Add(ref px0, j);
             var r = row0 + p.Y;
             if ((uint)r >= (uint)rows) continue;
-            var v = cells[colBase + r];
+            var v = Unsafe.Add(ref cell0, colBase + r);
             var cell = (int)(v >> 32);
             if (cell == Screen.Never || cell == p.Packed) continue;
             var s = (uint)v;
@@ -676,7 +682,7 @@ public static class SliceMatcher
             num += db * (255 - p.B) + dg * (255 - p.G) + dr * (255 - p.R);
             den += p.Den;
             diff |= db | dg | dr;
-            index[n] = j; colour[n] = s;
+            Unsafe.Add(ref index0, n) = j; Unsafe.Add(ref colour0, n) = s;
             n++;
         }
         if (n == 0) return (0, 0, 0);
@@ -700,9 +706,9 @@ public static class SliceMatcher
         var m = 0;
         for (var i = 0; i < n; i++)
         {
-            ref readonly var p = ref px[index[i]];
+            ref readonly var p = ref Unsafe.Add(ref px0, Unsafe.Add(ref index0, i));
             if (lifted && !p.Foggable) continue;
-            var s = colour[i];
+            var s = Unsafe.Add(ref colour0, i);
             int sb = (int)(s & 0xFF), sg = (int)(s >> 8 & 0xFF), sr = (int)(s >> 16);
             // ... and the screen pixel must still show a hue (SpriteMatcher.FogMinScreenChroma): washed to grey, it fits anything light.
             if (lifted && Math.Max(sb, Math.Max(sg, sr)) - Math.Min(sb, Math.Min(sg, sr)) < SpriteMatcher.FogMinScreenChroma) continue;
