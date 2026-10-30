@@ -290,6 +290,7 @@ public sealed partial class EntityDetector
         if (_drops is not null) _drops.Background = (_mosaic, camX, camY);
         _fg.Difference(frame, frameWidth, _mask, _mosaic, camX, camY);
         UpdateClouds(frame, frameWidth, ctx, camX, camY);
+        if (_bandBlind is not null) CountBandBlind(ctx, camX, camY); // diagnostics only (OAKSOUL_BAND_BLIND): the classes are final here
         var tDiff = sw.Elapsed.TotalMilliseconds;
         var vp = _mask.Viewport;
         // What the client draws over the world that is no entity: the log's text, the mobs' HP bars (read, then out of the foreground).
