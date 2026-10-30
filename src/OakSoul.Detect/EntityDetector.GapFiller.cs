@@ -116,6 +116,12 @@ public sealed partial class EntityDetector
     /// </summary>
     public const int GapWindowRows = 64;
 
+    /// <summary>
+    /// Milliseconds held back from the two searches' budgets for what comes after a deadline: the slice in hand finishing, the
+    /// resolve and the candidates. Without it every moving frame of fx-combat-exact overran the 2 ms budget, by a median 0.28 ms.
+    /// </summary>
+    public const double GapReserveMs = 0.3;
+
     /// <summary>Searches that stopped before their first slice (the budget spent on preparing the screen); the cursor then stays.</summary>
     public int GapStalls { get; private set; }
 
@@ -246,14 +252,14 @@ public sealed partial class EntityDetector
             {
                 var c0 = Elapsed();
                 searched = SearchFrom(frame, frameWidth, camX, camY, runs, _gapMobSet!, new SliceMatcher.Options { KeepOverlapping = true }, GapMobStats,
-                    ref _gapMobCursor, (GapFillerBudgetMs - c0) * GapMobShare, all);
+                    ref _gapMobCursor, (GapFillerBudgetMs - GapReserveMs - c0) * GapMobShare, all);
                 mobMs = Elapsed() - c0;
             }
             if (_gapMesos!.Count > 0)
             {
                 var c1 = Elapsed();
                 mesoSearched = SearchFrom(frame, frameWidth, camX, camY, runs, _gapMesoSet!, MesoSliceOptions with { KeepOverlapping = true }, GapMesoStats,
-                    ref _gapMesoCursor, (GapFillerBudgetMs - prepMs) * (1 - GapMobShare), all);
+                    ref _gapMesoCursor, (GapFillerBudgetMs - GapReserveMs - prepMs) * (1 - GapMobShare), all);
                 mesoMs = Elapsed() - c1;
             }
             var c2 = Elapsed();
