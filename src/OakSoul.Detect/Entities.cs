@@ -33,6 +33,11 @@ public enum FoundBy : byte
     Transition,
     /// <summary>The pet found by its tag alone (its sprite did not verify in this frame).</summary>
     Tag,
+    /// <summary>
+    /// The gap filler (EntityDetector.GapFiller, off by default): a ground mob's or a meso coin's frame found by the slice search
+    /// (<see cref="SliceMatcher"/>) on the floor band the moving camera left Ignored, where the blob stage sees nothing.
+    /// </summary>
+    Slice,
 }
 
 /// <summary>What a mob track is doing: alive, or dying (its die pose matched, or a kill credited by an EXP gain).</summary>

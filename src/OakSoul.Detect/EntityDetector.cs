@@ -145,6 +145,7 @@ public sealed partial class EntityDetector
         _mobs = mobs;
         _drops = drops;
         _damage = damage;
+        _gapLayout = layout;
     }
 
     /// <summary>Builds what the detector's sprite sets need before the first frame (the effects' anchor index), so no frame pays for it.</summary>
@@ -531,6 +532,9 @@ public sealed partial class EntityDetector
             DiagnosticMs += diagMs;
         }
 
+        // The gap filler (off by default): finds on the floor band a moving camera left Ignored join the candidates; timed apart.
+        var gapMs = GapFiller ? FillGaps(candidates, predictions, frame, frameWidth, ctx, camX, camY) : 0;
+
         _tracker.SpeciesCap = _mobs is null ? null : CapOf;
         _tracker.FloorBound = _mobs is not null && !_mobs.HasFlyers;
         if (_mobs is not null)
@@ -559,7 +563,8 @@ public sealed partial class EntityDetector
         LastTags = tags;
         var ms = sw.Elapsed.TotalMilliseconds - ocrMs - diagMs;
         StageMs[0] += tReg; StageMs[1] += tDiff - tReg; StageMs[2] += tTags - tDiff; StageMs[3] += tTemporal - tTags; StageMs[4] += tComp - tTemporal;
-        StageMs[5] += tSprites - tCand; StageMs[6] += tDrops - tSprites; StageMs[7] += ms - tDrops + (tCand - tComp);
+        StageMs[5] += tSprites - tCand; StageMs[6] += tDrops - tSprites; StageMs[7] += ms - tDrops - gapMs + (tCand - tComp);
+        if (GapFiller) { GapFillerMs += gapMs; CountGapTracks(candidates, entities, frame, frameWidth, ctx, ms); }
         SpriteStageMs.Add(tSprites - tCand);
         StageFrames++;
         if (DebugDir is not null) Dump(frame, frameWidth, ctx, entities, camX, camY);
