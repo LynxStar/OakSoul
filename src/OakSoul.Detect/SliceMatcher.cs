@@ -423,10 +423,11 @@ public static class SliceMatcher
         if (set.SeedPixels != o.SeedPixels) { set = new CandidateSet(set.Candidates, o.SeedPixels); stats.IndexMs += set.BuildMs; }
         var layouts = set.Layouts;
         if (runs.Count == 0 || layouts.Length == 0) return [];
-        // Only the rows a placement can reach: every line the runs hold, the floor rows either side, and the tallest frame.
+        // Only the rows a placement can reach: every line the runs from the start position on hold, the floor rows either side, and the tallest frame.
         int minLine = int.MaxValue, maxLine = int.MinValue, above = 0, below = 0;
-        foreach (var run in runs)
-            foreach (var sl in run.Slices) { minLine = Math.Min(minLine, sl.LineY); maxLine = Math.Max(maxLine, sl.LineY); }
+        for (var ri = Math.Max(0, o.Start.Run); ri < runs.Count; ri++)
+            foreach (var sl in runs[ri].Slices) { minLine = Math.Min(minLine, sl.LineY); maxLine = Math.Max(maxLine, sl.LineY); }
+        if (minLine == int.MaxValue) return [];
         foreach (var l in layouts) { above = Math.Max(above, l.Frame.OriginY); below = Math.Max(below, l.Frame.Height - 1 - l.Frame.OriginY); }
         var screen = new Screen(frame, frameWidth, mask, mosaic, cameraX, cameraY, minLine - o.FloorRows - above, maxLine + o.FloorRows + below, explained);
         var work = new Work(set.MaxColumn, set.MaxWidth);
@@ -439,6 +440,7 @@ public static class SliceMatcher
         var keyed = new List<(long Key, Find Find)>();
         var queryWatch = new System.Diagnostics.Stopwatch();
         var stopped = false;
+        var searched = 0;
         for (var ri = Math.Max(0, o.Start.Run); ri < runs.Count && !stopped; ri++)
         {
             var run = runs[ri];
@@ -453,9 +455,10 @@ public static class SliceMatcher
             for (var si2 = ri == o.Start.Run ? Math.Max(0, o.Start.Slice) : 0; si2 < run.Slices.Count; si2++)
             {
                 // Out of time: stop before this slice and say so; the caller resumes from here next time.
-                if (o.BudgetMs is { } budget && watch.Elapsed.TotalMilliseconds > budget) { stats.StoppedRun = ri; stats.StoppedSlice = si2; stopped = true; break; }
+                // (The first slice of a call always runs, however long preparing the screen took, so a caller resuming always progresses.)
+                if (o.BudgetMs is { } budget && searched > 0 && watch.Elapsed.TotalMilliseconds > budget) { stats.StoppedRun = ri; stats.StoppedSlice = si2; stopped = true; break; }
                 var slice = run.Slices[si2];
-                stats.Slices++;
+                stats.Slices++; searched++;
                 hits.Clear();
                 queryWatch.Start();
                 Vote(slice);

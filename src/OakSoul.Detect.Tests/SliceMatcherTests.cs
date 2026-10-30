@@ -114,6 +114,20 @@ public sealed class SliceMatcherTests(ITestOutputHelper output)
         var extra = kept.Where(x => !used.Contains(x)).ToList();
         foreach (var x in extra) output.WriteLine($"  extra: {x}");
         Assert.True(missing.Count == 0 && extra.Count == 0, $"missed or wrong: {string.Join("; ", missing)}; extra: {extra.Count}");
+
+        // With no time at all, every search still does one slice, so a caller resuming from the stop position always progresses.
+        var none = new SliceMatcher.Options { BudgetMs = 0, KeepOverlapping = true };
+        long single = 0; var singleCalls = 0;
+        while (singleCalls < 10_000)
+        {
+            var stats = new SliceMatcher.Stats();
+            SliceMatcher.Search(f.Frame, f.Width, f.Mask, f.Mosaic, f.CameraX, f.CameraY, mobRuns, mobs, none, stats);
+            Assert.Equal(1, stats.Slices);
+            single += stats.Slices; singleCalls++;
+            if (stats.StoppedRun < 0) break;
+            none = none with { Start = (stats.StoppedRun, stats.StoppedSlice) };
+        }
+        Assert.Equal(mobRuns.Sum(r => r.Slices.Count), single);
     }
 
     /// <summary>Whether a find stands where a target is: they share half the narrower's columns, and their bottoms are close.</summary>
