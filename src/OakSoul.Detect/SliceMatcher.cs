@@ -75,6 +75,8 @@ public static class SliceMatcher
     {
         public readonly List<(int Y, int B, int G, int R)>[] ByX;
         public readonly int Seed, SeedRight;
+        /// <summary>X0..X1 in an order that spreads every prefix over the frame (a stride coprime with the width), so a wrong placement fails its bound early.</summary>
+        public readonly int[] Order;
 
         public Columns(SpriteFrame f, int seedPixels)
         {
@@ -88,10 +90,17 @@ public static class SliceMatcher
                 }
             bool Coloured(int x) =>
                 ByX[x].Count(p => p.Y >= f.OriginY - FootholdSlices.Above && p.Y <= f.OriginY + FootholdSlices.Below && Math.Max(p.B, Math.Max(p.G, p.R)) > 51) >= seedPixels;
+            var w = Math.Max(0, f.X1 - f.X0 + 1);
+            var stride = w <= 2 ? 1 : Math.Max(1, (int)(w * 0.618));
+            while (w > 1 && Gcd(stride, w) != 1) stride++;
+            Order = new int[w];
+            for (var i = 0; i < w; i++) Order[i] = f.X0 + (int)((long)i * stride % w);
             Seed = SeedRight = -1;
             for (var x = 0; x < f.Width && Seed < 0; x++) if (Coloured(x)) Seed = x;
             for (var x = f.Width - 1; x >= 0 && SeedRight < 0; x--) if (Coloured(x)) SeedRight = x;
         }
+
+        private static int Gcd(int a, int b) { while (b != 0) (a, b) = (b, a % b); return a; }
     }
 
     /// <summary>Every placement that matches, the best per place: overlapping finds keep the one with the least distance.</summary>
@@ -132,11 +141,11 @@ public static class SliceMatcher
                     if (seed.N == 0 || seed.Residual / seed.N > o.SeedDistance) continue;
                     stats.SeedsPassed++;
                     // Then every column, whole.
-                    var find = Score(frame, frameWidth, frameHeight, mask, mosaic, cameraX, cameraY, name, f, cols, left, top, o);
-                    stats.Columns += find.Columns; stats.Pixels += find.Pixels;
                     // Passes on its screen distance for now; the art-units limit is judged after kept finds explain what covers it
-                    // (the boar's columns behind the snail would fail it here).
-                    if (find.Columns > 0 && find.Pixels >= o.MinCompared * f.PixelX.Length && find.Share >= o.MinShare && find.Distance <= o.MaxDistance) finds.Add(find);
+                    // (the boar's columns behind the snail would fail it here), so only the screen distance, the share and the
+                    // pixels compared may stop a placement early.
+                    var find = Score(frame, frameWidth, frameHeight, mask, mosaic, cameraX, cameraY, name, f, cols, left, top, o, default, stats);
+                    if (find is not null && find.Columns > 0 && find.Pixels >= o.MinCompared * f.PixelX.Length && find.Share >= o.MinShare && find.Distance <= o.MaxDistance) finds.Add(find);
                 }
                 }
             }
@@ -153,7 +162,7 @@ public static class SliceMatcher
         foreach (var f in finds.OrderBy(f => f.Distance).ThenByDescending(f => f.Matched))
         {
             var find = kept.Any(k => Overlaps(k, f))
-                ? Score(frame, frameWidth, frameHeight, mask, mosaic, cameraX, cameraY, f.Name, f.Frame, colsOf[f.Frame], f.Left, f.Top, o, explained)
+                ? Score(frame, frameWidth, frameHeight, mask, mosaic, cameraX, cameraY, f.Name, f.Frame, colsOf[f.Frame], f.Left, f.Top, o, explained, null)!
                 : f;
             if (!Accepts(find, o)) continue;
             kept.Add(find);
@@ -188,21 +197,58 @@ public static class SliceMatcher
         Candidate candidate, int left, int top, Options? options = null)
     {
         var o = options ?? new Options();
-        return Score(frame, frameWidth, frame.Length / 4 / frameWidth, mask, mosaic, cameraX, cameraY, candidate.Name, candidate.Frame, new Columns(candidate.Frame, o.SeedPixels), left, top, o);
+        return Score(frame, frameWidth, frame.Length / 4 / frameWidth, mask, mosaic, cameraX, cameraY, candidate.Name, candidate.Frame, new Columns(candidate.Frame, o.SeedPixels), left, top, o, default, null)!;
     }
 
-    private static Find Score(ReadOnlySpan<byte> frame, int frameWidth, int frameHeight, ScreenMask mask, BackgroundMosaic mosaic, int cameraX, int cameraY,
-        string name, SpriteFrame f, Columns cols, int left, int top, Options o, ReadOnlySpan<byte> explained = default)
+    /// <summary>
+    /// The placement compared whole. With <paramref name="stats"/> (the search's first pass), columns go in the spread order and
+    /// the placement stops, returning null, once it cannot pass: the residual only grows, so the distance can end no lower than
+    /// the residual so far over every pixel that could still be compared; the share can end no higher than if every column still
+    /// to come matched; the pixels compared no more than every opaque pixel still to come. The sums are taken in column order
+    /// whatever order the columns are compared in, so a placement that is not stopped scores exactly as before.
+    /// </summary>
+    private static Find? Score(ReadOnlySpan<byte> frame, int frameWidth, int frameHeight, ScreenMask mask, BackgroundMosaic mosaic, int cameraX, int cameraY,
+        string name, SpriteFrame f, Columns cols, int left, int top, Options o, ReadOnlySpan<byte> explained, Stats? stats)
     {
-        int compared = 0, matched = 0, pixels = 0;
-        double residual = 0, lifted = 0;
+        var width = cols.Order.Length;
+        Span<double> res = width <= 256 ? stackalloc double[256] : new double[width];
+        Span<double> lif = width <= 256 ? stackalloc double[256] : new double[width];
+        Span<int> ns = width <= 256 ? stackalloc int[256] : new int[width];
+        // What could still be compared: the opaque pixels of the columns on the frame, and those columns.
+        int restPixels = 0, restColumns = 0;
         for (var x = f.X0; x <= f.X1; x++)
+            if ((uint)(left + x) < (uint)frameWidth && cols.ByX[x].Count > 0) { restPixels += cols.ByX[x].Count; restColumns++; }
+        var early = stats is not null;
+        var needPixels = o.MinCompared * f.PixelX.Length;
+        int compared = 0, matched = 0, pixels = 0;
+        double residualSoFar = 0;
+        var stopped = early && restPixels < needPixels;
+        for (var i = 0; i < width && !stopped; i++)
         {
+            var x = early ? cols.Order[i] : f.X0 + i;
+            ns[x - f.X0] = 0;
+            if ((uint)(left + x) >= (uint)frameWidth || cols.ByX[x].Count == 0) continue;
+            restPixels -= cols.ByX[x].Count; restColumns--;
             var c = Column(frame, frameWidth, frameHeight, mask, mosaic, cameraX, cameraY, cols.ByX[x], left + x, top, int.MinValue, int.MaxValue, o.MaxLift, o.LiftGates, explained);
+            ns[x - f.X0] = c.N; res[x - f.X0] = c.Residual; lif[x - f.X0] = c.Lifted;
             if (c.N == 0) continue;
             compared++;
             if (c.Residual / c.N <= o.ColumnDistance) matched++;
-            pixels += c.N; residual += c.Residual; lifted += c.Lifted;
+            pixels += c.N; residualSoFar += c.Residual;
+            if (!early) continue;
+            // The bounds, a hair lenient so a rounding in the partial sums never stops a placement that passes.
+            if (pixels + restPixels < needPixels
+                || residualSoFar / (pixels + restPixels) > o.MaxDistance + 1e-9
+                || (double)(matched + restColumns) / (compared + restColumns) < o.MinShare - 1e-9)
+                stopped = true;
+        }
+        if (stats is not null) { stats.Columns += compared; stats.Pixels += pixels; }
+        if (stopped) return null;
+        double residual = 0, lifted = 0;
+        for (var i = 0; i < width; i++)
+        {
+            if (ns[i] == 0) continue;
+            residual += res[i]; lifted += lif[i];
         }
         return new Find(name, f, left, top, left + f.OriginX, top + f.OriginY, compared, matched, pixels, pixels == 0 ? 1 : residual / pixels, pixels == 0 ? 1 : lifted / pixels);
     }
