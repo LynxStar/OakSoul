@@ -362,6 +362,7 @@ public sealed partial class EntityDetector
                 blobs.Add(pb);
                 predicted[pb] = p;
             }
+        if (DebugDir is not null) SnapshotBlobs(blobs, predicted.Keys);
 
         var candidates = new List<Candidate>();
         var tagUsed = new bool[tags.Count];
@@ -1738,5 +1739,6 @@ public sealed partial class EntityDetector
         Directory.CreateDirectory(DebugDir!);
         var r = new EntityFrame(ctx.Frame, ctx.Time, entities, (camX, camY), null, 0, 0);
         Annotate(frame, frameWidth, r, foreground: true).Save(Path.Combine(DebugDir!, $"{ctx.Frame:0000}.png"));
+        BlobView(frame, frameWidth, entities).Save(Path.Combine(DebugDir!, $"{ctx.Frame:0000}-blobs.png"));
     }
 }
