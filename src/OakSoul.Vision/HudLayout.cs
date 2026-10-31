@@ -39,7 +39,8 @@ public sealed record HudRegion(int Id, string Name, RegionKind Kind, CaptureRect
     {
         CheckFits(frameWidth, frameHeight);
         var stride = frameWidth * 4;
-        if (Width == 0 || Height == 0) return new BgraView(ReadOnlySpan<byte>.Empty, Width, Height, stride);
+        // An empty region's view has no rows to step over: its stride is its own (zero) row, so Row(y) on it is empty rather than a throw.
+        if (Width == 0 || Height == 0) return new BgraView(ReadOnlySpan<byte>.Empty, Width, Height, Width * 4);
         return new BgraView(bgra.Slice(Y * stride + X * 4, (Height - 1) * stride + Width * 4), Width, Height, stride);
     }
 
