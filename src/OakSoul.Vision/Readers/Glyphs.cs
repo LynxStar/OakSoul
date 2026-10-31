@@ -40,8 +40,10 @@ public static class GlyphSegmenter
 {
     public const int DefaultLumaThreshold = 150;
 
-    public static List<GlyphSegment> Segment(ReadOnlySpan<byte> bgra, int width, int rowTop, int rowBottom, int lumaThreshold = DefaultLumaThreshold)
+    public static List<GlyphSegment> Segment(BgraView bgra, int rowTop, int rowBottom, int lumaThreshold = DefaultLumaThreshold)
     {
+        var width = bgra.Width;
+        var px = bgra.Pixels;
         var height = rowBottom - rowTop + 1;
         var bright = new bool[height, width];
         var green = new bool[height, width];
@@ -50,8 +52,8 @@ public static class GlyphSegmenter
         {
             for (var x = 0; x < width; x++)
             {
-                var o = ((rowTop + y) * width + x) * 4;
-                int b = bgra[o], g = bgra[o + 1], r = bgra[o + 2];
+                var o = bgra.Offset(x, rowTop + y);
+                int b = px[o], g = px[o + 1], r = px[o + 2];
                 var luma = (b + g * 2 + r) >> 2;
                 var isGreen = g > 140 && g >= r + 20 && g > b + 60; // the brackets are a dull yellow-green, about (140,170,80)
                 bright[y, x] = luma > lumaThreshold && !isGreen;

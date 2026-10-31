@@ -30,12 +30,12 @@ public static class OcrInput
     public static bool IsPixelExact(FrameGeometry geometry, ReadOnlySpan<byte> frame)
     {
         if (!geometry.IsNative || !geometry.Layout.TryGet("status.class_name", out var region)) return false;
-        var px = geometry.ExtractNative(frame, region);
+        var px = geometry.ViewNative(frame, region);
         int w = region.Width, h = region.Height, strokes = 0;
         for (var y = 0; y < h; y++)
             for (var x = 1; x < w - 1; x++)
             {
-                int left = Luma(px, w, x - 1, y), here = Luma(px, w, x, y), right = Luma(px, w, x + 1, y);
+                int left = Luma(px, x - 1, y), here = Luma(px, x, y), right = Luma(px, x + 1, y);
                 if (Math.Min(here - left, here - right) >= SharpStrokeContrast || Math.Min(left - here, right - here) >= SharpStrokeContrast)
                     if (++strokes >= MinSharpStrokes) return true;
             }
@@ -89,9 +89,9 @@ public static class OcrInput
         return result;
     }
 
-    private static int Luma(byte[] px, int w, int x, int y)
+    private static int Luma(BgraView px, int x, int y)
     {
-        var o = (y * w + x) * 4;
-        return (px[o] + px[o + 1] * 2 + px[o + 2]) >> 2;
+        var o = px.Offset(x, y);
+        return (px.Pixels[o] + px.Pixels[o + 1] * 2 + px.Pixels[o + 2]) >> 2;
     }
 }

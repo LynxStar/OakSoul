@@ -27,12 +27,26 @@ public sealed record HudRegion(int Id, string Name, RegionKind Kind, CaptureRect
     /// <summary>Copies this region's pixels out of a tightly packed BGRA frame into a new BGRA buffer.</summary>
     public byte[] Extract(ReadOnlySpan<byte> bgra, int frameWidth, int frameHeight)
     {
-        if (X < 0 || Y < 0 || X + Width > frameWidth || Y + Height > frameHeight)
-            throw new ArgumentException($"region {Name} {Rect} does not fit a {frameWidth}x{frameHeight} frame");
+        CheckFits(frameWidth, frameHeight);
         var result = new byte[Width * Height * 4];
         for (var row = 0; row < Height; row++)
             bgra.Slice(((Y + row) * frameWidth + X) * 4, Width * 4).CopyTo(result.AsSpan(row * Width * 4));
         return result;
+    }
+
+    /// <summary>This region of a tightly packed BGRA frame, read in place: no copy, stride the frame's row.</summary>
+    public BgraView View(ReadOnlySpan<byte> bgra, int frameWidth, int frameHeight)
+    {
+        CheckFits(frameWidth, frameHeight);
+        var stride = frameWidth * 4;
+        if (Width == 0 || Height == 0) return new BgraView(ReadOnlySpan<byte>.Empty, Width, Height, stride);
+        return new BgraView(bgra.Slice(Y * stride + X * 4, (Height - 1) * stride + Width * 4), Width, Height, stride);
+    }
+
+    private void CheckFits(int frameWidth, int frameHeight)
+    {
+        if (X < 0 || Y < 0 || X + Width > frameWidth || Y + Height > frameHeight)
+            throw new ArgumentException($"region {Name} {Rect} does not fit a {frameWidth}x{frameHeight} frame");
     }
 }
 

@@ -68,11 +68,11 @@ public static class MinimapReader
     public static MinimapReading Read(FrameGeometry geometry, ReadOnlySpan<byte> frame)
     {
         var search = new HudRegion(0, "minimap.search", RegionKind.Fixed, SearchArea, "");
-        var px = geometry.ExtractNative(frame, search);
+        var px = geometry.ViewNative(frame, search);
         var w = SearchArea.Width;
 
         // Corner must look like the panel: light border pixel just inside the top-left corner.
-        if (Luma(px, w, PanelLeft + 1, PanelTop + 1) < 150) return Invalid();
+        if (Luma(px, PanelLeft + 1, PanelTop + 1) < 150) return Invalid();
 
         // Right edge: anchored on the orange WORLD button at the end of the title bar, which no background can
         // imitate; fall back to the first dark pixel on the top border line.
@@ -81,11 +81,11 @@ public static class MinimapReader
         // itself (x 152..185 orange, 186 black, 187 white on Deep Valley I); the point-size capture's blur leaves the
         // first column after the run still three quarters orange and puts the darkest column one further. Both give
         // the outline, and the edge (x 191 there, the last panel column before the world) is five columns on.
-        var worldOutline = FindWorldOutline(px, w, TitleBarRow);
+        var worldOutline = FindWorldOutline(px, TitleBarRow);
         var right = worldOutline < 0 ? -1 : worldOutline + OutlineToEdge;
         if (right < 0)
             for (var x = PanelLeft + 4; x < w; x++)
-                if (Luma(px, w, x, TopBorderRow) < 70) { right = x - 1; break; }
+                if (Luma(px, x, TopBorderRow) < 70) { right = x - 1; break; }
 
         // Bottom edge: walk down the left border while it still looks like the border (its blue-grey, then the
         // light bottom line); whatever lies under the panel, sky or cave, fails both tests.
@@ -93,7 +93,7 @@ public static class MinimapReader
         var misses = 0;
         for (var y = PanelTop + 3; y < SearchArea.Height; y++)
         {
-            if (IsBorderBlue(px, w, LeftBorderColumn, y) || IsLightGrey(px, w, LeftBorderColumn, y)) { bottom = y; misses = 0; }
+            if (IsBorderBlue(px, LeftBorderColumn, y) || IsLightGrey(px, LeftBorderColumn, y)) { bottom = y; misses = 0; }
             else if (++misses > 2) break; // a resampled frame can blur one or two rows at the bottom corner
         }
         if (right < PanelLeft + 60) return Invalid();
@@ -103,11 +103,14 @@ public static class MinimapReader
         // border, whose first dark pixel is the minus button's outline: the bar then read as ending where its buttons
         // start (149 of 215 columns on fx-anttunnel). The button is found again on rows above and below its caption,
         // which gives the bar's true end and where the name text must stop.
-        if (!IsNameBlockBlue(px, w, PanelLeft + 100, PanelTop + 38) && !IsNameBlockBlue(px, w, PanelLeft + 60, PanelTop + 44))
+        if (!IsNameBlockBlue(px, PanelLeft + 100, PanelTop + 38) && !IsNameBlockBlue(px, PanelLeft + 60, PanelTop + 44))
         {
             // Only for the bar itself: with the name block hidden but the map shown (fx-maps around 1:02) the title bar holds
             // "MINI MAP" over the map, and the left border runs on down past the bar.
-            var outline = bottom > PanelTop + CollapsedBarHeight + 2 ? -1 : CollapsedButtonRows.Select(row => FindWorldOutline(px, w, row)).FirstOrDefault(x => x >= 0, -1);
+            var outline = -1;
+            if (bottom <= PanelTop + CollapsedBarHeight + 2)
+                foreach (var row in CollapsedButtonRows)
+                    if (FindWorldOutline(px, row) is var found and >= 0) { outline = found; break; }
             if (outline - ButtonsWidth > PanelLeft + 20)
                 return new MinimapReading(new CaptureRect(PanelLeft, PanelTop, outline + CollapsedOutlineToEdge - PanelLeft + 1, CollapsedBarHeight), default, null, [], true,
                     Collapsed: true, NameRight: outline - ButtonsWidth);
@@ -116,14 +119,14 @@ public static class MinimapReader
 
         // Bottom edge: the panel ends with a blue-grey bar, a light line and a dark shadow line, all across its
         // width. Map art under the panel, sky or cliff, never has that three-row signature.
-        bottom = FindBottom(px, w, right, bottom);
+        bottom = FindBottom(px, right, bottom);
         if (bottom < PanelTop + MapInsetTop + MapInsetBottom + 10) return Invalid();
 
         var panel = new CaptureRect(PanelLeft, PanelTop, right - PanelLeft + 1, bottom - PanelTop + 1);
         var map = new CaptureRect(PanelLeft + MapInsetLeft, PanelTop + MapInsetTop,
             right - MapInsetRight - (PanelLeft + MapInsetLeft) + 1, bottom - MapInsetBottom - (PanelTop + MapInsetTop) + 1);
 
-        var dots = FindDots(px, w, map);
+        var dots = FindDots(px, map);
         var self = dots.Where(d => d.Kind == MinimapDotKind.Self).OrderByDescending(d => d.Pixels).FirstOrDefault();
         return new MinimapReading(panel, map, self, dots, true);
     }
@@ -153,18 +156,18 @@ public static class MinimapReader
     /// The WORLD button's dark right outline on this row, or -1: a run of 24 to 44 orange columns, then the outline, then
     /// light border (see <see cref="Read"/>).
     /// </summary>
-    private static int FindWorldOutline(byte[] px, int w, int row)
+    private static int FindWorldOutline(BgraView px, int row)
     {
         var runStart = -1;
-        for (var x = PanelLeft + 40; x < w - 6; x++)
+        for (var x = PanelLeft + 40; x < px.Width - 6; x++)
         {
-            var orange = IsOrange(px, w, x, row);
+            var orange = IsOrange(px, x, row);
             if (orange && runStart < 0) runStart = x;
             if (!orange && runStart >= 0)
             {
                 var length = x - runStart;
-                var outline = Luma(px, w, x + 1, row) < 130 && Luma(px, w, x + 3, row) > 140 ? x + 1
-                    : Luma(px, w, x, row) < 130 && Luma(px, w, x + 2, row) > 140 ? x : -1;
+                var outline = Luma(px, x + 1, row) < 130 && Luma(px, x + 3, row) > 140 ? x + 1
+                    : Luma(px, x, row) < 130 && Luma(px, x + 2, row) > 140 ? x : -1;
                 if (length is >= 24 and <= 44 && outline >= 0) return outline;
                 runStart = -1;
             }
@@ -173,7 +176,7 @@ public static class MinimapReader
     }
 
     /// <summary>The lowest row that is a light line over a dark shadow line, under a blue-grey bar, across the panel.</summary>
-    private static int FindBottom(byte[] px, int w, int right, int fallback)
+    private static int FindBottom(BgraView px, int right, int fallback)
     {
         int x0 = PanelLeft + 6, x1 = right - 6, span = x1 - x0 + 1;
         for (var y = PanelTop + MapInsetTop + 20; y < SearchArea.Height - 1; y++)
@@ -181,13 +184,13 @@ public static class MinimapReader
             int light = 0, dark = 0, bar = 0;
             for (var x = x0; x <= x1; x++)
             {
-                var here = Luma(px, w, x, y);
+                var here = Luma(px, x, y);
                 // The light line is white. On an exact frame the bar's lowest light-blue row sits directly on the dark
                 // blue line under it and would pass for it three rows too high; blur softened that drop too much to pass.
-                if (here > 180 && !IsNameBlockBlue(px, w, x, y)) light++;
+                if (here > 180 && !IsNameBlockBlue(px, x, y)) light++;
                 // The shadow line is alpha-blended, so over a bright sky it is grey, not black: test the drop, not the level.
-                if (here - Luma(px, w, x, y + 1) > 60) dark++;
-                if (IsBorderBlue(px, w, x, y - 3) || IsNameBlockBlue(px, w, x, y - 3)) bar++;
+                if (here - Luma(px, x, y + 1) > 60) dark++;
+                if (IsBorderBlue(px, x, y - 3) || IsNameBlockBlue(px, x, y - 3)) bar++;
             }
             if (light > span * 0.7 && dark > span * 0.7 && bar > span * 0.5) return y;
         }
@@ -195,20 +198,20 @@ public static class MinimapReader
     }
 
     /// <summary>The name block and bottom bar, light blue-grey around (157,171,196) to (207,220,223).</summary>
-    private static bool IsNameBlockBlue(byte[] px, int w, int x, int y)
+    private static bool IsNameBlockBlue(BgraView px, int x, int y)
     {
-        var (r, g, b) = Rgb(px, w, x, y);
+        var (r, g, b) = Rgb(px, x, y);
         return b - r is >= 10 and <= 60 && g >= r && g <= b + 4 && r is >= 110 and <= 215;
     }
 
-    private static List<MinimapDot> FindDots(byte[] px, int w, CaptureRect map)
+    private static List<MinimapDot> FindDots(BgraView px, CaptureRect map)
     {
         var kinds = new MinimapDotKind?[map.Height, map.Width];
         for (var y = 0; y < map.Height; y++)
             for (var x = 0; x < map.Width; x++)
             {
-                var o = ((map.Y + y) * w + map.X + x) * 4;
-                kinds[y, x] = Classify(px[o + 2], px[o + 1], px[o]);
+                var o = px.Offset(map.X + x, map.Y + y);
+                kinds[y, x] = Classify(px.Pixels[o + 2], px.Pixels[o + 1], px.Pixels[o]);
             }
 
         var seen = new bool[map.Height, map.Width];
@@ -249,36 +252,36 @@ public static class MinimapReader
         return null;
     }
 
-    private static int Luma(byte[] px, int w, int x, int y)
+    private static int Luma(BgraView px, int x, int y)
     {
-        var o = (y * w + x) * 4;
-        return (px[o] + px[o + 1] * 2 + px[o + 2]) >> 2;
+        var o = px.Offset(x, y);
+        return (px.Pixels[o] + px.Pixels[o + 1] * 2 + px.Pixels[o + 2]) >> 2;
     }
 
-    private static (int R, int G, int B) Rgb(byte[] px, int w, int x, int y)
+    private static (int R, int G, int B) Rgb(BgraView px, int x, int y)
     {
-        var o = (y * w + x) * 4;
-        return (px[o + 2], px[o + 1], px[o]);
+        var o = px.Offset(x, y);
+        return (px.Pixels[o + 2], px.Pixels[o + 1], px.Pixels[o]);
     }
 
     /// <summary>The WORLD button, about (210,155,60).</summary>
-    private static bool IsOrange(byte[] px, int w, int x, int y)
+    private static bool IsOrange(BgraView px, int x, int y)
     {
-        var (r, g, b) = Rgb(px, w, x, y);
+        var (r, g, b) = Rgb(px, x, y);
         return r > 185 && g is >= 130 and <= 185 && b < 110 && r > g + 30;
     }
 
     /// <summary>The panel border, about (121,144,171) to (134,155,179).</summary>
-    private static bool IsBorderBlue(byte[] px, int w, int x, int y)
+    private static bool IsBorderBlue(BgraView px, int x, int y)
     {
-        var (r, g, b) = Rgb(px, w, x, y);
+        var (r, g, b) = Rgb(px, x, y);
         return b - r is >= 20 and <= 75 && g >= r && g <= b && r is >= 85 and <= 165;
     }
 
     /// <summary>The light lines that frame the panel, about (200..240) grey.</summary>
-    private static bool IsLightGrey(byte[] px, int w, int x, int y)
+    private static bool IsLightGrey(BgraView px, int x, int y)
     {
-        var (r, g, b) = Rgb(px, w, x, y);
+        var (r, g, b) = Rgb(px, x, y);
         return Math.Min(r, Math.Min(g, b)) > 165 && Math.Max(r, Math.Max(g, b)) - Math.Min(r, Math.Min(g, b)) < 40;
     }
 }

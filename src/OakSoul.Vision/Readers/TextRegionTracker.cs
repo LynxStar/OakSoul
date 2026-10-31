@@ -50,7 +50,7 @@ public sealed class TextRegionTracker
     {
         var native = _region();
         var hashRegion = new HudRegion(0, "text.hash", RegionKind.Fixed, native, "");
-        var hash = Hash(geometry.ExtractNative(frame, hashRegion));
+        var hash = Hash(geometry.ViewNative(frame, hashRegion));
         if (hash == _lastHash && Lines is not null) return false;
         if (hash == _candidateHash) _candidateFrames++;
         else { _candidateHash = hash; _candidateFrames = 1; }
@@ -79,14 +79,18 @@ public sealed class TextRegionTracker
     }
 
     /// <summary>Coarse luma hash: a one-pixel wobble or resampling noise does not look like a change.</summary>
-    public static ulong Hash(byte[] bgra)
+    public static ulong Hash(BgraView bgra)
     {
         var h = 14695981039346656037UL;
-        for (var o = 0; o + 3 < bgra.Length; o += 4)
+        for (var y = 0; y < bgra.Height; y++)
         {
-            var luma = (bgra[o] + bgra[o + 1] * 2 + bgra[o + 2]) >> 6;
-            h ^= (byte)luma;
-            h *= 1099511628211UL;
+            var row = bgra.Row(y);
+            for (var o = 0; o + 3 < row.Length; o += 4)
+            {
+                var luma = (row[o] + row[o + 1] * 2 + row[o + 2]) >> 6;
+                h ^= (byte)luma;
+                h *= 1099511628211UL;
+            }
         }
         return h;
     }

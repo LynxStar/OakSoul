@@ -123,6 +123,14 @@ public sealed class FrameGeometry
         return output;
     }
 
+    /// <summary>
+    /// The region's pixels at native size, as <see cref="ExtractNative"/> gives them but without the copy where none is
+    /// needed: on a native frame a view straight into the frame (stride the frame's row), otherwise the resampled copy
+    /// wrapped in a view. The view lives no longer than the frame; use <see cref="ExtractNative"/> to keep the pixels.
+    /// </summary>
+    public BgraView ViewNative(ReadOnlySpan<byte> bgra, HudRegion region) =>
+        IsNative ? region.View(bgra, FrameWidth, FrameHeight) : new BgraView(ExtractNative(bgra, region), region.Width, region.Height);
+
     private static double MeanLuma(ReadOnlySpan<byte> bgra, int frameWidth, int x, int y, int w, int h)
     {
         if (w <= 0 || h <= 0) return 0;

@@ -22,15 +22,16 @@ public static class BarReader
     public const int HighlightLuma = 150;
     public const int FilledSaturation = 50;
 
-    public static BarReading Read(ReadOnlySpan<byte> bgra, int width, int height)
+    public static BarReading Read(BgraView bgra)
     {
+        int width = bgra.Width, height = bgra.Height;
         if (height <= BodyBottom) return default;
 
         // Horizontal extent: the longest bright run on the highlight row.
         int bestStart = -1, bestLength = 0, runStart = -1;
         for (var x = 0; x <= width; x++)
         {
-            var bright = x < width && Luma(bgra, (HighlightRow * width + x) * 4) > HighlightLuma;
+            var bright = x < width && Luma(bgra.Pixels, bgra.Offset(x, HighlightRow)) > HighlightLuma;
             if (bright && runStart < 0) runStart = x;
             if (!bright && runStart >= 0)
             {
@@ -48,8 +49,8 @@ public static class BarReader
             var saturation = 0;
             for (var y = BodyTop; y <= BodyBottom; y++)
             {
-                var o = (y * width + x) * 4;
-                int b = bgra[o], g = bgra[o + 1], r = bgra[o + 2];
+                var o = bgra.Offset(x, y);
+                int b = bgra.Pixels[o], g = bgra.Pixels[o + 1], r = bgra.Pixels[o + 2];
                 saturation += Math.Max(r, Math.Max(g, b)) - Math.Min(r, Math.Min(g, b));
             }
             saturation /= BodyBottom - BodyTop + 1;

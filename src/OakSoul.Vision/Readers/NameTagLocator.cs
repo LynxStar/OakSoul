@@ -279,12 +279,12 @@ public sealed class NameTagLocator
     private NameTagHit? Find(FrameGeometry geometry, ReadOnlySpan<byte> frame, double minTextFraction, double minCombinedFraction)
     {
         var viewport = geometry.Layout[SearchRegion];
-        var native = geometry.ExtractNative(frame, viewport);
+        var native = geometry.ViewNative(frame, viewport);
         int w = viewport.Width, h = viewport.Height;
 
         if (_last is { } last)
         {
-            var hit = Search(native, w, h, Math.Max(0, last.X - viewport.X - 80), Math.Max(0, last.Y - viewport.Y - 80),
+            var hit = Search(native, Math.Max(0, last.X - viewport.X - 80), Math.Max(0, last.Y - viewport.Y - 80),
                 Math.Min(w - _width, last.X - viewport.X + 80), Math.Min(h - _height, last.Y - viewport.Y + 80), minTextFraction, minCombinedFraction);
             if (hit is not null) return Remember(hit.Value, viewport);
         }
@@ -295,11 +295,11 @@ public sealed class NameTagLocator
         if (_lastSeen is { } seen && OcrInput.IsPixelExact(geometry, frame))
         {
             int sx = seen.X - viewport.X, sy = seen.Y - viewport.Y;
-            var partial = SearchOccluded(native, w, Math.Max(0, sx - OccludedSearchRadius), Math.Max(0, sy - OccludedSearchRadius),
+            var partial = SearchOccluded(native, Math.Max(0, sx - OccludedSearchRadius), Math.Max(0, sy - OccludedSearchRadius),
                 Math.Min(w - _width, sx + OccludedSearchRadius), Math.Min(h - _height, sy + OccludedSearchRadius));
             if (partial is not null) return Remember(partial.Value, viewport);
         }
-        var full = Search(native, w, h, 0, 0, w - _width, h - _height, minTextFraction, minCombinedFraction);
+        var full = Search(native, 0, 0, w - _width, h - _height, minTextFraction, minCombinedFraction);
         if (full is null) { _last = null; return null; }
         return Remember(full.Value, viewport);
     }
@@ -312,7 +312,7 @@ public sealed class NameTagLocator
     }
 
     /// <summary>The position with the most exactly matching text columns, if at least <see cref="MinExactColumns"/> of them match.</summary>
-    private NameTagHit? SearchOccluded(byte[] px, int w, int x0, int y0, int x1, int y1)
+    private NameTagHit? SearchOccluded(BgraView px, int x0, int y0, int x1, int y1)
     {
         var maxFailures = _columns.Length - (int)Math.Ceiling(_columns.Length * MinExactColumns);
         // The first fifth of the columns spans the whole name, and a tag that keeps 45% or more of its columns keeps a
@@ -330,7 +330,7 @@ public sealed class NameTagLocator
                     var ok = true;
                     foreach (var (cy, isText) in pixels)
                     {
-                        var l = Luma(px, w, x + cx, y + cy);
+                        var l = Luma(px, x + cx, y + cy);
                         if (isText ? l <= TextLuma : l >= GapLuma) { ok = false; break; }
                     }
                     if (ok) exact++;
@@ -339,11 +339,13 @@ public sealed class NameTagLocator
                 if (failures <= maxFailures && exact > bestExact) { bestExact = exact; bestX = x; bestY = y; }
             }
         if (bestX < 0) return null;
-        var matched = _text.Count(p => Luma(px, w, bestX + p.X, bestY + p.Y) > TextLuma) + _gaps.Count(p => Luma(px, w, bestX + p.X, bestY + p.Y) < GapLuma);
+        var matched = 0;
+        foreach (var p in _text) if (Luma(px, bestX + p.X, bestY + p.Y) > TextLuma) matched++;
+        foreach (var p in _gaps) if (Luma(px, bestX + p.X, bestY + p.Y) < GapLuma) matched++;
         return new NameTagHit(new CaptureRect(bestX, bestY, _width, _height), matched, _text.Length + _gaps.Length);
     }
 
-    private NameTagHit? Search(byte[] px, int w, int h, int x0, int y0, int x1, int y1, double minText, double minCombined)
+    private NameTagHit? Search(BgraView px, int x0, int y0, int x1, int y1, double minText, double minCombined)
     {
         // Text pixels are opaque and must nearly all be bright; the gaps show the world through a translucent box,
         // so they are judged together with the text as a combined fraction.
@@ -357,7 +359,7 @@ public sealed class NameTagLocator
                 var probeMisses = 0;
                 foreach (var (pos, isText) in _probes)
                 {
-                    var l = Luma(px, w, x + pos.X, y + pos.Y);
+                    var l = Luma(px, x + pos.X, y + pos.Y);
                     if ((isText ? l <= TextLuma : l >= GapLuma) && ++probeMisses > 2) break;
                 }
                 if (probeMisses > 2) continue;
@@ -365,7 +367,7 @@ public sealed class NameTagLocator
                 var ok = true;
                 foreach (var (tx, ty) in _text)
                 {
-                    if (Luma(px, w, x + tx, y + ty) <= TextLuma && ++misses > maxTextMisses) { ok = false; break; }
+                    if (Luma(px, x + tx, y + ty) <= TextLuma && ++misses > maxTextMisses) { ok = false; break; }
                 }
                 if (!ok) continue;
                 var gapMisses = 0;
@@ -373,7 +375,7 @@ public sealed class NameTagLocator
                 if (maxGapMisses < 0) continue;
                 foreach (var (gx, gy) in _gaps)
                 {
-                    if (Luma(px, w, x + gx, y + gy) >= GapLuma && ++gapMisses > maxGapMisses) { ok = false; break; }
+                    if (Luma(px, x + gx, y + gy) >= GapLuma && ++gapMisses > maxGapMisses) { ok = false; break; }
                 }
                 if (!ok) continue;
                 var matched = _text.Length - misses + _gaps.Length - gapMisses;
@@ -390,5 +392,11 @@ public sealed class NameTagLocator
     {
         var o = (y * w + x) * 4;
         return (px[o] + px[o + 1] * 2 + px[o + 2]) >> 2;
+    }
+
+    private static int Luma(BgraView px, int x, int y)
+    {
+        var o = px.Offset(x, y);
+        return (px.Pixels[o] + px.Pixels[o + 1] * 2 + px.Pixels[o + 2]) >> 2;
     }
 }

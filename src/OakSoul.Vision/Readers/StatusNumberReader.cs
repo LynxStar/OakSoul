@@ -63,20 +63,20 @@ public static class StatusNumberReader
     public static GlyphFont Font => _font.Value;
 
     /// <summary>Glyphs of the text row that are neither label letters nor brackets, in reading order.</summary>
-    public static List<GlyphSegment> NumberGlyphs(ReadOnlySpan<byte> native, int width, int threshold = GlyphSegmenter.DefaultLumaThreshold) =>
-        GlyphSegmenter.Segment(native, width, TextTop, TextBottom, threshold)
+    public static List<GlyphSegment> NumberGlyphs(BgraView native, int threshold = GlyphSegmenter.DefaultLumaThreshold) =>
+        GlyphSegmenter.Segment(native, TextTop, TextBottom, threshold)
             .SelectMany(s => GlyphSegmenter.SplitWide(s, MaxGlyphWidth))
             .Where(s => !s.IsGreen && !s.Bitmap.Rows[0].Contains('#') && !s.Bitmap.Rows[1].Contains('#'))
             .ToList();
 
-    public static NumberReading Read(ReadOnlySpan<byte> native, int width, GlyphFont? font = null)
+    public static NumberReading Read(BgraView native, GlyphFont? font = null)
     {
         font ??= Font;
         NumberReading? best = null;
         var bestSum = int.MaxValue;
         foreach (var threshold in Thresholds)
         {
-            var (reading, sum) = ReadAt(native, width, font, threshold);
+            var (reading, sum) = ReadAt(native, font, threshold);
             if (best is null || reading.Unknown < best.Unknown || (reading.Unknown == best.Unknown && sum < bestSum))
             {
                 best = reading;
@@ -128,14 +128,14 @@ public static class StatusNumberReader
     private static int Score(GlyphSegment segment, GlyphFont font) =>
         segment.Bitmap.Ink == 0 || segment.Width > MaxGlyphWidth ? 100 : Math.Min(font.Match(segment.Bitmap).Distance, 100);
 
-    private static (NumberReading Reading, int DistanceSum) ReadAt(ReadOnlySpan<byte> native, int width, GlyphFont font, int threshold)
+    private static (NumberReading Reading, int DistanceSum) ReadAt(BgraView native, GlyphFont font, int threshold)
     {
         var text = new System.Text.StringBuilder();
         var maxDistance = 0;
         var distanceSum = 0;
         var separatorPending = false;
         GlyphSegment? previous = null;
-        foreach (var g in GlyphSegmenter.Segment(native, width, TextTop, TextBottom, threshold).SelectMany(s => SplitByFont(s, font)))
+        foreach (var g in GlyphSegmenter.Segment(native, TextTop, TextBottom, threshold).SelectMany(s => SplitByFont(s, font)))
         {
             if (g.IsGreen) { separatorPending = text.Length > 0; continue; }          // bracket: splits groups
             if (g.Bitmap.Rows[0].Contains('#') || g.Bitmap.Rows[1].Contains('#')) continue; // label letter

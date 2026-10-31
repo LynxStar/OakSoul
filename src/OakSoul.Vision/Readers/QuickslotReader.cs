@@ -36,13 +36,13 @@ public sealed class QuickslotReader
         for (var i = 0; i < 8; i++)
         {
             var rect = CellRect(_origin, i);
-            var px = geometry.ExtractNative(frame, new HudRegion(0, "cell", RegionKind.Fixed, rect, ""));
+            var px = geometry.ViewNative(frame, new HudRegion(0, "cell", RegionKind.Fixed, rect, ""));
             // An empty cell is flat light grey in the middle (the key letter sits in the top-left corner); any item
             // draws there. Measured: empty centres vary by under 100, the faintest item (a white feather) by over 1000.
-            var centre = geometry.ExtractNative(frame, new HudRegion(0, "centre", RegionKind.Fixed, new CaptureRect(rect.X + 8, rect.Y + 8, rect.Width - 12, rect.Height - 12), ""));
+            var centre = geometry.ViewNative(frame, new HudRegion(0, "centre", RegionKind.Fixed, new CaptureRect(rect.X + 8, rect.Y + 8, rect.Width - 12, rect.Height - 12), ""));
             var occupied = Variance(centre) > 300;
             var count = CountRect(rect);
-            var countPx = geometry.ExtractNative(frame, new HudRegion(0, "count", RegionKind.Fixed, count, ""));
+            var countPx = geometry.ViewNative(frame, new HudRegion(0, "count", RegionKind.Fixed, count, ""));
             cells.Add(new QuickslotCell(i, Keys[i], rect, occupied, TextRegionTracker.Hash(px), TextRegionTracker.Hash(countPx)));
         }
         return cells;
@@ -60,10 +60,14 @@ public sealed class QuickslotReader
         return changed;
     }
 
-    private static double Variance(byte[] bgra)
+    private static double Variance(BgraView bgra)
     {
-        long sum = 0, sq = 0; var n = bgra.Length / 4;
-        for (var o = 0; o < bgra.Length; o += 4) { var l = (bgra[o] + bgra[o + 1] * 2 + bgra[o + 2]) >> 2; sum += l; sq += (long)l * l; }
+        long sum = 0, sq = 0; var n = bgra.Width * bgra.Height;
+        for (var y = 0; y < bgra.Height; y++)
+        {
+            var row = bgra.Row(y);
+            for (var o = 0; o < row.Length; o += 4) { var l = (row[o] + row[o + 1] * 2 + row[o + 2]) >> 2; sum += l; sq += (long)l * l; }
+        }
         var mean = (double)sum / n;
         return (double)sq / n - mean * mean;
     }
