@@ -188,6 +188,10 @@ public static class WatchProgram
             mapFonts.SetNames(catalog.AllNames.Select(n => (n.Street, n.Map)));
             tracker.Fonts = mapFonts;
         }
+        // OAKSOUL_MAP_NAME_DUMP=dir writes every name block the tracker settled on, as captured (PNG), and a line per block in
+        // map-names.txt (the frame, the form, the names, what named them: a read, the cache, the fonts), for measuring the fonts offline.
+        var mapNameDump = Environment.GetEnvironmentVariable("OAKSOUL_MAP_NAME_DUMP") is { Length: > 0 } dumpDir ? dumpDir : null;
+        if (mapNameDump is not null) Directory.CreateDirectory(mapNameDump);
         var report = worldReport && world is not null ? new WorldReport() : null;
         backgroundsPath ??= Path.Combine(Directory.GetCurrentDirectory(), "data", "backgrounds");
         if (buildBackground && (recording is null || world is null)) { Console.Error.WriteLine("error: --build-background needs --recording and map metadata"); return 2; }
@@ -249,7 +253,13 @@ public static class WatchProgram
                     if (!exactFrames && OcrInput.IsPixelExact(geometry, frame.Pixels)) exactFrames = true;
                     var status = StatusReader.Read(geometry, frame.Pixels);
                     var minimap = MinimapReader.Read(geometry, frame.Pixels);
-                    if (minimap.Valid) tracker.Update(geometry, frame.Pixels, minimap);
+                    if (minimap.Valid && tracker.Update(geometry, frame.Pixels, minimap) && mapNameDump is not null && tracker.LastCrop is { } nameCrop)
+                    {
+                        var dumpName = $"{(recording is null ? "live" : Path.GetFileName(Path.TrimEndingDirectorySeparator(recording)))}-{frame.Index:D5}-seq{frame.Sequence}-{(tracker.LastForm == MapNameForm.Bar ? "bar" : "panel")}";
+                        Png.WriteBgra(Path.Combine(mapNameDump, dumpName + ".png"), nameCrop.Raw, nameCrop.Width, nameCrop.Height);
+                        var named = tracker.Current is { } names ? $"'{names.Region}' / '{names.Map}'{(catalog is null ? "" : catalog.FindCandidates(names.Region, names.Map).Exact ? " (catalog exact)" : " (not a catalog name)")}" : "nothing";
+                        File.AppendAllText(Path.Combine(mapNameDump, "map-names.txt"), $"{dumpName}: {tracker.LastNamedBy}; {named}\n");
+                    }
                     identity.Update(geometry, frame.Pixels);
                     // The operator gives the name; the status bar is only checked against it, and a mismatch is warned about once.
                     if (!nameWarned && identity.Current?.Name is { Length: > 0 } statusName && !string.Equals(statusName, ownName, StringComparison.OrdinalIgnoreCase))

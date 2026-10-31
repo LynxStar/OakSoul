@@ -324,6 +324,11 @@ public sealed class MapNameTracker
     public int ReadsConfirmed { get; private set; }
     public int Recognised { get; private set; }
 
+    /// <summary>The block the last names were taken from, as captured (BGRA, width, height), its form, and what named it: "read", "cache" or "fonts".</summary>
+    public (byte[] Raw, int Width, int Height)? LastCrop => _tracker.LastCrop;
+    public MapNameForm LastForm { get; private set; }
+    public string LastNamedBy { get; private set; } = "";
+
     private CaptureRect Block() => _collapsed
         ? new CaptureRect(_panel.X + 4, _panel.Y + 2, _nameRight is { } r && r - 2 > _panel.X + 24 ? r - 2 - (_panel.X + 4) : Math.Min(330, MinimapReader.SearchArea.Width - _panel.X - 4), 18)
         : new CaptureRect(_panel.X + 46, _panel.Y + 18, Math.Min(160, _panel.Width - 50), 44);
@@ -427,6 +432,8 @@ public sealed class MapNameTracker
             }
         }
         Current = reading;
+        LastForm = collapsed ? MapNameForm.Bar : MapNameForm.Panel;
+        LastNamedBy = _tracker.LastRecognised ? (Fonts?.LastSource == MapNameSource.Cache ? "cache" : "fonts") : "read";
         if (_tracker.LastRecognised) Recognised++;
         else
         {
