@@ -463,6 +463,8 @@ public static class EntityReport
         var where = tags.Queue is null ? "on the frame thread" : tags.Blocking ? "on the OCR worker, each waited for" : "on the OCR worker";
         o.WriteLine($"  tag reads: {tags.OcrCalls} OCR calls, {tags.OcrMilliseconds:0} ms of recognition {where}; the frame thread waited {tags.WaitedMilliseconds:0} ms and spent {tags.ReadMilliseconds:0} ms in Read altogether ({tags.ReadMilliseconds / Math.Max(1, done.Count):0.00} per frame);" +
             $" {tags.OcrErrors} errors; {tags.PendingSightings} of {tags.TagSightings} tag sightings handed out pending = {Frac(tags.PendingSightings, tags.TagSightings)}; cache {tags.Entries} entries, {tags.ReadableEntries} with a text, {tags.Loaded} from the cache file");
+        o.WriteLine($"    known names rendered in the tag font: {tags.RenderedHits} boxes named without a read; the font has {tags.Font.Letters.Count} letters ({tags.Font.LettersWithGap} with their gap) from {tags.Font.Samples} confirmed reads" +
+            $" ({tags.FontLearned} learned in this run; of this run's offers {tags.Font.Rejected} not taken, {tags.Font.Conflicts} for disagreeing on a width), renders {tags.Renderable} of the map's {tags.KnownNames} known names");
         var named = tags.NamedAfterFrames.Select(v => (double)v).ToList();
         var latency = tags.ReadLatencyMs.ToList();
         if (named.Count > 0)

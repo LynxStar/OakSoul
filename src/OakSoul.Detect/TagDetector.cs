@@ -117,6 +117,67 @@ public sealed partial class TagDetector
     private readonly List<int> _namedAfter = [];
     private readonly List<double> _readLatencyMs = [];
 
+    /// <summary>
+    /// The tag font, learned from reads whose text is a name the assets give, and with it the renderings of the names known for the
+    /// map being watched (<see cref="SetKnownNames"/>), matched against a box before any read: the species' names behind their level
+    /// badge, the pet's name alone. A box so named costs no read, and its text is the name as the assets spell it.
+    /// </summary>
+    public TagFont Font { get => _font; set { _font = value; _renderedVersion = -1; } }
+    private TagFont _font = new();
+
+    /// <summary>Whether the font learns and renders at all; off, every tag is read as before there was a font.</summary>
+    public bool UseFont { get; init; } = true;
+
+    private IReadOnlyList<(string Name, int? Level)> _known = [];
+    private object? _knownSource;
+    private string? _knownPet;
+    private List<(string Name, int? Level, TagRendering Rendering)> _renderings = [];
+    private int _renderedVersion = -1;
+
+    /// <summary>Boxes named by a rendering of a known name instead of a read, and confirmed reads the font learned from, since construction.</summary>
+    public int RenderedHits { get; private set; }
+    public int FontLearned { get; private set; }
+
+    /// <summary>The names known for the map being watched, and how many of them the font renders.</summary>
+    public int KnownNames => _known.Count;
+    public int Renderable { get { RefreshRenderings(); return _renderings.Count; } }
+
+    /// <summary>
+    /// Sets the names the assets give for the map being watched: its species with their client levels, and the pet's name. Called
+    /// every frame; nothing happens while the list and the pet are the ones already set.
+    /// </summary>
+    public void SetKnownNames(IReadOnlyList<(string Name, int Level)>? species, string? petName)
+    {
+        if (ReferenceEquals(species, _knownSource) && string.Equals(petName, _knownPet, StringComparison.Ordinal)) return;
+        var known = new List<(string Name, int? Level)>();
+        if (species is not null) foreach (var (name, level) in species) if (!known.Any(k => k.Name == name)) known.Add((name, level));
+        if (petName is { Length: >= 2 }) known.Add((petName, null));
+        _known = known;
+        _knownSource = species;
+        _knownPet = petName;
+        _renderedVersion = -1;
+    }
+
+    private void RefreshRenderings()
+    {
+        if (_renderedVersion == Font.Version) return;
+        _renderings = _known.Select(k => (k.Name, k.Level, Rendering: Font.Render(k.Name))).Where(r => r.Rendering is not null)
+            .Select(r => (r.Name, r.Level, r.Rendering!)).OrderByDescending(r => r.Item3.Width).ToList();
+        _renderedVersion = Font.Version;
+    }
+
+    /// <summary>A read whose text is a known name exactly, level and all, is a sample of the font.</summary>
+    private void LearnFromRead(CacheEntry e)
+    {
+        if (!UseFont || e.Name is null || _known.Count == 0) return;
+        foreach (var (name, level) in _known)
+            if (string.Equals(name, e.Name, StringComparison.Ordinal) && (level is null ? e.Level is null : e.Level == level))
+            {
+                if (Font.Learn(e.Bits, e.Width, e.Height, name)) FontLearned++;
+                return;
+            }
+    }
+
     /// <summary>The worker the reads go to; null reads on the calling thread, as the detector did before it had a worker.</summary>
     public OcrQueue? Queue { get; init; }
 
@@ -425,6 +486,7 @@ public sealed partial class TagDetector
         e.ArrivedFrame = frameIndex;
         _namedAfter.Add(e.NamedAfter.Value);
         _readLatencyMs.Add(r.Latency);
+        LearnFromRead(e);
     }
 
     private void Forget(CacheEntry e)
@@ -445,6 +507,22 @@ public sealed partial class TagDetector
                 hit = Fuzzy(bits, b.Width, b.Height);
             }
             var fresh = hit is null;
+            // A name the assets give, rendered in the learned font and found in the box: known at once, no read. A box known as
+            // one that read nothing is tried too, once the font can render what it may show.
+            if (UseFont && _known.Count > 0 && (hit is null || (hit.Text is null && !hit.Pending)))
+            {
+                RefreshRenderings();
+                if (_renderings.Count > 0 && TagFont.Match(_renderings, bits ?? (bits = Bits(frame, frameWidth, viewport, b)), b.Width, b.Height) is { } m)
+                {
+                    if (hit is null)
+                    {
+                        hit = new CacheEntry { Width = b.Width, Height = b.Height, Hash = b.Fingerprint, Bits = bits, Ones = bits.Count(v => v), FirstFrame = frameIndex, Text = m.Text, Level = m.Level, Name = m.Name, ArrivedFrame = frameIndex, NamedAfter = 0 };
+                        Add(hit);
+                    }
+                    else { hit.Text = m.Text; hit.Level = m.Level; hit.Name = m.Name; hit.ArrivedFrame = frameIndex; hit.NamedAfter = 0; }
+                    RenderedHits++;
+                }
+            }
             if (hit is null)
             {
                 if (!ocr) continue;
@@ -472,6 +550,7 @@ public sealed partial class TagDetector
                     (hit.Level, hit.Name) = Parse(text);
                     hit.Text = text; hit.NamedAfter = 0; hit.ArrivedFrame = frameIndex;
                     _namedAfter.Add(0); _readLatencyMs.Add(ms);
+                    LearnFromRead(hit);
                 }
                 else
                 {

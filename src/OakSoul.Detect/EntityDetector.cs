@@ -320,12 +320,16 @@ public sealed partial class EntityDetector
         _tags.IsPetText ??= _tracker.Names.IsPetTag;
         _tags.SplitPet(tags, frame, frameWidth, vp);
         foreach (var t in tags) _fg.Clear(t.X0 - 1, t.Y0 - 1, t.X1 + 1, t.Y1 + 1);
+        // The names the assets give for this map (its species with their levels, the pet) are known to the tag detector before the
+        // reads, which renders them in the learned font and names a box showing one without a read.
+        if (_mobs is not null) _speciesNames ??= _mobs.Entries.Select(e => (e.Species.Name, e.Species.Level)).DistinctBy(s => s.Name).ToList();
+        _tags.SetKnownNames(_speciesNames, _tracker.Names.PetName);
         // The reads go to the OCR worker; what the frame thread waited for one (nothing, unless the detector is set to wait) stays out of the stage times.
         var ocrBefore = _tags.WaitedMilliseconds;
         _tags.Read(tags, frame, frameWidth, vp, Ocr, ctx.Frame);
         // A name read close to a species of the map is that species' name ("Vvild Boar" is Wild Boar).
         if (_mobs is not null && !ReferenceEquals(_tracker.Names.Species, _speciesNames))
-            _tracker.Names.Species = _speciesNames ??= _mobs.Entries.Select(e => (e.Species.Name, e.Species.Level)).DistinctBy(s => s.Name).ToList();
+            _tracker.Names.Species = _speciesNames!;
         foreach (var t in tags)
             if (t.Name is { } tn && _tracker.Names.MatchSpecies(tn, t.Level) is { } species) t.Name = species;
         var ocrMs = _tags.WaitedMilliseconds - ocrBefore;

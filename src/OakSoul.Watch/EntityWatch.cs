@@ -25,7 +25,7 @@ public sealed class EntityWatch
     private readonly bool _diagnostics;
     private bool _petWarned;
     private readonly EntityTracker _tracker = new();
-    private readonly string? _tagCache;
+    private readonly string? _tagCache, _tagFont;
     private readonly Dictionary<int, EntityDetector?> _detectors = [];
     private readonly Dictionary<int, MapMobSet> _mobSets = [];
     private readonly SessionTimes _times;
@@ -46,13 +46,28 @@ public sealed class EntityWatch
     /// <param name="ocr">The OCR worker the tag reads go to; null reads them on the frame thread.</param>
     /// <param name="blockingOcr">Wait for each tag read (the worker still reads), so a replay is byte-identical to the frame-thread detector's.</param>
     /// <param name="tagCache">The file the tag renderings read so far are kept in between sessions, loaded now and written by <see cref="SaveTagCache"/>; null keeps none.</param>
+    /// <param name="tagFont">The file the tag font learned from confirmed reads is kept in, loaded now and written by <see cref="SaveTagCache"/>; null keeps none.</param>
+    /// <param name="useFont">Whether the tag font learns and renders at all; off, every tag is read, as before there was a font.</param>
     public EntityWatch(HudLayout layout, string backgrounds, SessionTimes times, string? sheetDir, long? totalFrames,
         string? mobInfo = null, string? sprites = null, bool diagnostics = false, string? petName = null, string? character = null, string? session = null,
-        OcrQueue? ocr = null, bool blockingOcr = false, string? tagCache = null)
+        OcrQueue? ocr = null, bool blockingOcr = false, string? tagCache = null, string? tagFont = null, bool useFont = true)
     {
         _session = session;
-        Tags = new TagDetector { Queue = ocr, Blocking = blockingOcr };
+        Tags = new TagDetector { Queue = ocr, Blocking = blockingOcr, UseFont = useFont };
         _tagCache = tagCache;
+        _tagFont = tagFont;
+        if (tagFont is not null)
+        {
+            try
+            {
+                if (TagFont.Load(tagFont) is { } font) { Tags.Font = font; Console.WriteLine($"tags     font of {font.Letters.Count} letters from {font.Samples} confirmed reads, from {tagFont}"); }
+                else Console.WriteLine($"tags     no font file at {tagFont}; the font is learned from confirmed reads and written there at the end");
+            }
+            catch (Exception e) when (e is System.Text.Json.JsonException or KeyNotFoundException or InvalidOperationException or InvalidDataException or FormatException or OverflowException or IOException or UnauthorizedAccessException)
+            {
+                Console.WriteLine($"tags     the font file {tagFont} could not be read ({e.Message}); learning anew");
+            }
+        }
         if (tagCache is not null)
         {
             try
@@ -60,7 +75,7 @@ public sealed class EntityWatch
                 var loaded = Tags.Load(tagCache);
                 Console.WriteLine(loaded > 0 ? $"tags     {loaded} tag renderings with their text from {tagCache}" : $"tags     no cache file at {tagCache}; one is written at the end");
             }
-            catch (Exception e) when (e is System.Text.Json.JsonException or KeyNotFoundException or InvalidOperationException or FormatException)
+            catch (Exception e) when (e is System.Text.Json.JsonException or KeyNotFoundException or InvalidOperationException or FormatException or OverflowException or IOException or UnauthorizedAccessException)
             {
                 Console.WriteLine($"tags     the cache file {tagCache} could not be read ({e.Message}); starting without it, and it is written anew at the end");
             }
@@ -172,9 +187,16 @@ public sealed class EntityWatch
     /// <summary>Writes the tag renderings read so far with their text to the cache file given at construction, if any.</summary>
     public void SaveTagCache()
     {
-        if (_tagCache is null) return;
-        var n = Tags.Save(_tagCache);
-        Console.WriteLine($"tags     {n} tag renderings with their text written to {_tagCache} ({Math.Max(0, n - Tags.Loaded)} new in this session)");
+        if (_tagCache is not null)
+        {
+            var n = Tags.Save(_tagCache);
+            Console.WriteLine($"tags     {n} tag renderings with their text written to {_tagCache} ({Math.Max(0, n - Tags.Loaded)} new in this session)");
+        }
+        if (_tagFont is not null && Tags.Font.Samples > 0)
+        {
+            Tags.Font.Save(_tagFont);
+            Console.WriteLine($"tags     font of {Tags.Font.Letters.Count} letters from {Tags.Font.Samples} confirmed reads written to {_tagFont} ({Tags.FontLearned} learned in this session)");
+        }
     }
     /// <summary>Every detector that ran, one per map with a background.</summary>
     public IEnumerable<EntityDetector> Detectors => _detectors.Values.OfType<EntityDetector>();

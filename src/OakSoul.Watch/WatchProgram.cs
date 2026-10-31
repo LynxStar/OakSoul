@@ -131,7 +131,14 @@ public static class WatchProgram
         var tagCacheSetting = Environment.GetEnvironmentVariable("OAKSOUL_TAG_CACHE");
         var tagCachePath = tagCacheSetting is "off" or "0" ? null : tagCacheSetting is { Length: > 0 } ? tagCacheSetting
             : recording is null ? Path.Combine(Directory.GetCurrentDirectory(), "data", "cache", "tag-reads.json") : null;
-        Console.WriteLine($"ocr      {(ocr is null ? "on the frame thread" : ocrMode == "tags" ? "name tags on a worker thread, the rest on the frame thread" : "on a worker thread")}; tag cache {tagCachePath ?? "none"}");
+        // The tag font learned from confirmed reads, kept the same way (OAKSOUL_TAG_FONT=path; a replay learns within the run unless a
+        // file is named, so a font learned on one recording can be tried on another; off neither learns nor renders, so every tag is read
+        // as before there was a font, apart from names a tag cache file written with the font on may still hold).
+        var tagFontSetting = Environment.GetEnvironmentVariable("OAKSOUL_TAG_FONT");
+        var useFont = tagFontSetting is not ("off" or "0");
+        var tagFontPath = !useFont ? null : tagFontSetting is { Length: > 0 } ? tagFontSetting
+            : recording is null ? Path.Combine(Directory.GetCurrentDirectory(), "data", "cache", "tag-font.json") : null;
+        Console.WriteLine($"ocr      {(ocr is null ? "on the frame thread" : ocrMode == "tags" ? "name tags on a worker thread, the rest on the frame thread" : "on a worker thread")}; tag cache {tagCachePath ?? "none"}; tag font {(!useFont ? "off" : tagFontPath ?? "learned within the run")}");
 
         var layout = HudLayout.Native1366x768;
         // Keyframe replay is one frame per second, so a stability gate of one frame; live and video keep three.
@@ -166,7 +173,7 @@ public static class WatchProgram
             recording is not null && keyframes && Directory.Exists(Path.Combine(recording, "keyframes")) ? Directory.GetFiles(Path.Combine(recording, "keyframes"), "*.png").Length : null,
             mobInfoPath, spritesPath, diagnostics: entityReport, petName: petName, character: ownName,
             session: recording is null ? null : Path.GetFileName(Path.TrimEndingDirectorySeparator(recording)),
-            ocr: ocr, tagCache: tagCachePath) : null;
+            ocr: ocr, tagCache: tagCachePath, tagFont: tagFontPath, useFont: useFont) : null;
         if (entities && world is null) Console.WriteLine("entities off: no map metadata");
 
         // A replayed frame is stamped with its time into the session (its capture pts less the session's first), which is
