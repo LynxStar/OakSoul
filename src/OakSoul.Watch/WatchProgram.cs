@@ -182,6 +182,8 @@ public static class WatchProgram
         State? last = null;
         long frames = 0;
         double readMs = 0;
+        // The loop's work on each frame after it arrived (readers, world, entities, overlay build), for the percentiles at the end.
+        var loopMs = new List<double>();
         var consumer = Task.Run(async () =>
         {
             await foreach (var frame in frameSource.Frames(cancellation.Token))
@@ -263,7 +265,9 @@ public static class WatchProgram
                         string.Join("+", buffs.Select(b => b.Name + (b.Faded ? "~" : ""))),
                         place?.MapId, place?.Position is { } wp ? ((int)Math.Round(wp.X), (int)Math.Round(wp.Y)) : null, place?.Support,
                         place?.Camera is { } cam ? ((int)Math.Round(cam.X), (int)Math.Round(cam.Y)) : null);
-                    readMs += sw.Elapsed.TotalMilliseconds;
+                    var loopElapsed = sw.Elapsed.TotalMilliseconds;
+                    readMs += loopElapsed;
+                    loopMs.Add(loopElapsed);
                     frames++;
                     if (state != last)
                     {
@@ -289,7 +293,11 @@ public static class WatchProgram
         capture?.Stop();
         cancellation.Cancel();
         try { await consumer; } catch (OperationCanceledException) { }
-        Console.WriteLine($"done: {frames} frames in {started.Elapsed.TotalSeconds:0.0}s, read {readMs / Math.Max(frames, 1):0.0} ms/frame");
+        // Read after the consumer finished, so the list is complete and no longer written.
+        var sortedLoop = loopMs.Order().ToArray();
+        double LoopPct(double p) => sortedLoop.Length == 0 ? 0 : sortedLoop[Math.Clamp((int)Math.Ceiling(p / 100 * sortedLoop.Length) - 1, 0, sortedLoop.Length - 1)];
+        Console.WriteLine($"done: {frames} frames in {started.Elapsed.TotalSeconds:0.0}s, read {readMs / Math.Max(frames, 1):0.0} ms/frame" +
+            $" (the loop's work per frame: p50 {LoopPct(50):0.0}, p90 {LoopPct(90):0.0}, p99 {LoopPct(99):0.0}, max {LoopPct(100):0.0})");
         if (replay is { UnrecordedKeyframes: > 0 } r0) Console.WriteLine($"replay: {r0.UnrecordedKeyframes} keyframe(s) without a capture record in frames.jsonl; their pts extrapolated");
         if (overlay is not null)
         {
