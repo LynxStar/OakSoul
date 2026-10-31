@@ -25,7 +25,10 @@ using OakSoul.Overlay;
 //   truth SESSION [--stream PATH] [--truth FILE]
 //       compare a stream with the reviewed ground truth (default truth/SESSION.jsonl): pass or fail per entry, and totals
 //   layers                      print the layer registry (as OakSoul.Watch --list-layers)
-//   diff A B                    agreed, not in this round (see DiffSeam)
+//   diff A B [--bucket N]       compare two streams of one recording frame by frame, without the track ids: how many frames are
+//       identical, differ only in a tag's text pending on one side, only in an entity named on one side, in the detector running
+//       on one side only, or in more (an entity's kind or place), per N frames (default 500), with examples; A and B are stream
+//       paths or session names (their default streams)
 //
 // SELECTION: --frame N (a capture sequence, the number in the keyframe file name), --frames 1411,1426,1441-1500 (sequences
 // and inclusive ranges), --from M:SS[.s] --seconds S (time into the session), or --all.
@@ -45,7 +48,7 @@ static async Task<int> Run(string[] args)
     if (args.Length == 0 || args[0] is "-h" or "--help") { Usage(); return args.Length == 0 ? 2 : 0; }
     var command = args[0];
     if (command is "layers" or "--list-layers") { OverlayLayers.Print(Console.Out); return 0; }
-    if (command == "diff") return DiffSeam.Run(args[1..]);
+    if (command == "diff") return StreamDiff.Run(args[1..]);
     var o = Options.Parse(args[1..]);
     var session = Session.Resolve(o.Positional.FirstOrDefault() ?? throw new BakeException($"{command}: name a session (recordings/<name>) or a session folder"));
     switch (command)
@@ -73,6 +76,7 @@ static void Usage()
           check SESSION [--stream PATH]
           truth SESSION [--stream PATH] [--truth FILE]
           layers
+          diff A B [--bucket N]
         SESSION is a folder name under recordings/ or a session folder; streams default to data/overlays/SESSION/overlay.jsonl.gz.
         """);
 }
@@ -161,17 +165,38 @@ namespace OakSoul.Bake
     }
 
     /// <summary>
-    /// The diff mode between two streams of one recording is part of the agreed design but not of this round. Its seam:
-    /// <see cref="OverlayStream.Captured"/> pairs the frames of two streams by capture sequence (and pts), items would pair
-    /// by layer, kind and rect overlap (track ids change between regenerations), and <see cref="RenderOptions.Style"/>
-    /// draws one stream's items over the other's with the unpaired or changed ones styled apart.
+    /// <c>diff A B</c>: the two streams compared frame by frame by <see cref="OverlayDiff"/> (frames paired by capture sequence,
+    /// items by kind, name and place, never by track id). The agreed design's other half, one stream's items drawn over the
+    /// other's with the unpaired or changed ones styled apart (<see cref="RenderOptions.Style"/>), is still to come.
     /// </summary>
-    public static class DiffSeam
+    public static class StreamDiff
     {
         public static int Run(string[] args)
         {
-            Console.Error.WriteLine("diff: comparing two streams is agreed but not implemented in this round");
-            return 2;
+            var paths = new List<string>();
+            var bucket = 500;
+            for (var i = 0; i < args.Length; i++)
+            {
+                if (args[i] == "--bucket") { if (i + 1 >= args.Length || !int.TryParse(args[++i], CultureInfo.InvariantCulture, out bucket) || bucket < 1) throw new BakeException("--bucket needs a positive number"); }
+                else if (args[i].StartsWith("--", StringComparison.Ordinal)) throw new BakeException($"unknown option {args[i]}");
+                else paths.Add(args[i]);
+            }
+            if (paths.Count != 2) throw new BakeException("diff: name two streams (paths, or sessions for their default streams)");
+            var a = OverlayStream.Load(Resolve(paths[0]));
+            var b = OverlayStream.Load(Resolve(paths[1]));
+            Console.WriteLine($"A: {a.Path} ({a.Header.Recording ?? "?"}, {a.Frames.Count} frames)");
+            Console.WriteLine($"B: {b.Path} ({b.Header.Recording ?? "?"}, {b.Frames.Count} frames)");
+            if (a.Header.Recording is { } ra && b.Header.Recording is { } rb && ra != rb) Console.WriteLine($"warning: the streams are of different recordings ({ra}, {rb}); frames pair by sequence all the same");
+            OverlayDiff.Compare(a, b, bucket).Print(Console.Out);
+            return 0;
+        }
+
+        private static string Resolve(string arg)
+        {
+            if (File.Exists(arg)) return arg;
+            var byName = Path.Combine("data", "overlays", arg, "overlay.jsonl.gz");
+            if (File.Exists(byName)) return byName;
+            throw new BakeException($"diff: no stream at {arg} (nor {byName})");
         }
     }
 }
