@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Runtime.CompilerServices;
 
 namespace OakSoul.Detect;
@@ -203,6 +204,8 @@ public static class SliceMatcher
         /// <summary>The <see cref="Options.SeedPixels"/> the seed columns were chosen with.</summary>
         public int SeedPixels { get; }
         internal Layout[] Layouts { get; }
+        /// <summary>Each frame object's layout (a frame listed twice was laid out once).</summary>
+        private readonly Dictionary<SpriteFrame, Layout> _byFrame = new(ReferenceEqualityComparer.Instance);
         internal int MaxColumn { get; }
         internal int MaxWidth { get; }
 
@@ -212,13 +215,16 @@ public static class SliceMatcher
             Candidates = [.. candidates];
             SeedPixels = seedPixels;
             // One layout per frame object (a frame listed twice is laid out once).
-            var byFrame = new Dictionary<SpriteFrame, Layout>(ReferenceEqualityComparer.Instance);
+            var byFrame = _byFrame;
             Layouts = [.. Candidates.Select(c => byFrame.TryGetValue(c.Frame, out var l) && l.Name == c.Name ? l : byFrame[c.Frame] = new Layout(c.Name, c.Frame, seedPixels))];
             MaxColumn = Layouts.Select(l => l.MaxColumn).DefaultIfEmpty(0).Max();
             MaxWidth = Layouts.Select(l => l.Order.Length).DefaultIfEmpty(0).Max();
             BuildIndex();
             BuildMs = sw.Elapsed.TotalMilliseconds;
         }
+
+        /// <summary>The layout of a frame object of this set, or null.</summary>
+        internal Layout? LayoutOf(SpriteFrame frame) => _byFrame.GetValueOrDefault(frame);
 
         /// <summary>Milliseconds the layout and the seed index took.</summary>
         public double BuildMs { get; }
@@ -319,9 +325,10 @@ public static class SliceMatcher
     /// What every screen pixel of rows <see cref="Y0"/> on (stored by column, as a placement reads them) says about a sprite pixel drawn there, prepared once per search: the
     /// screen colour (low 32 bits) and a cell (high 32 bits): <see cref="Never"/> where the pixel is masked (or explained by a
     /// kept find), <see cref="Always"/> where the background is not trusted or the mosaic does not reach, else the trusted
-    /// background colour, which says nothing about a sprite pixel of that same colour.
+    /// background colour, which says nothing about a sprite pixel of that same colour. The cells are rented from the shared
+    /// pool (the array may be longer than Rows * Width; only those cells are written and read) and go back on Dispose.
     /// </summary>
-    private sealed class Screen
+    private sealed class Screen : IDisposable
     {
         public const int Never = -1, Always = -2;
         public readonly ulong[] Cells;
@@ -333,7 +340,7 @@ public static class SliceMatcher
             Width = frameWidth;
             Y0 = Math.Max(0, y0);
             Rows = Math.Max(0, Math.Min(frameHeight - 1, y1) - Y0 + 1);
-            Cells = new ulong[Rows * Width];
+            Cells = Rows * Width == 0 ? Array.Empty<ulong>() : ArrayPool<ulong>.Shared.Rent(Rows * Width);
             var bits = mask.Bits;
             int mw = mask.Width, mh = mask.Height, vx = mask.Viewport.X, vy = mask.Viewport.Y;
             var usable = mosaic.ForegroundUsable;
@@ -360,6 +367,11 @@ public static class SliceMatcher
                     Cells[x * Rows + r] = (ulong)(uint)cell << 32 | colour;
                 }
             }
+        }
+
+        public void Dispose()
+        {
+            if (Cells.Length > 0) ArrayPool<ulong>.Shared.Return(Cells);
         }
 
         /// <summary>Marks a kept find's opaque pixels as explained, here and in the caller's buffer when it gave one: they say nothing about any later find.</summary>
@@ -429,7 +441,7 @@ public static class SliceMatcher
             foreach (var sl in runs[ri].Slices) { minLine = Math.Min(minLine, sl.LineY); maxLine = Math.Max(maxLine, sl.LineY); }
         if (minLine == int.MaxValue) return [];
         foreach (var l in layouts) { above = Math.Max(above, l.Frame.OriginY); below = Math.Max(below, l.Frame.Height - 1 - l.Frame.OriginY); }
-        var screen = new Screen(frame, frameWidth, mask, mosaic, cameraX, cameraY, minLine - o.FloorRows - above, maxLine + o.FloorRows + below, explained);
+        using var screen = new Screen(frame, frameWidth, mask, mosaic, cameraX, cameraY, minLine - o.FloorRows - above, maxLine + o.FloorRows + below, explained);
         var work = new Work(set.MaxColumn, set.MaxWidth);
         var tried = new HashSet<(int, int, int)>();
         int floorRows = o.FloorRows, nd = 2 * floorRows + 1;
@@ -602,7 +614,16 @@ public static class SliceMatcher
     /// searches found them in does not decide (a near-miss frame found a search earlier would otherwise explain the true one away).
     /// </summary>
     public static List<Find> Resolve(ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, BackgroundMosaic mosaic, int cameraX, int cameraY,
-        IReadOnlyList<Find> finds, Options? options = null, byte[]? explained = null)
+        IReadOnlyList<Find> finds, Options? options = null, byte[]? explained = null) =>
+        Resolve(frame, frameWidth, mask, mosaic, cameraX, cameraY, finds, [], options, explained);
+
+    /// <summary>
+    /// As the overload without <paramref name="sets"/>, reusing the layouts of the sets the finds were searched over: a find whose
+    /// frame one of them holds is rescored on that layout (a layout's pixels and column order depend on the frame alone), any
+    /// other is laid out here.
+    /// </summary>
+    public static List<Find> Resolve(ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, BackgroundMosaic mosaic, int cameraX, int cameraY,
+        IReadOnlyList<Find> finds, IReadOnlyList<CandidateSet> sets, Options? options = null, byte[]? explained = null)
     {
         var o = options ?? new Options();
         if (finds.Count == 0) return [];
@@ -612,11 +633,13 @@ public static class SliceMatcher
         {
             y0 = Math.Min(y0, f.Top); y1 = Math.Max(y1, f.Top + f.Frame.Height - 1);
             if (layoutOf.ContainsKey(f.Frame)) continue;
-            var l = new Layout(f.Name, f.Frame, o.SeedPixels);
+            Layout? l = null;
+            foreach (var set in sets) if ((l = set.LayoutOf(f.Frame)) is not null) break;
+            l ??= new Layout(f.Name, f.Frame, o.SeedPixels);
             layoutOf[f.Frame] = l;
             maxColumn = Math.Max(maxColumn, l.MaxColumn); maxWidth = Math.Max(maxWidth, l.Order.Length);
         }
-        var screen = new Screen(frame, frameWidth, mask, mosaic, cameraX, cameraY, y0, y1, explained);
+        using var screen = new Screen(frame, frameWidth, mask, mosaic, cameraX, cameraY, y0, y1, explained);
         return Keep(screen, finds, layoutOf, o, new Work(maxColumn, maxWidth), explained);
     }
 
@@ -654,7 +677,7 @@ public static class SliceMatcher
     {
         var o = options ?? new Options();
         var c = new Layout(candidate.Name, candidate.Frame, o.SeedPixels);
-        var screen = new Screen(frame, frameWidth, mask, mosaic, cameraX, cameraY, top, top + candidate.Frame.Height - 1, null);
+        using var screen = new Screen(frame, frameWidth, mask, mosaic, cameraX, cameraY, top, top + candidate.Frame.Height - 1, null);
         return Score(screen, c, left, top, o, new Work(c.MaxColumn, c.Order.Length), null)!;
     }
 

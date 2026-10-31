@@ -103,6 +103,8 @@ public sealed partial class EntityDetector
     public int WideSearches { get; private set; }
 
     private CoarseMosaic? _coarse;
+    /// <summary>The registration samples' buffer, reused frame to frame (<see cref="CameraRegistration.Samples(ReadOnlySpan{byte}, int, ScreenMask, int, List{int})"/>).</summary>
+    private readonly List<int> _sampleScratch = new(8192);
     private (int X, int Y, double Time)? _lastCamera;
     private (int X, int Y)? _lastGuess;
 
@@ -237,7 +239,7 @@ public sealed partial class EntityDetector
         }
         if (own is { } box) _mask.Exclude(box);
 
-        var samples = CameraRegistration.Samples(frame, frameWidth, _mask, RegistrationSamples);
+        var samples = CameraRegistration.Samples(frame, frameWidth, _mask, RegistrationSamples, _sampleScratch);
         int guessX = (int)Math.Round(guess.X), guessY = (int)Math.Round(guess.Y);
         // The temporal pass predicts the camera too: within a small window of the previous frame's registered camera (a
         // video), or of the guess moved by the previous frame's registration offset (keyframes). Accepted when it scores as a
@@ -1570,7 +1572,7 @@ public sealed partial class EntityDetector
         canvas.Save(Path.Combine(dir, $"{seq:0000}_{c.Box.X}_{c.Box.Y}_{c.Box.Width}x{c.Box.Height}_{(c.Sprite is null ? "U" : "M")}{m.Score:0.00}_{m.Species.Name.Replace(' ', '-')}.png"));
     }
 
-    private Registration Fine(ReadOnlySpan<byte> frame, int frameWidth, int[] samples, int gx, int gy, int rx, int ry) =>
+    private Registration Fine(ReadOnlySpan<byte> frame, int frameWidth, ReadOnlySpan<int> samples, int gx, int gy, int rx, int ry) =>
         CameraRegistration.Register(frame, frameWidth, _mask, samples, _mosaic.Pixels, _mosaic.Usable, _mosaic.OriginX, _mosaic.OriginY,
             _mosaic.Width, _mosaic.Height, gx, gy, rx, ry);
 

@@ -266,7 +266,7 @@ public sealed partial class EntityDetector
                 mesoMs = Elapsed() - c1;
             }
             var c2 = Elapsed();
-            foreach (var f in SliceMatcher.Resolve(frame, frameWidth, _gapMatchMask, _mosaic, camX, camY, all)) finds.Add((f, _gapCoinOf.ContainsKey(f.Frame)));
+            foreach (var f in SliceMatcher.Resolve(frame, frameWidth, _gapMatchMask, _mosaic, camX, camY, all, [_gapMobSet!, _gapMesoSet!])) finds.Add((f, _gapCoinOf.ContainsKey(f.Frame)));
             resolveMs = Elapsed() - c2;
 
             // One list's searches from its cursor under the budget given: each over a window of whole runs (from the cursor's run on,
