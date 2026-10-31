@@ -124,14 +124,14 @@ public sealed partial class EntityDetector
     {
         int x1 = x0 + HpBarWidth - 1, y1 = y0 + HpBarHeight - 1;
         if (x0 < 0 || y0 < 0 || x1 >= frameWidth || y1 >= frameHeight) return null;
-        var pixels = new int[HpBarHeight * HpBarWidth];
-        for (var y = 0; y < HpBarHeight; y++) px.Slice((y0 + y) * frameWidth + x0, HpBarWidth).CopyTo(pixels.AsSpan(y * HpBarWidth));
-        int P(int x, int y) => pixels[(y - y0) * HpBarWidth + x - x0] & 0xFFFFFF;
+        // Read in place: every (x, y) below lies inside the bar, which the test above keeps inside the frame.
+        static int P(ReadOnlySpan<int> px, int frameWidth, int x, int y) => px[y * frameWidth + x] & 0xFFFFFF;
         // The frame: black outside, white, black inside, on the rows of the fill (left and right) and on one full outer row.
         for (var y = y0 + 3; y <= y0 + 6; y++)
-            if (P(x0, y) != 0 || P(x0 + 1, y) != 0xFFFFFF || P(x0 + 2, y) != 0 || P(x1 - 2, y) != 0 || P(x1 - 1, y) != 0xFFFFFF || P(x1, y) != 0) return null;
-        bool Black(int y) { for (var x = x0; x <= x1; x++) if (P(x, y) != 0) return false; return true; }
-        if (!Black(y0) && !Black(y1)) return null;
+            if (P(px, frameWidth, x0, y) != 0 || P(px, frameWidth, x0 + 1, y) != 0xFFFFFF || P(px, frameWidth, x0 + 2, y) != 0
+                || P(px, frameWidth, x1 - 2, y) != 0 || P(px, frameWidth, x1 - 1, y) != 0xFFFFFF || P(px, frameWidth, x1, y) != 0) return null;
+        static bool Black(ReadOnlySpan<int> px, int frameWidth, int x0, int x1, int y) { for (var x = x0; x <= x1; x++) if (P(px, frameWidth, x, y) != 0) return false; return true; }
+        if (!Black(px, frameWidth, x0, x1, y0) && !Black(px, frameWidth, x0, x1, y1)) return null;
         // The fill, per column, from its first three rows (the fourth is a darker shade): green, red, black or covered.
         var cls = new char[HpBarFill];
         for (var i = 0; i < HpBarFill; i++)
@@ -139,7 +139,7 @@ public sealed partial class EntityDetector
             var c = '?';
             for (var y = y0 + 3; y <= y0 + 5 && c == '?'; y++)
             {
-                var v = P(x0 + 3 + i, y);
+                var v = P(px, frameWidth, x0 + 3 + i, y);
                 int b = v & 0xFF, g = v >> 8 & 0xFF, r = v >> 16;
                 c = g >= 0xC0 && r < 0x40 && b < 0x40 ? 'g' : r >= 0x90 && g < 0x30 && b < 0x30 ? 'r' : v == 0 ? 'k' : '?';
             }

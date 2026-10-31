@@ -105,6 +105,8 @@ public sealed partial class EntityDetector
     private CoarseMosaic? _coarse;
     /// <summary>The registration samples' buffer, reused frame to frame (<see cref="CameraRegistration.Samples(ReadOnlySpan{byte}, int, ScreenMask, int, List{int})"/>).</summary>
     private readonly List<int> _sampleScratch = new(8192);
+    /// <summary>The samples' colours and coordinates, gathered once per frame and shared by that frame's registrations (<see cref="Fine"/>).</summary>
+    private readonly GatheredSamples _gathered = new();
     private (int X, int Y, double Time)? _lastCamera;
     private (int X, int Y)? _lastGuess;
 
@@ -240,6 +242,8 @@ public sealed partial class EntityDetector
         if (own is { } box) _mask.Exclude(box);
 
         var samples = CameraRegistration.Samples(frame, frameWidth, _mask, RegistrationSamples, _sampleScratch);
+        // Every registration below reads this frame through this mask at these samples: their colours are gathered once.
+        _gathered.Gather(frame, frameWidth, _mask, samples);
         int guessX = (int)Math.Round(guess.X), guessY = (int)Math.Round(guess.Y);
         // The temporal pass predicts the camera too: within a small window of the previous frame's registered camera (a
         // video), or of the guess moved by the previous frame's registration offset (keyframes). Accepted when it scores as a
@@ -249,18 +253,18 @@ public sealed partial class EntityDetector
         {
             var recent = ctx.Time - lc.Time <= PreciseSeconds;
             int px = recent ? lc.X : guessX + lc.X - lg.X, py = recent ? lc.Y : guessY + lc.Y - lg.Y;
-            var prior = Fine(frame, frameWidth, samples, px, py, PriorRange, PriorRange);
+            var prior = Fine(px, py, PriorRange, PriorRange);
             if (prior.Score >= AcceptScore && Math.Abs(prior.CameraX - px) < PriorRange && Math.Abs(prior.CameraY - py) < PriorRange) { reg = prior; PriorRegistrations++; }
         }
         // A measured camera is searched near the guess first; a predicted one, or a failed first try, goes through the
         // coarse search of block means over a wide window and is then refined to the pixel.
-        reg ??= ctx.CameraMeasured ? Fine(frame, frameWidth, samples, guessX, guessY, MeasuredRangeX, MeasuredRangeY) : null;
+        reg ??= ctx.CameraMeasured ? Fine(guessX, guessY, MeasuredRangeX, MeasuredRangeY) : null;
         if (reg is not { Score: >= AcceptScore })
         {
             _coarse ??= new CoarseMosaic(_mosaic);
             if (_coarse.Search(frame, frameWidth, _mask, guessX, guessY, CoarseRange) is { } c)
             {
-                var wide = Fine(frame, frameWidth, samples, c.X, c.Y, CoarseRefine, CoarseRefine);
+                var wide = Fine(c.X, c.Y, CoarseRefine, CoarseRefine);
                 if (reg is null || wide.Score > reg.Value.Score) reg = wide with { GuessMatches = reg?.GuessMatches ?? wide.GuessMatches, GuessCompared = reg?.GuessCompared ?? wide.GuessCompared };
             }
             // Still nothing: the tracker's camera can be far off while the tag is hidden and the camera eases; the
@@ -268,10 +272,10 @@ public sealed partial class EntityDetector
             if (reg is not { Score: >= MinRegistrationScore } && _lastCamera is { } last && ctx.Time - last.Time <= 2
                 && _coarse.Search(frame, frameWidth, _mask, last.X, last.Y, CoarseRange) is { } c2)
             {
-                var wide = Fine(frame, frameWidth, samples, c2.X, c2.Y, CoarseRefine, CoarseRefine);
+                var wide = Fine(c2.X, c2.Y, CoarseRefine, CoarseRefine);
                 if (reg is null || wide.Score > reg.Value.Score) reg = wide;
             }
-            reg ??= Fine(frame, frameWidth, samples, guessX, guessY, 0, 0);
+            reg ??= Fine(guessX, guessY, 0, 0);
             WideSearches++;
         }
         if (reg.Value.Score < MinRegistrationScore)
@@ -799,7 +803,7 @@ public sealed partial class EntityDetector
     /// </summary>
     public const int SameMobX = 12, SameMobY = 8;
 
-    public static bool SameMob(SpriteMatch a, SpriteMatch b) =>
+    public static bool SameMob(in SpriteMatch a, in SpriteMatch b) =>
         Math.Abs(a.Feet.X - b.Feet.X) <= SameMobX && Math.Abs(a.Feet.Y - b.Feet.Y) <= SameMobY && FootholdSearch.OverlapOfLarger(a, b) >= 0.5;
 
     /// <summary>
@@ -1108,7 +1112,7 @@ public sealed partial class EntityDetector
     }
 
     /// <summary>The share of a box that a match's visible extent covers.</summary>
-    private static double Covers(SpriteMatch m, CaptureRect box)
+    private static double Covers(in SpriteMatch m, CaptureRect box)
     {
         int x0 = Math.Max(box.X, m.Left + m.Frame.X0), x1 = Math.Min(box.X + box.Width - 1, m.Left + m.Frame.X1);
         int y0 = Math.Max(box.Y, m.Top + m.Frame.Y0), y1 = Math.Min(box.Y + box.Height - 1, m.Top + m.Frame.Y1);
@@ -1572,8 +1576,9 @@ public sealed partial class EntityDetector
         canvas.Save(Path.Combine(dir, $"{seq:0000}_{c.Box.X}_{c.Box.Y}_{c.Box.Width}x{c.Box.Height}_{(c.Sprite is null ? "U" : "M")}{m.Score:0.00}_{m.Species.Name.Replace(' ', '-')}.png"));
     }
 
-    private Registration Fine(ReadOnlySpan<byte> frame, int frameWidth, ReadOnlySpan<int> samples, int gx, int gy, int rx, int ry) =>
-        CameraRegistration.Register(frame, frameWidth, _mask, samples, _mosaic.Pixels, _mosaic.Usable, _mosaic.OriginX, _mosaic.OriginY,
+    /// <summary>Registers the current frame's gathered samples (<see cref="_gathered"/>) against the mosaic around (gx, gy).</summary>
+    private Registration Fine(int gx, int gy, int rx, int ry) =>
+        CameraRegistration.Register(_gathered, _mosaic.Pixels, _mosaic.Usable, _mosaic.OriginX, _mosaic.OriginY,
             _mosaic.Width, _mosaic.Height, gx, gy, rx, ry);
 
     /// <summary>
