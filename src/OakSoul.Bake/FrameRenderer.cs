@@ -23,12 +23,12 @@ public sealed record RenderOptions(int Scale, IReadOnlySet<string> Layers, Func<
 /// with every layer drawn (entities labelled "#116 Dark Stump move/3 R 0.97", "~" carried, "?" unverified, the rival
 /// species when close); and a footer listing every entity with its rect and feet, so a label can be matched to its item.
 /// Drawn with Detect's Canvas and 5x7 font; the colours are the contact sheets' (Unknown grey, Mob red, Player blue, Pet
-/// cyan, Drop yellow, Effect purple, tag boxes in their owner's colour, white own character).
+/// cyan, Drop yellow, Effect purple, tag boxes in their owner's colour, orange while their text is still being read, white own character).
 /// </summary>
 public static class FrameRenderer
 {
     public const uint White = 0xFFFFFFFF, Cyan = 0xFF00FFFF, Foothold = 0xFF50D050, Rope = 0xFFD09040, Portal = 0xFFFF70D0,
-        HudGrey = 0xFFA0A0A0, MinimapLine = 0xFFE0E0E0, HeaderBack = 0xFF181818, Dim = 0xFFB8B8B8;
+        HudGrey = 0xFFA0A0A0, MinimapLine = 0xFFE0E0E0, HeaderBack = 0xFF181818, Dim = 0xFFB8B8B8, Pending = 0xFFFFA000;
 
     public static uint KindColour(string kind) => kind switch
     {
@@ -44,7 +44,7 @@ public static class FrameRenderer
     public static ItemStyle DefaultStyle(OverlayItem item, int scale) => item.Layer switch
     {
         OverlayLayers.Entity => new ItemStyle(KindColour(item.Kind), Math.Max(1, scale)),
-        OverlayLayers.Tags => new ItemStyle(TagColour(item.Str("owner")), Math.Max(1, scale / 2 + scale % 2), Labelled: false),
+        OverlayLayers.Tags => new ItemStyle(item.Bool("pending") ? Pending : TagColour(item.Str("owner")), Math.Max(1, scale / 2 + scale % 2), Labelled: false),
         OverlayLayers.Self => new ItemStyle(White, item.Kind == "tag" ? 1 : Math.Max(1, scale)),
         OverlayLayers.World => new ItemStyle(item.Kind switch { "foothold" => Foothold, "portal" => Portal, _ => Rope }, item.Kind == "portal" ? Math.Max(1, scale) : WorldLine(scale), item.Kind == "portal"),
         OverlayLayers.Minimap => new ItemStyle(item.Kind == "dot" ? DotColour(item.Str("dot")) : MinimapLine, 1, item.Kind == "names"),
@@ -203,6 +203,7 @@ public static class FrameRenderer
         }
         foreach (var k in new[] { "mob", "player", "pet", "drop", "effect", "damage", "unknown" }) Swatch(OverlayLabels.Title(k), KindColour(k));
         Swatch("tag box: its owner's", TagColour("none"));
+        Swatch("tag: text pending", Pending);
         Swatch("own character", White);
         if (layers.Contains(OverlayLayers.World)) { Swatch("foothold", Foothold); Swatch("rope/ladder", Rope); Swatch("portal activation area", Portal); }
         c.Text(x, y, "mob box: client hitbox (lt/rb); #track name anim/frame facing score; [p] predicted, [t] transition, [s] search; ~carried (last match); ? unverified; + feet", Dim, ts, null);

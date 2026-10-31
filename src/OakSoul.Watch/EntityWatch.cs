@@ -25,6 +25,7 @@ public sealed class EntityWatch
     private readonly bool _diagnostics;
     private bool _petWarned;
     private readonly EntityTracker _tracker = new();
+    private readonly string? _tagCache;
     private readonly Dictionary<int, EntityDetector?> _detectors = [];
     private readonly Dictionary<int, MapMobSet> _mobSets = [];
     private readonly SessionTimes _times;
@@ -42,10 +43,28 @@ public sealed class EntityWatch
     /// <param name="sprites">The sprites exported by OakSoul.SpriteExport --items (data/sprites), for drop icons.</param>
     /// <param name="diagnostics">Score every candidate against every species too, for the report's score distributions.</param>
     /// <param name="character">The own character's name (the watcher's --name): the pet's identified species is kept per character.</param>
+    /// <param name="ocr">The OCR worker the tag reads go to; null reads them on the frame thread.</param>
+    /// <param name="blockingOcr">Wait for each tag read (the worker still reads), so a replay is byte-identical to the frame-thread detector's.</param>
+    /// <param name="tagCache">The file the tag renderings read so far are kept in between sessions, loaded now and written by <see cref="SaveTagCache"/>; null keeps none.</param>
     public EntityWatch(HudLayout layout, string backgrounds, SessionTimes times, string? sheetDir, long? totalFrames,
-        string? mobInfo = null, string? sprites = null, bool diagnostics = false, string? petName = null, string? character = null, string? session = null)
+        string? mobInfo = null, string? sprites = null, bool diagnostics = false, string? petName = null, string? character = null, string? session = null,
+        OcrQueue? ocr = null, bool blockingOcr = false, string? tagCache = null)
     {
         _session = session;
+        Tags = new TagDetector { Queue = ocr, Blocking = blockingOcr };
+        _tagCache = tagCache;
+        if (tagCache is not null)
+        {
+            try
+            {
+                var loaded = Tags.Load(tagCache);
+                Console.WriteLine(loaded > 0 ? $"tags     {loaded} tag renderings with their text from {tagCache}" : $"tags     no cache file at {tagCache}; one is written at the end");
+            }
+            catch (Exception e) when (e is System.Text.Json.JsonException or KeyNotFoundException or InvalidOperationException or FormatException)
+            {
+                Console.WriteLine($"tags     the cache file {tagCache} could not be read ({e.Message}); starting without it, and it is written anew at the end");
+            }
+        }
         _tracker.Names.PetName = petName;
         _layout = layout;
         _backgrounds = backgrounds;
@@ -146,6 +165,17 @@ public sealed class EntityWatch
     public List<Row> Rows { get; } = [];
     public EntityDetector? Detector => _detector;
     public EntityTracker Tracker => _tracker;
+
+    /// <summary>The tag detector every map's detector shares: its cache of tag renderings and their text, and its OCR counters.</summary>
+    public TagDetector Tags { get; }
+
+    /// <summary>Writes the tag renderings read so far with their text to the cache file given at construction, if any.</summary>
+    public void SaveTagCache()
+    {
+        if (_tagCache is null) return;
+        var n = Tags.Save(_tagCache);
+        Console.WriteLine($"tags     {n} tag renderings with their text written to {_tagCache} ({Math.Max(0, n - Tags.Loaded)} new in this session)");
+    }
     /// <summary>Every detector that ran, one per map with a background.</summary>
     public IEnumerable<EntityDetector> Detectors => _detectors.Values.OfType<EntityDetector>();
     public IReadOnlyDictionary<int, MapMobSet> MobSets => _mobSets;
@@ -212,7 +242,7 @@ public sealed class EntityWatch
                     mobs = _mobSets[mapId] = MapMobSet.Build(map, index, _mobLibrary);
                     Console.WriteLine($"entities: map {mapId} mob templates: {(mobs.Entries.Count == 0 ? "none" : string.Join(", ", mobs.Entries.Select(e => $"{e.Species.Name} x{e.Spawns} ({e.Species.Mobility.ToString().ToLowerInvariant()}, {e.Species.Frames.Count} frames, floors {string.Join("/", e.Floors)})")))}{(mobs.Missing.Count > 0 ? $"; no data for {string.Join(", ", mobs.Missing)}" : "")}");
                 }
-                _detector = mosaic is null ? null : new EntityDetector(mosaic, _layout, _tracker, mobs, _drops, _damage)
+                _detector = mosaic is null ? null : new EntityDetector(mosaic, _layout, _tracker, mobs, _drops, _damage, Tags)
                 {
                     SpriteDiagnostics = _diagnostics,
                     Pets = _pets, Cursors = _cursors, Coins = _coins, SkillEffects = _skills, PetSpecies = PetSpecies,

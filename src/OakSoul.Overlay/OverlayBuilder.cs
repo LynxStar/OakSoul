@@ -199,7 +199,8 @@ public static class OverlayBuilder
         var vp = layout["world.viewport"].Rect;
         foreach (var t in tags)
             items.Add(new OverlayItem(OverlayLayers.Tags, "tag").Set("rect", new[] { t.X0 + vp.X, t.Y0 + vp.Y, t.Width, t.Height }).Set("text", t.Text)
-                .Set("level", t.Level).Set("name", t.Name).Set("owner", t.Owner).Set("track", t.OwnerTrack).Set("label", t.Text));
+                .Set("level", t.Level).Set("name", t.Name).Set("owner", t.Owner).Set("track", t.OwnerTrack).Set("pending", t.Pending ? true : null)
+                .Set("namedAfter", t.NamedAfter).Set("label", t.Text));
     }
 
     private static void Self(List<OverlayItem> items, OverlayInputs x, WorldState? place)

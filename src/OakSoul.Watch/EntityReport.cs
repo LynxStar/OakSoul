@@ -115,7 +115,7 @@ public static class EntityReport
         // The pet.
         var pets = all.Where(e => e.Kind == EntityKind.Pet).ToList();
         o.WriteLine($"  pet '{watch.Tracker.Names.PetName ?? "none"}': {pets.Select(e => e.TrackId).Distinct().Count()} track id(s) over the session; {pets.Count} frames with the pet, {pets.Count(e => e.Tag is not null)} located by its tag, {pets.Count(e => e.Tag is null)} without;" +
-                    $" at most {done.Select(r => r.Result.Entities.Count(e => e.Kind == EntityKind.Pet)).DefaultIfEmpty(0).Max()} in a frame; {detectors.Sum(d => d.Tags.PetSplits)} tag boxes split at the pet's tag, {watch.Tracker.PetDuplicates} frames with two pet tags");
+                    $" at most {done.Select(r => r.Result.Entities.Count(e => e.Kind == EntityKind.Pet)).DefaultIfEmpty(0).Max()} in a frame; {watch.Tags.PetSplits} tag boxes split at the pet's tag, {watch.Tracker.PetDuplicates} frames with two pet tags");
         o.WriteLine($"  own character: {detectors.Sum(d => d.OwnSlivers)} blobs sticking out of its box dropped as its own; the pet's tag taken off {detectors.Sum(d => d.PetTagsDetached)} blobs too large for the pet;" +
                     $" {detectors.Sum(d => d.DuplicateSprites)} duplicate matches of one mob dropped, {detectors.Sum(d => d.ExplainedBlobs)} blobs dropped as matched mobs and the pet run together");
         // Kills and dying.
@@ -459,7 +459,16 @@ public static class EntityReport
         o.WriteLine($"  mob detections with a readable tag in that frame: {mobs.Count(e => e.Tag is not null && e.Name is not null)}/{mobs.Count} = {Frac(mobs.Count(e => e.Tag is not null && e.Name is not null), mobs.Count)}");
         var mobTracks = watch.Tracker.Finished.Where(t => t.Kind == EntityKind.Mob).ToList();
         o.WriteLine($"    mob tracks that showed a tag at some point: {mobTracks.Count(t => t.Tag is not null)}/{mobTracks.Count} = {Frac(mobTracks.Count(t => t.Tag is not null), mobTracks.Count)}");
-        o.WriteLine($"  distinct tag texts ({detectors.Sum(d => d.Tags.OcrCalls)} OCR calls, {detectors.Sum(d => d.Tags.OcrMilliseconds):0} ms total), with the sprite identity of the same detection:");
+        var tags = watch.Tags;
+        var where = tags.Queue is null ? "on the frame thread" : tags.Blocking ? "on the OCR worker, each waited for" : "on the OCR worker";
+        o.WriteLine($"  tag reads: {tags.OcrCalls} OCR calls, {tags.OcrMilliseconds:0} ms of recognition {where}; the frame thread waited {tags.WaitedMilliseconds:0} ms and spent {tags.ReadMilliseconds:0} ms in Read altogether ({tags.ReadMilliseconds / Math.Max(1, done.Count):0.00} per frame);" +
+            $" {tags.OcrErrors} errors; {tags.PendingSightings} of {tags.TagSightings} tag sightings handed out pending = {Frac(tags.PendingSightings, tags.TagSightings)}; cache {tags.Entries} entries, {tags.ReadableEntries} with a text, {tags.Loaded} from the cache file");
+        var named = tags.NamedAfterFrames.Select(v => (double)v).ToList();
+        var latency = tags.ReadLatencyMs.ToList();
+        if (named.Count > 0)
+            o.WriteLine($"    frames from a tag's first sighting to its text (n {named.Count}): at once {named.Count(v => v == 0)}, next frame {named.Count(v => v == 1)}, median {Pct(named, 50):0}, p90 {Pct(named, 90):0}, max {named.Max():0};" +
+                $" read latency on the worker (queued to done) median {Pct(latency, 50):0.0} ms, p90 {Pct(latency, 90):0.0}, max {latency.Max():0.0}");
+        o.WriteLine("  distinct tag texts, with the sprite identity of the same detection:");
         foreach (var g in done.SelectMany(r => r.Result.Entities).Where(e => e.Tag is not null).GroupBy(e => (e.Kind, e.Tag, Species: e.Identity?.Name)).OrderByDescending(g => g.Count()).Take(30))
             o.WriteLine($"    {g.Key.Kind,-7} '{g.Key.Tag}' x{g.Count()}{(g.Key.Species is { } s ? $"  [{s}]" : "")}");
         o.WriteLine($"  mob names learned: {string.Join(", ", watch.Tracker.Names.MobNames)}; pet {watch.Tracker.Names.PetName ?? "none"}; the pet's tag taken off a verified mob or drop {detectors.Sum(d => d.CharacterTagsMoved)} times");

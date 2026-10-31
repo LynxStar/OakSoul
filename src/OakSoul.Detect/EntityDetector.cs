@@ -124,7 +124,7 @@ public sealed partial class EntityDetector
     private readonly BackgroundMosaic _mosaic;
     private readonly ScreenMask _mask;
     private readonly ForegroundExtractor _fg = new();
-    private readonly TagDetector _tags = new();
+    private readonly TagDetector _tags;
     private readonly EntityTracker _tracker;
     private readonly MapMobSet? _mobs;
     private readonly DropMatcher? _drops;
@@ -138,9 +138,12 @@ public sealed partial class EntityDetector
     /// <param name="mobs">The map's mob templates; without them candidates are not verified against sprites.</param>
     /// <param name="drops">Drop icons; without them drops are classified by appearance only.</param>
     /// <param name="damage">The damage number digits; without them damage numbers stay effects.</param>
-    public EntityDetector(BackgroundMosaic mosaic, HudLayout layout, EntityTracker? tracker = null, MapMobSet? mobs = null, DropMatcher? drops = null, DamageReader? damage = null)
+    /// <param name="tags">The tag detector shared across maps (its cache and its OCR worker), or null for one of this detector's own.</param>
+    public EntityDetector(BackgroundMosaic mosaic, HudLayout layout, EntityTracker? tracker = null, MapMobSet? mobs = null, DropMatcher? drops = null, DamageReader? damage = null,
+        TagDetector? tags = null)
     {
         _mosaic = mosaic;
+        _tags = tags ?? new TagDetector();
         // The EXP and loot log stays in the world: only its text leaves the foreground (ClearLogText).
         _mask = new ScreenMask(layout, [LogRegion]);
         _logBox = layout.TryGet(LogRegion, out var log) ? log.Rect : null;
@@ -317,14 +320,15 @@ public sealed partial class EntityDetector
         _tags.IsPetText ??= _tracker.Names.IsPetTag;
         _tags.SplitPet(tags, frame, frameWidth, vp);
         foreach (var t in tags) _fg.Clear(t.X0 - 1, t.Y0 - 1, t.X1 + 1, t.Y1 + 1);
-        var ocrBefore = _tags.OcrMilliseconds;
-        _tags.Read(tags, frame, frameWidth, vp, Ocr);
+        // The reads go to the OCR worker; what the frame thread waited for one (nothing, unless the detector is set to wait) stays out of the stage times.
+        var ocrBefore = _tags.WaitedMilliseconds;
+        _tags.Read(tags, frame, frameWidth, vp, Ocr, ctx.Frame);
         // A name read close to a species of the map is that species' name ("Vvild Boar" is Wild Boar).
         if (_mobs is not null && !ReferenceEquals(_tracker.Names.Species, _speciesNames))
             _tracker.Names.Species = _speciesNames ??= _mobs.Entries.Select(e => (e.Species.Name, e.Species.Level)).DistinctBy(s => s.Name).ToList();
         foreach (var t in tags)
             if (t.Name is { } tn && _tracker.Names.MatchSpecies(tn, t.Level) is { } species) t.Name = species;
-        var ocrMs = _tags.OcrMilliseconds - ocrBefore;
+        var ocrMs = _tags.WaitedMilliseconds - ocrBefore;
         var tTags = sw.Elapsed.TotalMilliseconds - ocrMs;
         // With the camera registered to the pixel, the own tag gives the own position exactly (the dot only to +-8).
         var ownWorld = ctx.OwnTag is { } ownTag ? CameraModel.ScreenToWorld(new PointD(camX, camY), CameraModel.SolesFromTag(OwnCharacter.TagFeet(ownTag))) : ctx.OwnWorld;

@@ -18,7 +18,8 @@ public sealed class IdentityReader
     private readonly TextRegionTracker _level;
     private readonly TextRegionTracker _jobName;
 
-    public IdentityReader(HudLayout layout, int stableFrames = 3)
+    /// <param name="queue">The OCR worker the reads go to; null reads on the calling thread.</param>
+    public IdentityReader(HudLayout layout, int stableFrames = 3, OcrQueue? queue = null)
     {
         // Vision needs the "LV." label as context and a large upscale to read the small badge digits. As captured, only 8x
         // read them (6x and 10x read "E", "1 3" or nothing), and on the decimated fx-2x frames 8x read "3D" too; the white
@@ -28,8 +29,8 @@ public sealed class IdentityReader
         // fx-anttunnel and fx-anttunnel-open read "3 2" at 8x on every keyframe (and "32" at 6x and 10x); as it is, "32" at
         // 6x, 8x and 10x, and 31 still reads at all three on fx-exact and fx-2x.
         _level = new TextRegionTracker(layout["status.level"].Rect, upscale: 8)
-            { StableFrames = stableFrames, SoftenExactFrames = false, Prepare = (px, w, h) => OcrInput.InkOnPaper(px, w, h) };
-        _jobName = new TextRegionTracker(layout["status.class_name"].Rect, upscale: 8) { StableFrames = stableFrames };
+            { StableFrames = stableFrames, SoftenExactFrames = false, Prepare = (px, w, h) => OcrInput.InkOnPaper(px, w, h), Queue = queue };
+        _jobName = new TextRegionTracker(layout["status.class_name"].Rect, upscale: 8) { StableFrames = stableFrames, Queue = queue };
     }
 
     public IdentityReading? Current { get; private set; }

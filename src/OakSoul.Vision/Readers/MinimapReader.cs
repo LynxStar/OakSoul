@@ -297,7 +297,8 @@ public sealed class MapNameTracker
     private bool _collapsed;
     private int? _nameRight;
 
-    public MapNameTracker(int stableFrames = 3)
+    /// <param name="queue">The OCR worker the reads go to; null reads on the calling thread.</param>
+    public MapNameTracker(int stableFrames = 3, OcrQueue? queue = null)
     {
         // Expanded: a fixed-size block at a fixed offset inside the panel, so the hash ignores width wobble, but never
         // wider than the panel: on a narrow panel (141 wide on Rocky Road I and II) a 160-wide block reached past the
@@ -305,7 +306,7 @@ public sealed class MapNameTracker
         // Collapsed: the bar text "Region : Map" left of the buttons. Where the reader found the buttons, the text is read
         // up to them; otherwise from a generous fixed span, which also takes in the button captions and the world beyond
         // the bar (whose scrolling delays the read), and the WORLD caption is stripped afterwards.
-        _tracker = new TextRegionTracker(Block, upscale: 3) { StableFrames = stableFrames };
+        _tracker = new TextRegionTracker(Block, upscale: 3) { StableFrames = stableFrames, Queue = queue };
     }
 
     private CaptureRect Block() => _collapsed
@@ -351,27 +352,70 @@ public sealed class MapNameTracker
 
     public bool Update(FrameGeometry geometry, ReadOnlySpan<byte> frame, MinimapReading minimap) => Update(geometry, frame, minimap.Panel, minimap.Collapsed, minimap.NameRight);
 
+    /// <summary>An unsoftened re-read of an unknown name queued on the worker, with the softened reading it would replace.</summary>
+    private (OcrRequest Request, IReadOnlyList<TextLine> SoftenedLines, (string Region, string Map, double Confidence)? Softened, bool Collapsed, int PanelWidth)? _rawRead;
+
+    /// <summary>The panel's state on the frame a worker read was queued from: the lines, once in, are parsed as that frame's.</summary>
+    private bool _readCollapsed;
+    private int _readPanelWidth;
+
+    /// <summary>Returns true when the names were re-read this frame (with a worker: when a read came back and was taken in).</summary>
     public bool Update(FrameGeometry geometry, ReadOnlySpan<byte> frame, CaptureRect panel, bool collapsed, int? nameRight = null)
     {
         _panel = panel;
         _collapsed = collapsed;
         _nameRight = collapsed ? nameRight : null;
         _updated = true;
-        if (!_tracker.Update(geometry, frame)) return false;
-        var lines = _tracker.Lines!;
-        Current = Parse(lines, collapsed);
-        LastReadUnsoftened = false;
-        if (IsKnownName is { } known && _tracker.LastReadExact && !(Current is { } read && known(read.Region, read.Map))
-            && _tracker.ReadUnsoftened(geometry, frame) is var rawLines && Parse(rawLines, collapsed) is { } raw && known(raw.Region, raw.Map))
+        IReadOnlyList<TextLine> lines;
+        (string Region, string Map, double Confidence)? reading;
+        var panelWidth = panel.Width;
+        if (_rawRead is { } rr)
         {
-            Current = raw;
-            lines = rawLines;
-            LastReadUnsoftened = true;
+            // Nothing is published until the re-read is in: the softened reading was a name the catalog does not know.
+            if (!rr.Request.Done) return false;
+            _rawRead = null;
+            (lines, reading, collapsed, panelWidth) = (rr.SoftenedLines, rr.Softened, rr.Collapsed, rr.PanelWidth);
+            LastReadUnsoftened = false;
+            if (IsKnownName is { } known && Parse(rr.Request.Lines, collapsed) is { } raw && known(raw.Region, raw.Map))
+            {
+                reading = raw;
+                lines = rr.Request.Lines;
+                LastReadUnsoftened = true;
+            }
         }
+        else
+        {
+            var wasReading = _tracker.Reading;
+            var landed = _tracker.Update(geometry, frame);
+            if (!wasReading && _tracker.Reading) { _readCollapsed = collapsed; _readPanelWidth = panel.Width; }
+            if (!landed) return false;
+            if (_tracker.Queue is not null) { collapsed = _readCollapsed; panelWidth = _readPanelWidth; }
+            lines = _tracker.Lines!;
+            reading = Parse(lines, collapsed);
+            LastReadUnsoftened = false;
+            if (IsKnownName is { } known && _tracker.LastReadExact && !(reading is { } read && known(read.Region, read.Map)))
+            {
+                if (_tracker.Queue is null)
+                {
+                    if (_tracker.ReadUnsoftened(geometry, frame) is var rawLines && Parse(rawLines, collapsed) is { } raw && known(raw.Region, raw.Map))
+                    {
+                        reading = raw;
+                        lines = rawLines;
+                        LastReadUnsoftened = true;
+                    }
+                }
+                else if (_tracker.BeginUnsoftened() is { } request)
+                {
+                    _rawRead = (request, lines, reading, collapsed, panelWidth);
+                    return false;
+                }
+            }
+        }
+        Current = reading;
         var plausible = lines.Where(Plausible).ToList();
         // The block starts 46 columns into the panel; OCR boxes are in frame pixels of the block.
         NameWidensPanel = collapsed || plausible.Count == 0 ? null
-            : panel.Width - (46 + plausible.Max(l => l.X + l.Width) / geometry.Scale) <= NameWidensPanelMargin;
+            : panelWidth - (46 + plausible.Max(l => l.X + l.Width) / geometry.Scale) <= NameWidensPanelMargin;
         return true;
     }
 

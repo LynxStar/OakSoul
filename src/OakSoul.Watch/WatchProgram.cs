@@ -120,19 +120,32 @@ public static class WatchProgram
         Console.WriteLine($"name     {ownName}");
         Console.WriteLine($"pet      {petName ?? "none"}");
 
+        // Text recognition runs on a worker thread of its own, so no frame waits for Vision. OAKSOUL_OCR_THREAD=tags keeps only the
+        // name tags' reads there (the map name, the status bar and the own tag's learning read on the frame thread, as before);
+        // off reads everything on the frame thread, as before there was a worker, which is the mode a replay reproduces exactly.
+        var ocrMode = Environment.GetEnvironmentVariable("OAKSOUL_OCR_THREAD") switch { "off" or "0" => "off", "tags" => "tags", _ => "on" };
+        using var ocr = ocrMode == "off" ? null : new OcrQueue();
+        var readersOcr = ocrMode == "on" ? ocr : null;
+        // The tag cache file: the tag renderings read so far with their text, kept between live sessions. A replay starts without
+        // one unless OAKSOUL_TAG_CACHE names a file, so a replay's output is its own; off keeps none.
+        var tagCacheSetting = Environment.GetEnvironmentVariable("OAKSOUL_TAG_CACHE");
+        var tagCachePath = tagCacheSetting is "off" or "0" ? null : tagCacheSetting is { Length: > 0 } ? tagCacheSetting
+            : recording is null ? Path.Combine(Directory.GetCurrentDirectory(), "data", "cache", "tag-reads.json") : null;
+        Console.WriteLine($"ocr      {(ocr is null ? "on the frame thread" : ocrMode == "tags" ? "name tags on a worker thread, the rest on the frame thread" : "on a worker thread")}; tag cache {tagCachePath ?? "none"}");
+
         var layout = HudLayout.Native1366x768;
         // Keyframe replay is one frame per second, so a stability gate of one frame; live and video keep three.
         var stableFrames = source is RecordingFrameSource { Fps: <= 1 } ? 2 : 3;
-        var tracker = new MapNameTracker(stableFrames);
+        var tracker = new MapNameTracker(stableFrames, readersOcr);
         using var cancellation = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; cancellation.Cancel(); };
         using var frameSource = source;
-        var identity = new IdentityReader(layout, stableFrames) { ExpectedName = ownName };
+        var identity = new IdentityReader(layout, stableFrames, readersOcr) { ExpectedName = ownName };
         var quickslot = new QuickslotReader(layout);
         var buffReader = new BuffReader(layout);
         buffsPath ??= Path.Combine(Directory.GetCurrentDirectory(), "recordings", "known-buffs.json");
         if (File.Exists(buffsPath)) Console.WriteLine($"buffs    {buffReader.Load(buffsPath)} known icons from {buffsPath}");
-        var tagLocator = new NameTagLocator(ownName);
+        var tagLocator = new NameTagLocator(ownName) { Queue = readersOcr };
         var nameWarned = false;
         CaptureRect? lastUnlearned = null;
         mapsPath ??= Path.Combine(Directory.GetCurrentDirectory(), "data", "maps");
@@ -152,7 +165,8 @@ public static class WatchProgram
         var entityWatch = entities && world is not null ? new EntityWatch(layout, backgroundsPath, sessionTimes, sheetDir,
             recording is not null && keyframes && Directory.Exists(Path.Combine(recording, "keyframes")) ? Directory.GetFiles(Path.Combine(recording, "keyframes"), "*.png").Length : null,
             mobInfoPath, spritesPath, diagnostics: entityReport, petName: petName, character: ownName,
-            session: recording is null ? null : Path.GetFileName(Path.TrimEndingDirectorySeparator(recording))) : null;
+            session: recording is null ? null : Path.GetFileName(Path.TrimEndingDirectorySeparator(recording)),
+            ocr: ocr, tagCache: tagCachePath) : null;
         if (entities && world is null) Console.WriteLine("entities off: no map metadata");
 
         // A replayed frame is stamped with its time into the session (its capture pts less the session's first), which is
@@ -314,6 +328,14 @@ public static class WatchProgram
         if (entityWatch is not null) Console.WriteLine(entityWatch.SkipSummary());
         if (entityReport && entityWatch is not null) EntityReport.Print(Console.Out, entityWatch);
         if (entityReport) entityWatch?.PrintGapFiller(Console.Out);
+        entityWatch?.SaveTagCache();
+        if (ocr is not null)
+        {
+            var latencies = ocr.Latencies.Order().ToList();
+            double LatencyPct(double p) => latencies.Count == 0 ? 0 : latencies[Math.Clamp((int)Math.Ceiling(p / 100 * latencies.Count) - 1, 0, latencies.Count - 1)];
+            Console.WriteLine($"ocr      {ocr.Completed} reads on the worker thread, {ocr.WorkerMilliseconds:0} ms of recognition; queued to done median {LatencyPct(50):0.0} ms, p90 {LatencyPct(90):0.0}, max {LatencyPct(100):0.0};" +
+                $" at most {ocr.MaxPending} waiting at once, {ocr.Pending} still out; Vision loaded in {ocr.WarmUp?.Milliseconds ?? 0:0} ms on that thread{(ocr.Errors > 0 ? $"; {ocr.Errors} reads failed (first: {ocr.FirstError})" : "")}");
+        }
         // The detector compares exact frames with the mosaic, so only a pixel-exact session builds one. A video of such a session
         // votes (a lossy one too: its errors spread around the true value), and its keyframes then replace the voted pixels they
         // saw with their own values (MosaicBuilder.ExactRefine).

@@ -75,6 +75,14 @@ public sealed class NameTagLocator
     private bool _confirmed, _learnFrame;
     private int _unconfirmedMisses;
     private readonly HashSet<CaptureRect> _rejected = [];
+    /// <summary>The learning read out on the worker, with the viewport's pixels the template will be cut from.</summary>
+    private (OcrRequest Request, byte[] Native)? _learning;
+
+    /// <summary>The OCR worker the learning reads go to; null reads on the calling thread, as before there was a worker.</summary>
+    public OcrQueue? Queue { get; init; }
+
+    /// <summary>A learning read is out on the worker.</summary>
+    public bool Learning => _learning is not null;
 
     public NameTagLocator(string name) => _name = name;
 
@@ -99,13 +107,31 @@ public sealed class NameTagLocator
     /// name exactly are tried before those one character off, and of several tag-shaped ones the nearest to where the
     /// camera keeps the character (<see cref="ExpectedTag"/>) wins. Returns true when the template was learned. The OCR
     /// sees the crop softened on a pixel-exact frame (<see cref="OcrInput"/>); the template is cut from the frame's own
-    /// pixels.
+    /// pixels. With a <see cref="Queue"/> the viewport is read on the worker, one attempt out at a time, and the template is
+    /// learned on the call that finds the lines in, from the pixels of the frame they were read on.
     /// </summary>
     public bool TryLearn(FrameGeometry geometry, ReadOnlySpan<byte> frame)
     {
         var viewport = geometry.Layout[SearchRegion];
+        if (Queue is null)
+        {
+            var nativeNow = geometry.ExtractNative(frame, viewport);
+            return Learn(TextRecognizer.Recognize(OcrInput.ForOcr(geometry, frame, nativeNow, viewport.Width, viewport.Height), viewport.Width, viewport.Height, upscale: 2), nativeNow, viewport);
+        }
+        if (_learning is { } l)
+        {
+            if (!l.Request.Done) return false;
+            _learning = null;
+            return Learn(l.Request.Lines, l.Native, viewport);
+        }
+        // The whole 1366x702 viewport at a 2x upscale takes Vision a few hundred milliseconds: a long read, behind the short ones.
         var native = geometry.ExtractNative(frame, viewport);
-        var lines = TextRecognizer.Recognize(OcrInput.ForOcr(geometry, frame, native, viewport.Width, viewport.Height), viewport.Width, viewport.Height, upscale: 2);
+        _learning = (Queue.Enqueue(OcrInput.ForOcr(geometry, frame, native, viewport.Width, viewport.Height), viewport.Width, viewport.Height, 2, OcrPriority.Long), native);
+        return false;
+    }
+
+    private bool Learn(IReadOnlyList<TextLine> lines, byte[] native, HudRegion viewport)
+    {
         var notes = new List<string>();
         TagCut? best = null;
         foreach (var exact in new[] { true, false })
