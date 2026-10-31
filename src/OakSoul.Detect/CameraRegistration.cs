@@ -244,7 +244,10 @@ public sealed class CoarseMosaic
     /// Mean-absolute-difference search of block means over cameras that are multiples of 4 within <paramref name="range"/>
     /// of the guess; returns the best camera (a multiple of 4), or null when too few blocks overlap.
     /// </summary>
-    /// <remarks>Halving the textured blocks from 1200 to 600 left the number of failed registrations on fx-combat unchanged.</remarks>
+    /// <remarks>
+    /// Halving the textured blocks from 1200 to 600 left the number of failed registrations on fx-combat unchanged.
+    /// Not reentrant: the block means and column sums are this instance's fields, reused across calls; one instance belongs to one detector, called from one thread.
+    /// </remarks>
     public (int X, int Y, double Sad)? Search(ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, int guessX, int guessY, int range, int maxSamples = 600)
     {
         // Frame block means over unmasked pixels: column sums of four rows at a time, then four columns per block.

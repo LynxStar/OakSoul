@@ -123,7 +123,7 @@ public sealed class DamageReader
     /// <see cref="Read"/>'s per-region scratch, grown as needed and kept for the next region; each call uses the first
     /// entries at its own region's strides.
     /// </summary>
-    /// <remarks>Not thread-safe: the reader belongs to one <see cref="EntityDetector"/>, which reads damage on its own thread, one region at a time.</remarks>
+    /// <remarks>Not thread-safe: one reader is shared by an EntityWatch's per-map detectors (<see cref="EntityDetector"/>), which run one at a time on the watch's consumer thread, one region at a time.</remarks>
     private bool[] _ok = [], _hueMap = [], _seen = [];
     private int[] _quant = [], _luma = [], _outline = [];
     private readonly List<int> _near = [];
