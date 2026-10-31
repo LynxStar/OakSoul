@@ -208,6 +208,9 @@ public sealed class MapCatalog
 
     public (string Street, string Map)? Names(int id) => _index.TryGetValue(id, out var n) ? n : null;
 
+    /// <summary>Every map's names by id: what the minimap's name block can show.</summary>
+    public IEnumerable<(int Id, string Street, string Map)> AllNames => _index.OrderBy(e => e.Key).Select(e => (e.Key, e.Value.Street, e.Value.Map));
+
     private HashSet<string>? _sharedNames;
 
     /// <summary>

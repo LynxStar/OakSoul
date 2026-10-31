@@ -306,8 +306,28 @@ public sealed class MapNameTracker
         // Collapsed: the bar text "Region : Map" left of the buttons. Where the reader found the buttons, the text is read
         // up to them; otherwise from a generous fixed span, which also takes in the button captions and the world beyond
         // the bar (whose scrolling delays the read), and the WORLD caption is stripped afterwards.
-        _tracker = new TextRegionTracker(Block, upscale: 3) { StableFrames = stableFrames, Queue = queue };
+        _tracker = new TextRegionTracker(Block, upscale: 3)
+        {
+            StableFrames = stableFrames, Queue = queue,
+            Recognise = (raw, width, height) => Fonts?.Recognise(raw, width, height, _collapsed ? MapNameForm.Bar : MapNameForm.Panel),
+        };
     }
+
+    /// <summary>
+    /// The learned fonts and the name-block cache tried on the block before any read, when set (<see cref="MapNameFonts"/>); they
+    /// learn from reads the catalog confirms exactly (<see cref="IsKnownName"/>) on pixel-exact frames.
+    /// </summary>
+    public MapNameFonts? Fonts { get; set; }
+
+    /// <summary>Map changes named by a read, how many of those the catalog confirmed exactly, and map changes named by <see cref="Fonts"/> without a read.</summary>
+    public int Reads { get; private set; }
+    public int ReadsConfirmed { get; private set; }
+    public int Recognised { get; private set; }
+
+    /// <summary>The block the last names were taken from, as captured (BGRA, width, height), its form, and what named it: "read", "cache" or "fonts".</summary>
+    public (byte[] Raw, int Width, int Height)? LastCrop => _tracker.LastCrop;
+    public MapNameForm LastForm { get; private set; }
+    public string LastNamedBy { get; private set; } = "";
 
     private CaptureRect Block() => _collapsed
         ? new CaptureRect(_panel.X + 4, _panel.Y + 2, _nameRight is { } r && r - 2 > _panel.X + 24 ? r - 2 - (_panel.X + 4) : Math.Min(330, MinimapReader.SearchArea.Width - _panel.X - 4), 18)
@@ -389,11 +409,11 @@ public sealed class MapNameTracker
             var landed = _tracker.Update(geometry, frame);
             if (!wasReading && _tracker.Reading) { _readCollapsed = collapsed; _readPanelWidth = panel.Width; }
             if (!landed) return false;
-            if (_tracker.Queue is not null) { collapsed = _readCollapsed; panelWidth = _readPanelWidth; }
+            if (_tracker.Queue is not null && !_tracker.LastRecognised) { collapsed = _readCollapsed; panelWidth = _readPanelWidth; }
             lines = _tracker.Lines!;
             reading = Parse(lines, collapsed);
             LastReadUnsoftened = false;
-            if (IsKnownName is { } known && _tracker.LastReadExact && !(reading is { } read && known(read.Region, read.Map)))
+            if (!_tracker.LastRecognised && IsKnownName is { } known && _tracker.LastReadExact && !(reading is { } read && known(read.Region, read.Map)))
             {
                 if (_tracker.Queue is null)
                 {
@@ -412,6 +432,20 @@ public sealed class MapNameTracker
             }
         }
         Current = reading;
+        LastForm = collapsed ? MapNameForm.Bar : MapNameForm.Panel;
+        LastNamedBy = _tracker.LastRecognised ? (Fonts?.LastSource == MapNameSource.Cache ? "cache" : "fonts") : "read";
+        if (_tracker.LastRecognised) Recognised++;
+        else
+        {
+            Reads++;
+            if (reading is { } confirmed && IsKnownName is { } isKnown && isKnown(confirmed.Region, confirmed.Map))
+            {
+                ReadsConfirmed++;
+                // A read the catalog confirms exactly teaches the fonts and the cache the block it was taken from.
+                if (Fonts is { } fonts && _tracker.LastReadExact && _tracker.LastCrop is { } crop)
+                    fonts.Learn(crop.Raw, crop.Width, crop.Height, collapsed ? MapNameForm.Bar : MapNameForm.Panel, confirmed.Region, confirmed.Map);
+            }
+        }
         var plausible = lines.Where(Plausible).ToList();
         // The block starts 46 columns into the panel; OCR boxes are in frame pixels of the block.
         NameWidensPanel = collapsed || plausible.Count == 0 ? null

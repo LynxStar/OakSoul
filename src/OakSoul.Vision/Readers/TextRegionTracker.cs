@@ -43,6 +43,18 @@ public sealed class TextRegionTracker
     /// <summary>The OCR worker the reads go to; null reads on the calling thread, as before there was a worker.</summary>
     public OcrQueue? Queue { get; init; }
 
+    /// <summary>
+    /// Tried on the crop of a pixel-exact frame before any read: the lines it knows the crop to show, or null to read it. The crop is
+    /// BGRA as captured, unsoftened. The map name's learned fonts and name-block cache work this way (<see cref="MapNameFonts"/>).
+    /// </summary>
+    public Func<byte[], int, int, IReadOnlyList<TextLine>?>? Recognise { get; init; }
+
+    /// <summary>Whether the last lines came from <see cref="Recognise"/> rather than a read.</summary>
+    public bool LastRecognised { get; private set; }
+
+    /// <summary>The crop the last lines were taken from, as captured (BGRA, width, height); null before the first.</summary>
+    public (byte[] Raw, int Width, int Height)? LastCrop => _lastRaw;
+
     /// <summary>A read is out on the worker and not yet back.</summary>
     public bool Reading => _pending is not null;
 
@@ -79,6 +91,7 @@ public sealed class TextRegionTracker
             LastReadExact = p.Exact;
             _lastRaw = (p.Raw, p.Width, p.Height);
             Lines = p.Request.Lines;
+            LastRecognised = false;
             return true;
         }
         var native = _region();
@@ -93,12 +106,21 @@ public sealed class TextRegionTracker
         var exact = OcrInput.IsPixelExact(geometry, frame);
         var block = geometry.ToFrame(_region());
         var raw = new HudRegion(0, "text.ocr", RegionKind.Fixed, block, "").Extract(frame, geometry.FrameWidth, geometry.FrameHeight);
+        if (exact && Recognise is { } recognise && recognise(raw, block.Width, block.Height) is { } known)
+        {
+            LastReadExact = true;
+            _lastRaw = (raw, block.Width, block.Height);
+            Lines = known;
+            LastRecognised = true;
+            return true;
+        }
         var px = PrepareCrop(raw, block.Width, block.Height, SoftenExactFrames && exact);
         if (Queue is null)
         {
             LastReadExact = exact;
             _lastRaw = (raw, block.Width, block.Height);
             Lines = TextRecognizer.Recognize(px, block.Width, block.Height, _upscale);
+            LastRecognised = false;
             return true;
         }
         _pending = (Queue.Enqueue(px, block.Width, block.Height, _upscale), exact, raw, block.Width, block.Height);
