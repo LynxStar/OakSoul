@@ -35,6 +35,32 @@ public static class CameraRegistration
     public static int[] Samples(ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, int maxSamples = MaxSamples)
     {
         var list = new List<int>(8192);
+        Textured(frame, frameWidth, mask, list);
+        if (list.Count <= maxSamples) return list.ToArray();
+        var result = new int[maxSamples];
+        for (var i = 0; i < maxSamples; i++) result[i] = list[(int)((long)i * list.Count / maxSamples)];
+        return result;
+    }
+
+    /// <summary>
+    /// The same samples in the same order, picked into the caller's <paramref name="scratch"/> (cleared first, grown as needed and
+    /// kept for the next frame); the span returned is valid until the scratch is next used.
+    /// </summary>
+    public static ReadOnlySpan<int> Samples(ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, int maxSamples, List<int> scratch)
+    {
+        scratch.Clear();
+        Textured(frame, frameWidth, mask, scratch);
+        var all = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(scratch);
+        if (all.Length <= maxSamples) return all;
+        // Picked in place: the i-th pick reads entry i * count / max >= i, which no earlier pick (written below i) has overwritten.
+        var count = all.Length;
+        for (var i = 0; i < maxSamples; i++) all[i] = all[(int)((long)i * count / maxSamples)];
+        return all[..maxSamples];
+    }
+
+    /// <summary>Every textured, non-excluded grid point of the viewport, appended to <paramref name="list"/> row by row.</summary>
+    private static void Textured(ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, List<int> list)
+    {
         int w = mask.Width, h = mask.Height, vx = mask.Viewport.X, vy = mask.Viewport.Y;
         for (var y = GridStep / 2; y < h - 1; y += GridStep)
             for (var x = GridStep / 2; x < w - 1; x += GridStep)
@@ -45,10 +71,6 @@ public static class CameraRegistration
                 if (Math.Abs(l - Luma(frame, o + 4)) + Math.Abs(l - Luma(frame, o + frameWidth * 4)) < TextureLuma) continue;
                 list.Add(y * w + x);
             }
-        if (list.Count <= maxSamples) return list.ToArray();
-        var result = new int[maxSamples];
-        for (var i = 0; i < maxSamples; i++) result[i] = list[(int)((long)i * list.Count / maxSamples)];
-        return result;
     }
 
     /// <summary>
@@ -57,7 +79,7 @@ public static class CameraRegistration
     /// offset nearest the guess. Wide searches run coarse to fine: a sparse sample set over the whole window, then the
     /// full set within two pixels of the coarse best.
     /// </summary>
-    public static Registration Register(ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, int[] samples,
+    public static Registration Register(ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, ReadOnlySpan<int> samples,
         uint[] reference, byte[] usable, int originX, int originY, int refWidth, int refHeight,
         int guessX, int guessY, int rangeX, int rangeY, int minCompared = 150)
     {
@@ -180,6 +202,10 @@ public sealed class CoarseMosaic
 
     public static int FloorDiv(int a, int b) => (int)Math.Floor((double)a / b);
 
+    /// <summary>The frame's block means, which blocks have enough unmasked pixels, and the four-row column sums: allocated on the first search, again only if the mask's size changes.</summary>
+    private int[] _means = [], _colB = [], _colG = [], _colR = [], _colN = [];
+    private bool[] _ok = [];
+
     /// <summary>
     /// Mean-absolute-difference search of block means over cameras that are multiples of 4 within <paramref name="range"/>
     /// of the guess; returns the best camera (a multiple of 4), or null when too few blocks overlap.
@@ -189,9 +215,12 @@ public sealed class CoarseMosaic
     {
         // Frame block means over unmasked pixels: column sums of four rows at a time, then four columns per block.
         int bw = mask.Width / Block, bh = mask.Height / Block, mw = mask.Width;
-        var means = new int[bw * bh];
-        var ok = new bool[bw * bh];
-        var colB = new int[mw]; var colG = new int[mw]; var colR = new int[mw]; var colN = new int[mw];
+        if (_ok.Length != bw * bh) { _means = new int[bw * bh]; _ok = new bool[bw * bh]; }
+        if (_colN.Length != mw) { _colB = new int[mw]; _colG = new int[mw]; _colR = new int[mw]; _colN = new int[mw]; }
+        // A block below MinPixels must read not ok; a mean is only read where ok, and every ok block's mean is written below.
+        Array.Clear(_ok);
+        var means = _means; var ok = _ok;
+        var colB = _colB; var colG = _colG; var colR = _colR; var colN = _colN;
         var bits = mask.Bits;
         for (var by = 0; by < bh; by++)
         {
