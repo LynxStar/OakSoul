@@ -374,7 +374,7 @@ public sealed class FootholdSearch
     public const int ClusterGap = 40;
 
     /// <summary>The overlap of two matches' visible extents as a share of the larger.</summary>
-    public static double OverlapOfLarger(SpriteMatch a, SpriteMatch b)
+    public static double OverlapOfLarger(in SpriteMatch a, in SpriteMatch b)
     {
         int ax0 = a.Left + a.Frame.X0, ax1 = a.Left + a.Frame.X1, ay0 = a.Top + a.Frame.Y0, ay1 = a.Top + a.Frame.Y1;
         int bx0 = b.Left + b.Frame.X0, bx1 = b.Left + b.Frame.X1, by0 = b.Top + b.Frame.Y0, by1 = b.Top + b.Frame.Y1;

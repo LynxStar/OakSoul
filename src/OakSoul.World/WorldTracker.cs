@@ -103,6 +103,8 @@ public sealed class WorldTracker
     private int _framesSinceHeight;
     private readonly Queue<(double Time, double X)> _motion = new();
     private WorldState _last = WorldState.Empty;
+    /// <summary>The state while the minimap area is not trusted: built once (a record, compared by value only).</summary>
+    private static readonly WorldState Untrusted = WorldState.Empty with { Note = "minimap changed size; waiting for the map name" };
 
     public WorldTracker(MapCatalog catalog) => _catalog = catalog;
 
@@ -118,7 +120,7 @@ public sealed class WorldTracker
     {
         ResolveMap(obs);
         if (_map is null || _index is null || _camera is null) return _last = WorldState.Empty;
-        if (!AreaTrusted(obs)) return _last = WorldState.Empty with { Note = "minimap changed size; waiting for the map name" };
+        if (!AreaTrusted(obs)) return _last = Untrusted;
 
         if (obs.MapArea is { Width: > 0, Height: > 0 } area && (_transform is null || _transform.MapArea != area))
             _transform = MinimapTransform.Create(_map, area);

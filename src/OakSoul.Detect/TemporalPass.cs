@@ -77,7 +77,8 @@ public sealed partial class EntityDetector
     private int _framesSinceFull = int.MaxValue / 2;
     private bool _lastDetected;
     private double? _lastPts;
-    private readonly Dictionary<int, (string Key, double Since, double Seen)> _poses = [];
+    /// <summary>Per track: the pose it was last verified in (species, anim, frame, facing), since when and when last seen (pts).</summary>
+    private readonly Dictionary<int, ((int MobId, string Anim, int FrameIndex, int Facing) Key, double Since, double Seen)> _poses = [];
     private byte[] _explained = [];
     private readonly Dictionary<(int Species, string Key), SpriteFrame?> _byKey = [];
 
@@ -552,7 +553,7 @@ public sealed partial class EntityDetector
             // A track verified alive again (a die pose matched by mistake) is predicted again.
             if (!id.Anim.StartsWith("die", StringComparison.Ordinal) && e.State != MobState.Dying) _finished.Remove(e.TrackId);
             if (id.Sightings == 1) { if (full) Temporals.FirstMatchFull++; else Temporals.FirstMatchTemporal++; }
-            var key = $"{id.MobId}:{id.Anim}/{id.FrameIndex}{id.Facing}";
+            var key = (id.MobId, id.Anim, id.FrameIndex, id.Facing);
             _poses[e.TrackId] = _poses.TryGetValue(e.TrackId, out var p) && p.Key == key ? (key, p.Since, pts) : (key, pts, pts);
         }
         foreach (var id in _poses.Where(p => pts - p.Value.Seen > PredictMemorySeconds).Select(p => p.Key).ToList()) _poses.Remove(id);

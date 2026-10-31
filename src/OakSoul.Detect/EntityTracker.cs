@@ -372,7 +372,8 @@ public sealed class EntityTracker
             if (keep) { candidates[petCandidate].Tag = null; petCandidate = c; } else candidates[c].Tag = null;
         }
         // Greedy assignment by distance to each track's predicted position.
-        var pairs = new List<(double Cost, int T, int C)>();
+        // Each pair carries its position in the list (Order), the tie-break that keeps the sort below stable.
+        var pairs = new List<(double Cost, int T, int C, int Order)>();
         var characterTag = candidates.Select(c => Names.IsCharacterTag(c.Tag?.Text)).ToArray();
         var tagSpecies = candidates.Select(c => c.Tag?.Text is { } t && TagSpecies is { } f ? f(Names.Strip(t)) : null).ToArray();
         for (var t = 0; t < _tracks.Count; t++)
@@ -400,7 +401,7 @@ public sealed class EntityTracker
                 // pose only, so the death rule holds by construction.
                 if (cand.PredictedTrack == tr.Id)
                 {
-                    pairs.Add((BoundCost, t, c));
+                    pairs.Add((BoundCost, t, c, pairs.Count));
                     continue;
                 }
                 var sameSpecies = cand.Sprite is { } sp0 && sp0.Species.Id == tr.MobId;
@@ -453,13 +454,16 @@ public sealed class EntityTracker
                 // A drop is not a mob, whatever stood there before, and a mob is not a drop.
                 if (cand.Drop is not null && (tr.MobId is not null || tr.Kind is not (EntityKind.Drop or EntityKind.Unknown))) continue;
                 if (cand.Sprite is not null && tr.Drop is not null) continue;
-                pairs.Add((cost, t, c));
+                pairs.Add((cost, t, c, pairs.Count));
             }
         }
         var trackUsed = new bool[_tracks.Count];
         var candTrack = new int[candidates.Count];
         Array.Fill(candTrack, -1);
-        foreach (var (_, t, c) in pairs.OrderBy(p => p.Cost))
+        // By cost, ties in the order the pairs were added: the order a stable sort (OrderBy) gives, sorted in place.
+        // Cost compares as OrderBy's default comparer does (double.CompareTo), so NaN and -0.0 sort as they did there.
+        pairs.Sort(static (a, b) => a.Cost.CompareTo(b.Cost) is var k and not 0 ? k : a.Order.CompareTo(b.Order));
+        foreach (var (_, t, c, _) in pairs)
         {
             if (trackUsed[t] || candTrack[c] >= 0) continue;
             trackUsed[t] = true;
@@ -695,7 +699,7 @@ public sealed class EntityTracker
     }
 
     /// <summary>The share of a box that a match's visible extent covers.</summary>
-    private static double Covers(SpriteMatch m, CaptureRect box)
+    private static double Covers(in SpriteMatch m, CaptureRect box)
     {
         int x0 = Math.Max(box.X, m.Left + m.Frame.X0), x1 = Math.Min(box.X + box.Width - 1, m.Left + m.Frame.X1);
         int y0 = Math.Max(box.Y, m.Top + m.Frame.Y0), y1 = Math.Min(box.Y + box.Height - 1, m.Top + m.Frame.Y1);

@@ -119,6 +119,23 @@ public sealed class DamageReader
     /// <summary>The colours any family's fill can be (the union of the families' hue tables), for the quick look.</summary>
     private readonly bool[] _anyHue = new bool[4096];
 
+    /// <summary>
+    /// <see cref="Read"/>'s per-region scratch, grown as needed and kept for the next region; each call uses the first
+    /// entries at its own region's strides.
+    /// </summary>
+    /// <remarks>Not thread-safe: the reader belongs to one <see cref="EntityDetector"/>, which reads damage on its own thread, one region at a time.</remarks>
+    private bool[] _ok = [], _hueMap = [], _seen = [];
+    private int[] _quant = [], _luma = [], _outline = [];
+    private readonly List<int> _near = [];
+    /// <summary>The seed list of each family, by its index in <see cref="_families"/>.</summary>
+    private readonly List<List<int>> _familySeedLists = [];
+
+    private static T[] Grown<T>(ref T[] buffer, int length)
+    {
+        if (buffer.Length < length) buffer = new T[length];
+        return buffer;
+    }
+
     public int GlyphCount => _families.Sum(f => f.Glyphs.Count);
     public IEnumerable<string> FamilyNames => _families.Select(f => f.Name);
 
@@ -322,16 +339,15 @@ public sealed class DamageReader
         if (pairs < MinOutlinePairs || fills < MinFillPairs) { Milliseconds += sw.Elapsed.TotalMilliseconds; return result; }
         RegionsSearched++;
         RegionPixels += rw * rh;
-        // The region's pixels, packed, and whether each may be compared.
-        var px = new int[rw * rh * 3];
-        var ok = new bool[rw * rh];
-        var quant = new int[rw * rh];
-        var luma = new int[rw * rh];
+        // Whether each of the region's pixels may be compared, its quantized colour and its luma; the colours themselves are
+        // read from the frame, at ((ry0 + y) * frameWidth + rx0 + x) * 4 for region pixel (x, y).
+        var ok = Grown(ref _ok, rw * rh);
+        var quant = Grown(ref _quant, rw * rh);
+        var luma = Grown(ref _luma, rw * rh);
         for (var y = 0; y < rh; y++)
             for (var x = 0; x < rw; x++)
             {
                 int sx = rx0 + x, sy = ry0 + y, o = (sy * frameWidth + sx) * 4, i = y * rw + x;
-                px[i * 3] = frame[o]; px[i * 3 + 1] = frame[o + 1]; px[i * 3 + 2] = frame[o + 2];
                 int vx = sx - vp.X, vy = sy - vp.Y;
                 ok[i] = (uint)vx < (uint)mask.Width && (uint)vy < (uint)mask.Height && mask.Bits[vy * mask.Width + vx] == 0;
 
@@ -340,7 +356,10 @@ public sealed class DamageReader
             }
         // Digits are outlined white over black: seeds must lie near a light grey pixel touching a dark one. Rock, sky and
         // most sprites have no such pair, which keeps the seeds to the numbers themselves.
-        var outline = new int[(rw + 1) * (rh + 1)];
+        // Prefix sums at stride rw + 1: row 0 and column 0 are the zeros the sums start from (the loop writes the rest).
+        var outline = Grown(ref _outline, (rw + 1) * (rh + 1));
+        Array.Clear(outline, 0, rw + 1);
+        for (var y = 1; y <= rh; y++) outline[y * (rw + 1)] = 0;
         for (var y = 0; y < rh; y++)
         {
             var run = 0;
@@ -348,7 +367,8 @@ public sealed class DamageReader
             {
                 var i = y * rw + x;
                 var hit = false;
-                if (luma[i] >= 190 && Chroma(px[i * 3 + 2], px[i * 3 + 1], px[i * 3]) <= 40)
+                var o = ((ry0 + y) * frameWidth + rx0 + x) * 4;
+                if (luma[i] >= 190 && Chroma(frame[o + 2], frame[o + 1], frame[o]) <= 40)
                     for (var d = 1; d <= 2 && !hit; d++)
                         hit = (x + d < rw && luma[i + d] <= 70) || (x - d >= 0 && luma[i - d] <= 70) || (y + d < rh && luma[i + d * rw] <= 70) || (y - d >= 0 && luma[i - d * rw] <= 70);
                 if (hit) run++;
@@ -361,21 +381,25 @@ public sealed class DamageReader
             return outline[y1 * (rw + 1) + x1] - outline[y0 * (rw + 1) + x1] - outline[y1 * (rw + 1) + x0] + outline[y0 * (rw + 1) + x0] >= MinOutlineNear;
         }
         var digits = new List<(Family Family, Glyph Glyph, int Left, int Top, double Score, double Alpha)>();
-        var hueMap = new bool[rw * rh];
+        var hueMap = Grown(ref _hueMap, rw * rh);
         // Placements tried per glyph, by top-left, offset by SeenPad so tops and lefts up to half a glyph outside fit.
         const int SeenPad = 32;
-        int sw2 = rw + 2 * SeenPad;
-        var seen = new bool[sw2 * (rh + 2 * SeenPad)];
+        int sw2 = rw + 2 * SeenPad, seenLength = sw2 * (rh + 2 * SeenPad);
+        var seen = Grown(ref _seen, seenLength);
         var ratios = new List<double>(64);
         // Seeds per family; families sharing hues (NoRed, NoCri, NoRed2) are searched only when they hold at least half as
         // many seeds as the richest one.
         var familySeeds = new List<(Family Family, List<int> Seeds)>();
-        var near = new List<int>();
+        var near = _near;
+        near.Clear();
         for (var i = 0; i < rw * rh; i++)
             if (ok[i] && NearOutline(i % rw, i / rw)) near.Add(i);
-        foreach (var family in _families)
+        while (_familySeedLists.Count < _families.Count) _familySeedLists.Add([]);
+        for (var fi = 0; fi < _families.Count; fi++)
         {
-            var list = new List<int>();
+            var family = _families[fi];
+            var list = _familySeedLists[fi];
+            list.Clear();
             foreach (var i in near)
                 if (family.Hue[quant[i]]) list.Add(i);
             if (list.Count >= MinHuePixels) familySeeds.Add((family, list));
@@ -384,7 +408,7 @@ public sealed class DamageReader
         // The tests of one placement, cheapest first: 1, the outlines (white stays light and black stays dark down to an
         // opacity of one half); 2, the spread fills on fill-hue pixels; 3, a dozen pairs agree under their own opacity; 4,
         // all pairs scored. Returns the last stage passed, with the score and opacity of stage 4.
-        (int Stage, double Score, double Alpha) Evaluate(Glyph g, int left, int top)
+        (int Stage, double Score, double Alpha) Evaluate(ReadOnlySpan<byte> frame, Glyph g, int left, int top)
         {
             // Two white and two black outline pixels first: most placements fail here.
             var quick = 0;
@@ -425,21 +449,21 @@ public sealed class DamageReader
             int agree = 0, compared = 0;
             foreach (var p in g.ProbePairs)
             {
-                if (!Screen(g, g.PairA[p], left, top, rw, rh, ok, out var si) || !Screen(g, g.PairB[p], left, top, rw, rh, ok, out var sj)) continue;
+                if (!Screen(g, g.PairA[p], left, top, rw, rh, ok, frameWidth, rx0, ry0, out var oi) || !Screen(g, g.PairB[p], left, top, rw, rh, ok, frameWidth, rx0, ry0, out var oj)) continue;
                 compared++;
                 var good = true;
                 for (var c = 0; c < 3 && good; c++)
                 {
                     var dt = g.Art[g.PairA[p] * 3 + c] - g.Art[g.PairB[p] * 3 + c];
-                    if (Math.Abs(px[si * 3 + c] - px[sj * 3 + c] - a0 * dt) > ProbeSlack) good = false;
+                    if (Math.Abs(frame[oi + c] - frame[oj + c] - a0 * dt) > ProbeSlack) good = false;
                 }
                 if (good) agree++;
             }
             if (compared == 0 || agree < ProbeThreshold * compared) return (2, 0, a0);
             // The probe pairs again under their own median opacity, with the full score's slack.
-            if (Pairs(g, g.ProbePairs, left, top, px, ok, rw, rh, ratios, out var pa) < 0.45 || pa is < MinAlpha or > MaxAlpha) return (2, 0, pa);
+            if (Pairs(g, g.ProbePairs, left, top, frame, frameWidth, rx0, ry0, ok, rw, rh, ratios, out var pa) < 0.45 || pa is < MinAlpha or > MaxAlpha) return (2, 0, pa);
             PlacementsScored++;
-            var score = Pairs(g, null, left, top, px, ok, rw, rh, ratios, out var alpha);
+            var score = Pairs(g, null, left, top, frame, frameWidth, rx0, ry0, ok, rw, rh, ratios, out var alpha);
             return (score >= GlyphThreshold ? 4 : 3, score, alpha);
         }
         if (Environment.GetEnvironmentVariable("OAKSOUL_DAMAGE_TRACE") is { } trace && trace.Split(',') is [var tf, var tfirst, var td, var tx, var ty])
@@ -447,7 +471,7 @@ public sealed class DamageReader
                 foreach (var g in family.Glyphs.Where(g => g.First == (tfirst == "1") && g.Digit == int.Parse(td)))
                 {
                     for (var i = 0; i < rw * rh; i++) hueMap[i] = ok[i] && family.Hue[quant[i]];
-                    var r = Evaluate(g, int.Parse(tx) - rx0, int.Parse(ty) - ry0);
+                    var r = Evaluate(frame, g, int.Parse(tx) - rx0, int.Parse(ty) - ry0);
                     Console.WriteLine($"damage trace {trace}: stage {r.Stage} score {r.Score:0.00} alpha {r.Alpha:0.00}; anchors {string.Join(" ", Enumerable.Range(0, g.FillX.Length).Select(k => $"{g.FillX[k]},{g.FillY[k]}"))}");
                 }
         foreach (var (family, seeds) in familySeeds)
@@ -457,7 +481,7 @@ public sealed class DamageReader
             foreach (var g in family.Glyphs)
             {
                 if (g.FillX.Length == 0 || g.PairA.Length < 20) continue;
-                Array.Clear(seen);
+                Array.Clear(seen, 0, seenLength);
                 // Seeds: the region's fill-hue pixels, each tried as the glyph's first two probe fills.
                 for (var anchor = 0; anchor < Math.Min(2, g.FillX.Length); anchor++)
                     foreach (var i in seeds)
@@ -469,7 +493,7 @@ public sealed class DamageReader
                         var key = (top + SeenPad) * sw2 + left + SeenPad;
                         if (seen[key]) continue;
                         seen[key] = true;
-                        var (stage, score, alpha) = Evaluate(g, left, top);
+                        var (stage, score, alpha) = Evaluate(frame, g, left, top);
                         if (stage == 4 && score >= GlyphThreshold && alpha is >= MinAlpha and <= MaxAlpha) digits.Add((family, g, left, top, score, alpha));
                     }
             }
@@ -531,9 +555,10 @@ public sealed class DamageReader
     /// The share of a glyph's pairs (or of <paramref name="subset"/>) that agree at a placement: the opacity is the median
     /// ratio of screen to art difference over the pairs' strongly differing channels, and a pair agrees when every channel's
     /// screen difference is the art difference times it, within <see cref="PairSlack"/>. Pairs on masked or outside pixels
-    /// are left out.
+    /// are left out. The screen colours are read from the frame (region pixel (x, y) at frame pixel (rx0 + x, ry0 + y)).
     /// </summary>
-    private static double Pairs(Glyph g, int[]? subset, int left, int top, int[] px, bool[] ok, int rw, int rh, List<double> ratios, out double alpha)
+    private static double Pairs(Glyph g, int[]? subset, int left, int top, ReadOnlySpan<byte> frame, int frameWidth, int rx0, int ry0, bool[] ok, int rw, int rh,
+        List<double> ratios, out double alpha)
     {
         ratios.Clear();
         var n = subset?.Length ?? g.PairA.Length;
@@ -541,11 +566,11 @@ public sealed class DamageReader
         for (var k = 0; k < n; k += step)
         {
             var p = subset is null ? k : subset[k];
-            if (!Screen(g, g.PairA[p], left, top, rw, rh, ok, out var si) || !Screen(g, g.PairB[p], left, top, rw, rh, ok, out var sj)) continue;
+            if (!Screen(g, g.PairA[p], left, top, rw, rh, ok, frameWidth, rx0, ry0, out var oi) || !Screen(g, g.PairB[p], left, top, rw, rh, ok, frameWidth, rx0, ry0, out var oj)) continue;
             for (var c = 0; c < 3; c++)
             {
                 double dt = g.Art[g.PairA[p] * 3 + c] - g.Art[g.PairB[p] * 3 + c];
-                if (Math.Abs(dt) >= 60) ratios.Add((px[si * 3 + c] - px[sj * 3 + c]) / dt);
+                if (Math.Abs(dt) >= 60) ratios.Add((frame[oi + c] - frame[oj + c]) / dt);
             }
         }
         alpha = 0;
@@ -556,13 +581,13 @@ public sealed class DamageReader
         for (var k = 0; k < n; k++)
         {
             var p = subset is null ? k : subset[k];
-            if (!Screen(g, g.PairA[p], left, top, rw, rh, ok, out var si) || !Screen(g, g.PairB[p], left, top, rw, rh, ok, out var sj)) continue;
+            if (!Screen(g, g.PairA[p], left, top, rw, rh, ok, frameWidth, rx0, ry0, out var oi) || !Screen(g, g.PairB[p], left, top, rw, rh, ok, frameWidth, rx0, ry0, out var oj)) continue;
             compared++;
             var good = true;
             for (var c = 0; c < 3 && good; c++)
             {
                 var dt = g.Art[g.PairA[p] * 3 + c] - g.Art[g.PairB[p] * 3 + c];
-                var ds = px[si * 3 + c] - px[sj * 3 + c];
+                var ds = frame[oi + c] - frame[oj + c];
                 if (Math.Abs(ds - alpha * dt) > PairSlack) good = false;
             }
             if (good) agree++;
@@ -570,10 +595,11 @@ public sealed class DamageReader
         return compared < 0.4 * n ? 0 : (double)agree / compared;
     }
 
-    private static bool Screen(Glyph g, int artIndex, int left, int top, int rw, int rh, bool[] ok, out int index)
+    /// <summary>Whether an art pixel placed at (left, top) lands on a comparable region pixel, and that pixel's byte offset in the frame.</summary>
+    private static bool Screen(Glyph g, int artIndex, int left, int top, int rw, int rh, bool[] ok, int frameWidth, int rx0, int ry0, out int frameOffset)
     {
         int x = left + artIndex % g.W, y = top + artIndex / g.W;
-        index = y * rw + x;
-        return (uint)x < (uint)rw && (uint)y < (uint)rh && ok[index];
+        frameOffset = ((ry0 + y) * frameWidth + rx0 + x) * 4;
+        return (uint)x < (uint)rw && (uint)y < (uint)rh && ok[y * rw + x];
     }
 }

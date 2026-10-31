@@ -83,22 +83,28 @@ public static class CameraRegistration
         uint[] reference, byte[] usable, int originX, int originY, int refWidth, int refHeight,
         int guessX, int guessY, int rangeX, int rangeY, int minCompared = 150)
     {
-        var w = mask.Width;
-        var values = new uint[samples.Length];
-        var sx = new int[samples.Length];
-        var sy = new int[samples.Length];
-        for (var i = 0; i < samples.Length; i++)
-        {
-            int x = samples[i] % w, y = samples[i] / w;
-            sx[i] = x + mask.Viewport.X; sy[i] = y + mask.Viewport.Y;
-            var o = (sy[i] * frameWidth + sx[i]) * 4;
-            values[i] = (uint)(frame[o] | frame[o + 1] << 8 | frame[o + 2] << 16);
-        }
+        var gathered = new GatheredSamples();
+        gathered.Gather(frame, frameWidth, mask, samples);
+        return Register(gathered, reference, usable, originX, originY, refWidth, refHeight, guessX, guessY, rangeX, rangeY, minCompared);
+    }
+
+    /// <summary>
+    /// The same search over samples already gathered from the frame (<see cref="GatheredSamples.Gather"/>), so several
+    /// searches of one frame read its sample colours once.
+    /// </summary>
+    public static Registration Register(GatheredSamples gathered,
+        uint[] reference, byte[] usable, int originX, int originY, int refWidth, int refHeight,
+        int guessX, int guessY, int rangeX, int rangeY, int minCompared = 150)
+    {
+        var values = gathered.Values;
+        var sx = gathered.X;
+        var sy = gathered.Y;
+        var count = gathered.Count;
 
         (int Matches, int Compared) Score(int camX, int camY, int stride)
         {
             int m = 0, c = 0;
-            for (var i = 0; i < values.Length; i += stride)
+            for (var i = 0; i < count; i += stride)
             {
                 int wx = camX + sx[i] - originX, wy = camY + sy[i] - originY;
                 if ((uint)wx >= (uint)refWidth || (uint)wy >= (uint)refHeight) continue;
@@ -142,13 +148,41 @@ public static class CameraRegistration
                     if (Better(m, c, coarse.X + dx, coarse.Y + dy, best)) best = (coarse.X + dx, coarse.Y + dy, m, c);
                 }
         }
-        return new Registration(best.X, best.Y, Math.Max(0, best.M), best.C, guess.Matches, guess.Compared, samples.Length);
+        return new Registration(best.X, best.Y, Math.Max(0, best.M), best.C, guess.Matches, guess.Compared, count);
     }
 
     public static int Distance(uint a, uint b) =>
         Math.Abs((int)(a & 0xFF) - (int)(b & 0xFF)) + Math.Abs((int)((a >> 8) & 0xFF) - (int)((b >> 8) & 0xFF)) + Math.Abs((int)((a >> 16) & 0xFF) - (int)((b >> 16) & 0xFF));
 
     private static int Luma(ReadOnlySpan<byte> px, int o) => (px[o] + px[o + 1] * 2 + px[o + 2]) >> 2;
+}
+
+/// <summary>
+/// The colours (b | g &lt;&lt; 8 | r &lt;&lt; 16) and frame coordinates of a frame's registration samples, for
+/// <see cref="CameraRegistration.Register(GatheredSamples, uint[], byte[], int, int, int, int, int, int, int, int, int)"/>.
+/// The arrays grow as needed and are kept; the first <see cref="Count"/> entries are the last gather's.
+/// </summary>
+public sealed class GatheredSamples
+{
+    public uint[] Values { get; private set; } = [];
+    public int[] X { get; private set; } = [];
+    public int[] Y { get; private set; } = [];
+    public int Count { get; private set; }
+
+    /// <summary>Reads each sample's colour from the frame (samples are viewport coordinates, y * mask width + x).</summary>
+    public void Gather(ReadOnlySpan<byte> frame, int frameWidth, ScreenMask mask, ReadOnlySpan<int> samples)
+    {
+        if (Values.Length < samples.Length) { Values = new uint[samples.Length]; X = new int[samples.Length]; Y = new int[samples.Length]; }
+        var w = mask.Width;
+        for (var i = 0; i < samples.Length; i++)
+        {
+            int x = samples[i] % w, y = samples[i] / w;
+            X[i] = x + mask.Viewport.X; Y[i] = y + mask.Viewport.Y;
+            var o = (Y[i] * frameWidth + X[i]) * 4;
+            Values[i] = (uint)(frame[o] | frame[o + 1] << 8 | frame[o + 2] << 16);
+        }
+        Count = samples.Length;
+    }
 }
 
 /// <summary>
