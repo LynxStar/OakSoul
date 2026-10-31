@@ -161,6 +161,33 @@ public static class WatchProgram
         var world = catalog is null ? null : new WorldTracker(catalog);
         // On exact frames a map name the catalog does not know is read again from the unsoftened name block.
         if (catalog is not null) tracker.IsKnownName = (street, map) => catalog.FindCandidates(street, map).Exact;
+        // The map names' learned fonts and name-block cache, tried on the block before any read and taught by reads the catalog confirms
+        // (OAKSOUL_MAP_FONT=path|off): a live session keeps data/cache/map-font.json, a replay starts clean unless a file is named.
+        var mapFontSetting = Environment.GetEnvironmentVariable("OAKSOUL_MAP_FONT");
+        var useMapFont = mapFontSetting is not ("off" or "0");
+        var mapFontPath = !useMapFont ? null : mapFontSetting is { Length: > 0 } ? mapFontSetting
+            : recording is null ? Path.Combine(Directory.GetCurrentDirectory(), "data", "cache", "map-font.json") : null;
+        MapNameFonts? mapFonts = null;
+        if (!useMapFont) Console.WriteLine("map font off: every map change is read");
+        else if (catalog is not null)
+        {
+            mapFonts = new MapNameFonts();
+            if (mapFontPath is null) Console.WriteLine("map font learned within the run");
+            else
+            {
+                try
+                {
+                    if (MapNameFonts.Load(mapFontPath) is { } loaded) { mapFonts = loaded; Console.WriteLine($"map font {loaded.Describe()}, from {mapFontPath}"); }
+                    else Console.WriteLine($"map font no file at {mapFontPath}; the fonts and the cache are learned from confirmed reads and written there at the end");
+                }
+                catch (Exception e) when (e is System.Text.Json.JsonException or KeyNotFoundException or InvalidOperationException or InvalidDataException or FormatException or OverflowException or IOException or UnauthorizedAccessException)
+                {
+                    Console.WriteLine($"map font the file {mapFontPath} could not be read ({e.Message}); learning anew");
+                }
+            }
+            mapFonts.SetNames(catalog.AllNames.Select(n => (n.Street, n.Map)));
+            tracker.Fonts = mapFonts;
+        }
         var report = worldReport && world is not null ? new WorldReport() : null;
         backgroundsPath ??= Path.Combine(Directory.GetCurrentDirectory(), "data", "backgrounds");
         if (buildBackground && (recording is null || world is null)) { Console.Error.WriteLine("error: --build-background needs --recording and map metadata"); return 2; }
@@ -342,6 +369,18 @@ public static class WatchProgram
             double LatencyPct(double p) => latencies.Count == 0 ? 0 : latencies[Math.Clamp((int)Math.Ceiling(p / 100 * latencies.Count) - 1, 0, latencies.Count - 1)];
             Console.WriteLine($"ocr      {ocr.Completed} reads on the worker thread, {ocr.WorkerMilliseconds:0} ms of recognition; queued to done median {LatencyPct(50):0.0} ms, p90 {LatencyPct(90):0.0}, max {LatencyPct(100):0.0};" +
                 $" at most {ocr.MaxPending} waiting at once, {ocr.Pending} still out; Vision loaded in {ocr.WarmUp?.Milliseconds ?? 0:0} ms on that thread{(ocr.Errors > 0 ? $"; {ocr.Errors} reads failed (first: {ocr.FirstError})" : "")}");
+        }
+        if (mapFonts is not null)
+        {
+            // Name blocks settled: one per map change, and one more where a transition dimmed the block long enough to be read again.
+            Console.WriteLine($"map font {tracker.Reads + tracker.Recognised} name blocks: {mapFonts.ByCache} named by the cache, {mapFonts.ByFont} by the fonts, {tracker.Reads} read" +
+                $" ({tracker.ReadsConfirmed} confirmed by the catalog; {mapFonts.LinesTaught} lines taught, {mapFonts.LinesCached} cached, {mapFonts.Contradicted} refused as contradicting the fonts," +
+                $" {mapFonts.CacheRefuted} cached lines dropped on a hit, {mapFonts.LinesDropped} for a text the catalog lacks, {mapFonts.Unsegmented} blocks not cut into lines); {mapFonts.Describe()}");
+            if (mapFontPath is not null && mapFonts.Changed)
+            {
+                try { mapFonts.Save(mapFontPath); Console.WriteLine($"map font written to {mapFontPath}"); }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Console.WriteLine($"map font not written to {mapFontPath}: {e.Message}"); }
+            }
         }
         // The detector compares exact frames with the mosaic, so only a pixel-exact session builds one. A video of such a session
         // votes (a lossy one too: its errors spread around the true value), and its keyframes then replace the voted pixels they
